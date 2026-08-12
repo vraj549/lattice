@@ -1,0 +1,524 @@
+import { api } from "./api.js";
+import { Viewer } from "./viewer.js";
+import { renderTree, renderPanel, defaultAnalysis, el } from "./ui.js";
+import { renderLegend, fmtVal } from "./colormap.js";
+
+const uid = () => Math.random().toString(36).slice(2, 8);
+
+// ---------------- state ----------------
+const S = {
+  config: null, library: [],
+  project: null, tess: null, meshData: null,
+  results: {},               // aid -> meta
+  runStatus: {},             // aid -> running|done|failed
+  selection: { kind: "model", id: "root" },
+  hiddenSolids: new Set(),
+  view: "geometry",
+  activeResult: null,        // {aid, field, comp, stepIdx, defMult}
+  animating: false,
+  saveTimer: null,
+};
+
+let viewer = null;
+let pickCtx = null;          // {item, key} | {probe}
+
+// ---------------- actions ----------------
+const A = {
+  select(kind, id) {
+    S.selection = { kind, id };
+    if (kind === "analysis" && S.runStatus[id] === "done" && !S.results[id]) {
+      A.openResults(id);
+      return;
+    }
+    refresh();
+  },
+
+  mutate(fn) { fn(); scheduleSave(); refresh(); },
+
+  // ---- setup items ----
+  addSupport() {
+    const s = { id: uid(), name: `Support ${S.project.setup.supports.length + 1}`,
+                type: "fixed", faces: [] };
+    S.project.setup.supports.push(s);
+    S.selection = { kind: "support", id: s.id };
+    A.mutate(() => {});
+    A.pickFaces(s, "faces");
+  },
+  addLoad() {
+    const l = { id: uid(), name: `Load ${S.project.setup.loads.length + 1}`,
+                type: "force", faces: [], fx: 0, fy: 0, fz: -100 };
+    S.project.setup.loads.push(l);
+    S.selection = { kind: "load", id: l.id };
+    A.mutate(() => {});
+    A.pickFaces(l, "faces");
+  },
+  addBolt() {
+    const bl = { id: uid(), name: `Bolt ${S.project.setup.bolts.length + 1}`,
+                 side_a_faces: [], side_b_faces: [], d_mm: null,
+                 E_GPa: 210, preload_N: null };
+    (S.project.setup.bolts ||= []).push(bl);
+    S.selection = { kind: "bolt", id: bl.id };
+    A.mutate(() => {});
+    A.pickFaces(bl, "side_a_faces");
+  },
+  addTie() {
+    const t = { id: uid(), name: `Tie ${S.project.setup.ties.length + 1}`,
+                slave_faces: [], master_solid: null };
+    (S.project.setup.ties ||= []).push(t);
+    S.selection = { kind: "tie", id: t.id };
+    A.mutate(() => {});
+  },
+  addProbe() {
+    const p = { id: uid(), name: `Probe ${S.project.setup.probes.length + 1}`,
+                x: 0, y: 0, z: 0 };
+    S.project.setup.probes.push(p);
+    S.selection = { kind: "probe", id: p.id };
+    A.mutate(() => {});
+    A.pickPoint(p);
+  },
+  addAnalysis() {
+    const type = prompt("Analysis type: static, modal, or harmonic", "static");
+    if (!["static", "modal", "harmonic"].includes(type)) return;
+    const a = defaultAnalysis(type);
+    S.project.setup.analyses.push(a);
+    S.selection = { kind: "analysis", id: a.id };
+    A.mutate(() => {});
+  },
+  removeItem(listName, id) {
+    const list = S.project.setup[listName];
+    const i = list.findIndex((x) => x.id === id);
+    if (i >= 0) list.splice(i, 1);
+    S.selection = { kind: "model", id: "root" };
+    A.mutate(() => {});
+  },
+
+  assignMaterial(solidTag, value) {
+    const setup = S.project.setup;
+    if (!value) { delete setup.assignments[String(solidTag)]; A.mutate(() => {}); return; }
+    let mid = value;
+    if (value.startsWith("lib:")) {
+      const libId = value.slice(4);
+      const lib = S.library.find((m) => m.id === libId);
+      mid = `lib-${libId}`;
+      if (!setup.materials.find((m) => m.id === mid)) {
+        setup.materials.push({ ...lib, id: mid, lib: libId });
+      }
+    }
+    setup.assignments[String(solidTag)] = mid;
+    A.mutate(() => {});
+  },
+
+  toggleSolid(tag) {
+    if (S.hiddenSolids.has(tag)) S.hiddenSolids.delete(tag);
+    else S.hiddenSolids.add(tag);
+    viewer.setHiddenSolids(S.hiddenSolids);
+    refresh();
+  },
+
+  // ---- picking ----
+  pickFaces(item, key) {
+    pickCtx = { item, key };
+    setView("geometry");
+    viewer.startPickFaces(item[key] || []);
+    showPickBar(`Pick faces for “${item.name || "selection"}” — click to toggle`);
+  },
+  pickPoint(probe) {
+    pickCtx = { probe };
+    setView("geometry");
+    viewer.startPickPoint();
+    showPickBar("Click a point on any surface");
+  },
+
+  // ---- mesh & solve ----
+  async runMesh() {
+    await saveNow();
+    try {
+      const { job } = await api.post(`/api/projects/${S.project.id}/mesh`);
+      watchJob(job, "Meshing", async () => {
+        S.meshData = await api.get(`/api/projects/${S.project.id}/mesh`);
+        setView("mesh");
+        viewer.showMeshPreview(S.meshData.skin);
+        updateStat();
+        refresh();
+      });
+    } catch (e) { logLine(`mesh: ${e.message}`, "badln"); }
+  },
+
+  async runAnalysis(aid) {
+    await saveNow();
+    S.runStatus[aid] = "running";
+    refresh();
+    try {
+      const { job } = await api.post(`/api/projects/${S.project.id}/solve/${aid}`);
+      watchJob(job, "Solving", async (ok) => {
+        S.runStatus[aid] = ok ? "done" : "failed";
+        if (ok) await A.openResults(aid);
+        refresh();
+      });
+    } catch (e) {
+      S.runStatus[aid] = "failed";
+      logLine(`solve: ${e.message}`, "badln");
+      refresh();
+    }
+  },
+
+  async openResults(aid) {
+    try {
+      S.results[aid] = await api.get(`/api/projects/${S.project.id}/results/${aid}`);
+      S.runStatus[aid] = "done";
+      S.selection = { kind: "analysis", id: aid };
+      const f = S.results[aid].fields?.find((x) => x.part !== "I");
+      S.activeResult = { aid, field: f?.name, comp: f?.kind === "DEPL" ? "MAG" : (f?.comps[0] || ""),
+                         stepIdx: 0, defMult: 1 };
+      refresh();
+      if (f) await A.loadField(aid);
+    } catch (e) { logLine(`results: ${e.message}`, "badln"); }
+  },
+
+  setResultField(aid, patch) {
+    if (!S.activeResult || S.activeResult.aid !== aid) {
+      S.activeResult = { aid, stepIdx: 0, defMult: 1 };
+    }
+    Object.assign(S.activeResult, patch);
+    if (patch.field) {
+      const f = S.results[aid].fields.find((x) => x.name === patch.field);
+      S.activeResult.comp = f?.kind === "DEPL" ? "MAG" : (f?.comps[0] || "");
+      S.activeResult.stepIdx = 0;
+    }
+    refresh();
+  },
+
+  async loadField(aid) {
+    const R = S.activeResult;
+    if (!R || R.aid !== aid) return;
+    const meta = S.results[aid];
+    const f = meta.fields.find((x) => x.name === R.field) || meta.fields[0];
+    if (!f) return;
+    const step = f.steps[Math.min(R.stepIdx || 0, f.steps.length - 1)];
+    try {
+      const payload = await api.get(
+        `/api/projects/${S.project.id}/results/${aid}/field` +
+        `?name=${encodeURIComponent(f.name)}&step=${encodeURIComponent(step.key)}` +
+        `&comp=${encodeURIComponent(R.comp || "MAG")}`);
+      R.payload = payload;
+      const diag = S.project.geometry.diag;
+      const autoScale = payload.disp_max > 1e-12 ? (diag * 0.05) / payload.disp_max : 0;
+      R.autoScale = autoScale;
+      setView("results");
+      viewer.showResult(payload, { defScale: autoScale * (R.defMult || 1), animate: S.animating });
+      const a = S.project.setup.analyses.find((x) => x.id === aid);
+      const unit = f.kind === "DEPL" ? "mm" : "MPa";
+      const stepTxt = f.steps.length > 1 ? ` @ ${fmtVal(step.value)} Hz` : "";
+      renderLegend(payload.min, payload.max, `${R.comp || f.label} · ${unit}${stepTxt}`);
+      document.getElementById("vpStat").innerHTML =
+        `max <b>${fmtVal(payload.max)} ${unit}</b><br>min <b>${fmtVal(payload.min)} ${unit}</b>` +
+        (payload.disp_max ? `<br>deform ×${fmtVal(autoScale * (R.defMult || 1))}` : "");
+    } catch (e) { logLine(`field: ${e.message}`, "badln"); }
+  },
+
+  showMode(aid, stepIdx) {
+    A.setResultField(aid, { stepIdx });
+    S.animating = true;
+    A.loadField(aid);
+  },
+
+  setDeform(mult) {
+    const R = S.activeResult;
+    if (!R) return;
+    R.defMult = mult;
+    viewer.setDeform((R.autoScale || 0) * mult);
+    if (R.payload?.disp_max) {
+      const s = document.getElementById("vpStat");
+      s.innerHTML = s.innerHTML.replace(/deform ×[^<]*/, `deform ×${fmtVal((R.autoScale || 0) * mult)}`);
+    }
+  },
+
+  toggleAnimate() {
+    S.animating = !S.animating;
+    viewer.setAnimate(S.animating);
+    refresh();
+  },
+};
+
+// ---------------- pick bar ----------------
+function showPickBar(msg) {
+  const bar = document.getElementById("pickBar");
+  document.getElementById("pickMsg").textContent = msg;
+  bar.hidden = false;
+}
+function hidePickBar() { document.getElementById("pickBar").hidden = true; }
+
+document.getElementById("pickDone").addEventListener("click", () => {
+  if (pickCtx?.item) {
+    pickCtx.item[pickCtx.key] = viewer.endPick();
+    scheduleSave();
+  } else viewer.endPick();
+  pickCtx = null;
+  hidePickBar();
+  refresh();
+});
+document.getElementById("pickCancel").addEventListener("click", () => {
+  viewer.endPick();
+  pickCtx = null;
+  hidePickBar();
+  refresh();
+});
+
+// ---------------- jobs & log ----------------
+let activeJob = null;
+function logLine(text, cls = "") {
+  const body = document.getElementById("logBody");
+  const div = document.createElement("div");
+  if (cls) div.className = cls;
+  div.textContent = text;
+  body.append(div);
+  body.scrollTop = body.scrollHeight;
+}
+
+function watchJob(jid, label, onFinish) {
+  activeJob = jid;
+  document.getElementById("logDrawer").dataset.open = "true";
+  document.getElementById("logToggle").setAttribute("aria-expanded", "true");
+  document.getElementById("logMeta").textContent = label;
+  document.getElementById("logCancel").hidden = false;
+  let offset = 0;
+  const poll = async () => {
+    try {
+      const j = await api.get(`/api/jobs/${jid}?offset=${offset}`);
+      for (const ln of j.log) {
+        const low = ln.toLowerCase();
+        logLine(ln, low.includes("error") || low.includes("<f>") ? "badln"
+                  : low.includes("warn") || low.includes("<a>") ? "warnln" : "");
+      }
+      offset = j.log_offset;
+      if (j.status === "running") { setTimeout(poll, 900); return; }
+      document.getElementById("logMeta").textContent = `${label} — ${j.status}`;
+      document.getElementById("logCancel").hidden = true;
+      activeJob = null;
+      onFinish?.(j.status === "done");
+    } catch (e) {
+      logLine(`job poll failed: ${e.message}`, "badln");
+      document.getElementById("logCancel").hidden = true;
+      activeJob = null;
+    }
+  };
+  poll();
+}
+
+document.getElementById("logCancel").addEventListener("click", () => {
+  if (activeJob) api.post(`/api/jobs/${activeJob}/cancel`).catch(() => {});
+});
+document.getElementById("logToggle").addEventListener("click", (e) => {
+  const d = document.getElementById("logDrawer");
+  const open = d.dataset.open !== "false";
+  d.dataset.open = open ? "false" : "true";
+  e.target.setAttribute("aria-expanded", String(!open));
+});
+
+// ---------------- save ----------------
+function scheduleSave() {
+  clearTimeout(S.saveTimer);
+  S.saveTimer = setTimeout(saveNow, 700);
+}
+async function saveNow() {
+  clearTimeout(S.saveTimer);
+  if (!S.project) return;
+  try { await api.put(`/api/projects/${S.project.id}/setup`, S.project.setup); }
+  catch (e) { logLine(`save failed: ${e.message}`, "badln"); }
+}
+
+// ---------------- views ----------------
+function setView(v) {
+  S.view = v;
+  for (const b of document.querySelectorAll(".vtab")) {
+    b.setAttribute("aria-selected", String(b.dataset.view === v));
+  }
+  renderLegend(null);
+  if (v === "geometry") { viewer.showGeometry(); updateStat(); }
+  if (v === "mesh") {
+    if (S.meshData) viewer.showMeshPreview(S.meshData.skin);
+    else viewer.showMeshPreview(null);
+    updateStat();
+  }
+  // results view is driven by loadField
+}
+
+document.getElementById("viewTabs").addEventListener("click", (e) => {
+  const b = e.target.closest(".vtab");
+  if (!b) return;
+  if (b.dataset.view === "results") {
+    const done = Object.entries(S.runStatus).find(([, st]) => st === "done");
+    if (done) A.openResults(done[0]);
+    return;
+  }
+  setView(b.dataset.view);
+});
+
+function updateStat() {
+  const s = document.getElementById("vpStat");
+  if (S.view === "mesh" && S.meshData) {
+    const m = S.meshData.stats;
+    s.innerHTML = `<b>${m.nodes.toLocaleString()}</b> nodes · <b>${m.elements.toLocaleString()}</b> elems<br>` +
+                  `${m.dof.toLocaleString()} DOF · est ${m.mem_gb_est} GB`;
+  } else if (S.project?.geometry) {
+    const g = S.project.geometry;
+    s.innerHTML = `${g.solids.length} solid(s) · ${g.faces.length} faces`;
+  } else s.innerHTML = "";
+}
+
+// ---------------- face states for BC visualization ----------------
+function faceStates() {
+  const map = new Map();
+  if (!S.project) return map;
+  for (const sup of S.project.setup.supports) {
+    for (const f of sup.faces || []) map.set(Number(f), "support");
+  }
+  for (const l of S.project.setup.loads) {
+    for (const f of l.faces || []) map.set(Number(f), "load");
+  }
+  for (const bl of S.project.setup.bolts || []) {
+    for (const f of [...(bl.side_a_faces || []), ...(bl.side_b_faces || [])]) {
+      map.set(Number(f), "bolt");
+    }
+  }
+  return map;
+}
+
+// ---------------- refresh ----------------
+function refresh() {
+  if (!S.project) return;
+  renderTree(S, A);
+  renderPanel(S, A);
+  viewer.setFaceStates(faceStates());
+}
+
+// ---------------- project bootstrap ----------------
+async function openProject(pid) {
+  S.project = await api.get(`/api/projects/${pid}`);
+  document.getElementById("projName").textContent = S.project.name;
+  document.getElementById("overlay").hidden = true;
+  S.results = {}; S.runStatus = {}; S.meshData = null; S.activeResult = null;
+  S.selection = { kind: "model", id: "root" };
+
+  S.tess = await api.get(`/api/projects/${pid}/tessellation`);
+  viewer.setGeometry(S.tess, S.project.geometry);
+
+  try { S.meshData = await api.get(`/api/projects/${pid}/mesh`); } catch { /* not meshed */ }
+
+  // discover existing results
+  for (const a of S.project.setup.analyses) {
+    try {
+      S.results[a.id] = await api.get(`/api/projects/${pid}/results/${a.id}`);
+      S.runStatus[a.id] = "done";
+    } catch { /* no results yet */ }
+  }
+  updateStat();
+  refresh();
+}
+
+async function showOverlay() {
+  const ov = document.getElementById("overlay");
+  ov.hidden = false;
+  const list = document.getElementById("projList");
+  list.innerHTML = "";
+  const projects = await api.get("/api/projects");
+  if (!projects.length) list.append(el("div", { class: "hint" }, "No projects yet — import a STEP to start."));
+  for (const p of projects) {
+    const item = el("button", { class: "proj-item", onclick: () => openProject(p.id) },
+      el("span", {}, p.name),
+      el("span", { class: "mt" }, p.has_geometry ? "" : "importing…"));
+    const del = el("button", { class: "proj-del", title: "Delete project",
+      onclick: async (e) => {
+        e.stopPropagation();
+        if (confirm(`Delete project “${p.name}”?`)) {
+          await api.del(`/api/projects/${p.id}`);
+          showOverlay();
+        }
+      } }, "✕");
+    item.append(del);
+    list.append(item);
+  }
+}
+
+document.getElementById("btnProjects").addEventListener("click", showOverlay);
+
+document.getElementById("newForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const name = document.getElementById("npName").value.trim();
+  const file = document.getElementById("npFile").files[0];
+  const status = document.getElementById("npStatus");
+  if (!name || !file) return;
+  status.textContent = "Uploading…";
+  try {
+    const { id, job } = await api.upload("/api/projects", { name, step: file });
+    status.textContent = "Importing geometry…";
+    const poll = async () => {
+      const j = await api.get(`/api/jobs/${job}`);
+      status.textContent = j.log[j.log.length - 1] || "working…";
+      if (j.status === "running") { setTimeout(poll, 700); return; }
+      if (j.status === "done") await openProject(id);
+      else status.textContent = `Import failed: ${j.error}`;
+    };
+    poll();
+  } catch (err) { status.textContent = `Upload failed: ${err.message}`; }
+});
+
+// ---------------- viewport controls ----------------
+document.getElementById("btnFit").addEventListener("click", () => viewer.fit());
+const clipAxis = document.getElementById("clipAxis");
+const clipPos = document.getElementById("clipPos");
+clipAxis.addEventListener("change", () => {
+  clipPos.style.display = clipAxis.value ? "" : "none";
+  viewer.setClip(clipAxis.value || null, Number(clipPos.value) / 1000);
+});
+clipPos.addEventListener("input", () => {
+  viewer.setClip(clipAxis.value || null, Number(clipPos.value) / 1000);
+});
+
+// ---------------- boot ----------------
+async function boot() {
+  viewer = new Viewer(document.getElementById("scene"), {
+    onHover: (h) => {
+      document.getElementById("vpHover").textContent =
+        h ? `face ${h.tag} · ${fmtVal(h.area)} mm²` : "";
+    },
+    onPickChange: () => {},
+    onPickPoint: (pt) => {
+      if (pickCtx?.probe) {
+        Object.assign(pickCtx.probe, { x: pt.x, y: pt.y, z: pt.z });
+        viewer.endPick();
+        pickCtx = null;
+        hidePickBar();
+        scheduleSave();
+        refresh();
+      }
+    },
+  });
+
+  S.config = await api.get("/api/config");
+  S.library = await api.get("/api/materials");
+
+  const chip = document.getElementById("solverChip");
+  const chipText = document.getElementById("solverChipText");
+  const sv = S.config.solver;
+  if (sv.available) {
+    chip.querySelector(".dot").className = "dot ok";
+    chipText.textContent = `code_aster · ${sv.mode}${sv.wsl_distro ? " · " + sv.wsl_distro : ""}`;
+  } else {
+    chip.querySelector(".dot").className = "dot bad";
+    chipText.textContent = "no solver — demo mode";
+  }
+  chip.title = sv.detail + (sv.notes?.length ? "\n" + sv.notes.join("\n") : "");
+  document.getElementById("ovSolver").textContent =
+    sv.available ? `Solver: ${sv.detail}` : `⚠ ${sv.detail} — meshing and setup still work; see README to enable solving.`;
+
+  await showOverlay();
+}
+
+// debug / scripting handle
+window.lattice = { S, A, viewer: () => viewer };
+
+boot().catch((e) => {
+  document.getElementById("ovSolver").textContent = `Failed to start: ${e.message}`;
+  document.getElementById("overlay").hidden = false;
+});

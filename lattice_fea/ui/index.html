@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lattice — FEA workbench</title>
+<link rel="stylesheet" href="/ui/app.css?v=0.3.0">
+<script type="importmap">
+{ "imports": { "three": "/ui/vendor/three.module.js" } }
+</script>
+</head>
+<body>
+
+<div class="app" id="app">
+
+  <header class="bar">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M3 20 L3 4 L11 4" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="square"/>
+        <path d="M3 20 L21 20" stroke="var(--text)" stroke-width="2.4" stroke-linecap="square"/>
+        <circle cx="17" cy="9" r="2.6" stroke="var(--dim)" stroke-width="1.6"/>
+      </svg>
+      <b>Lattice</b>
+    </div>
+    <button class="btn btn-ghost" id="btnProjects">Projects</button>
+    <div class="doc" id="projName">—</div>
+    <div class="bar-sp"></div>
+    <div class="viewtabs" id="viewTabs" role="tablist">
+      <button class="vtab" data-view="geometry" aria-selected="true" role="tab">Geometry</button>
+      <button class="vtab" data-view="mesh" role="tab">Mesh</button>
+      <button class="vtab" data-view="results" role="tab">Results</button>
+    </div>
+    <div class="bar-sp"></div>
+    <span class="chip" id="solverChip" title=""><span class="dot idle"></span><span id="solverChipText">checking solver…</span></span>
+  </header>
+
+  <div class="body">
+    <aside class="pane pane-l">
+      <div class="pane-hd">
+        <span class="lbl">Simulation tree</span>
+      </div>
+      <div class="pane-body" id="tree" role="listbox" aria-label="Simulation tree"></div>
+    </aside>
+
+    <section class="vp" id="vp">
+      <canvas id="scene"></canvas>
+
+      <div class="vp-tl" id="vpControls">
+        <button class="vbtn" id="btnFit" title="Zoom to fit">Fit</button>
+        <select class="vbtn" id="clipAxis" aria-label="Section plane">
+          <option value="">No section</option>
+          <option value="x">Section X</option>
+          <option value="y">Section Y</option>
+          <option value="z">Section Z</option>
+        </select>
+        <input type="range" class="vrange" id="clipPos" min="0" max="1000" value="500"
+               aria-label="Section position" style="display:none">
+      </div>
+
+      <div class="pickbar" id="pickBar" hidden>
+        <span id="pickMsg">Pick faces</span>
+        <button class="btn btn-accent" id="pickDone">Done</button>
+        <button class="btn" id="pickCancel">Cancel</button>
+      </div>
+
+      <div class="vp-bl" id="legendBox" hidden>
+        <div class="cbar-cap" id="legendCap"></div>
+        <div class="cbar">
+          <div class="cbar-strip" id="legendStrip"></div>
+          <div class="cbar-ticks" id="legendTicks"></div>
+        </div>
+      </div>
+
+      <div class="vp-br">
+        <div class="vp-stat" id="vpStat"></div>
+      </div>
+      <div class="vp-hover" id="vpHover"></div>
+    </section>
+
+    <aside class="pane pane-r">
+      <div class="pane-hd">
+        <span class="lbl" id="ctxTitle">Model</span>
+        <span class="lbl num" id="ctxMeta"></span>
+      </div>
+      <div class="pane-body" id="panel"></div>
+    </aside>
+  </div>
+
+  <section class="log" id="logDrawer" data-open="false">
+    <div class="log-hd">
+      <button class="drawer-toggle" id="logToggle" aria-expanded="false">▾</button>
+      <span class="lbl">Job output</span>
+      <span class="lbl num" id="logMeta"></span>
+      <span class="bar-sp"></span>
+      <button class="btn btn-small" id="logCancel" hidden>Cancel job</button>
+    </div>
+    <div class="log-body" id="logBody"></div>
+  </section>
+</div>
+
+<!-- project chooser overlay -->
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <h1 class="modal-title">Lattice</h1>
+    <p class="modal-sub">Browser-based FEA on gmsh + code_aster — static, modal, harmonic.</p>
+    <div class="modal-cols">
+      <div class="modal-col">
+        <span class="lbl">Open a project</span>
+        <div id="projList" class="proj-list"></div>
+      </div>
+      <div class="modal-col">
+        <span class="lbl">New project</span>
+        <form id="newForm">
+          <label class="frm">Name
+            <input type="text" id="npName" placeholder="bracket rev C" required>
+          </label>
+          <label class="frm">STEP file (part or assembly)
+            <input type="file" id="npFile" accept=".step,.stp,.STEP,.STP" required>
+          </label>
+          <button class="btn btn-accent" type="submit" id="npGo">Import geometry</button>
+          <div class="hint" id="npStatus"></div>
+        </form>
+      </div>
+    </div>
+    <div class="hint" id="ovSolver"></div>
+  </div>
+</div>
+
+<script type="module" src="/ui/js/main.js?v=0.3.0"></script>
+</body>
+</html>
