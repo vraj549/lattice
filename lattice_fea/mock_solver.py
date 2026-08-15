@@ -209,24 +209,42 @@ def main():
     for path in sorted(f for f in os.listdir(".") if False):
         pass
     if kind == "harmonic":
-        nprobe = len(re.findall(r"GROUP_NO='PROBE(\d+)'", comm)) or 0
+        nprobe = len(re.findall(r"GROUP_NO='PROBE(\d+)'", comm))
+        base = "CALC_CHAR_SEISME" in comm
+        m = re.search(r"AMOR_REDUIT=\(([\d.eE+-]+)", comm)
+        zeta = float(m.group(1)) if m else 0.02
+        fl = re.search(r"lfr = DEFI_LIST_REEL\(VALE=\(([^)]*)\)", comm)
+        sweep = [float(v) for v in fl.group(1).split(",") if v.strip()] if fl else []
+        if not sweep:
+            sweep = [20.0 * (2000.0 / 20.0) ** (i / 119) for i in range(120)]
+
         idx = 0
         for p in range(1, max(nprobe // 3, 1) + 1):
             for c in ("dx", "dy", "dz"):
-                fq0, fq1 = 20.0, 2000.0
-                with open(f"frf_p{p}_{c}.csv", "w") as fh:
-                    for s in range(120):
-                        fr = fq0 * (fq1 / fq0) ** (s / 119)
-                        amp = 1e-4
-                        for fq in freqs:
-                            r = fr / fq
-                            amp += 2e-3 / math.sqrt((1 - r * r) ** 2 + (2 * 0.02 * r) ** 2)
-                        fh.write(f"{fr:.4f},{amp:.8e}\n")
-                    for s in range(120):
-                        fr = fq0 * (fq1 / fq0) ** (s / 119)
-                        fh.write(f"{fr:.4f},{-math.atan2(1, 1 - (fr / freqs[0]) ** 2):.6f}\n")
+                rows = []
+                for fr in sweep:
+                    w = 2 * math.pi * fr
+                    re_s, im_s = 0.0, 0.0
+                    for k, fn in enumerate(freqs):
+                        wn = 2 * math.pi * fn
+                        # modal participation falls off with mode number
+                        gamma = 1.0 / (k + 1.5)
+                        den = complex(wn * wn - w * w, 2 * zeta * wn * w)
+                        # base excitation: relative displacement for 1 g input.
+                        # force drive: arbitrary unit modal force.
+                        num = -(9810.0) * gamma if base else 1.0e6 * gamma
+                        h = num / den
+                        re_s += h.real
+                        im_s += h.imag
+                    rows.append((fr, math.hypot(re_s, im_s), math.atan2(im_s, re_s)))
+                with open(f"frf_p{p}_{c}.csv", "w", encoding="utf-8") as fh:
+                    for fr, mag, _ in rows:
+                        fh.write(f"{fr:.6f},{mag:.8e}\n")
+                    for fr, _, ph in rows:
+                        fh.write(f"{fr:.6f},{ph:.6f}\n")
                 idx += 1
-        log(f"IMPR_FONCTION  {idx} FRF curve file(s) written")
+        log(f"IMPR_FONCTION  {idx} FRF curve file(s) written"
+            + ("  [base excitation, relative displacement]" if base else ""))
 
     log("EXECUTION_CODE_ASTER  <I>  MOCK RUN COMPLETE")
     return 0

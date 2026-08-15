@@ -13,7 +13,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, comm_writer, config, results
+from . import __version__, comm_writer, config, random_vib, results
 from .materials import LIBRARY
 from .projects import ProjectStore
 from .solver import JobManager, popen_isolated, reap, run_solver
@@ -257,6 +257,50 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         meta["reparsed"] = True
         store.write_json(pid, f"runs/{aid}/meta.json", meta)
         return {"ok": True, "found": produced, "meta": meta}
+
+    @app.get("/api/projects/{pid}/results/{aid}/random")
+    def random_response(pid: str, aid: str):
+        """Response PSD / RMS from the swept transmissibility and the input
+        spectrum. Computed here rather than in the solver so the maths is
+        unit-tested (see tests/test_random_vib.py)."""
+        proj = _project(pid)
+        analysis = next((a for a in proj["setup"].get("analyses", [])
+                         if a["id"] == aid), None)
+        if analysis is None:
+            raise HTTPException(404, "analysis not found")
+        if not store.exists(pid, f"runs/{aid}/meta.json"):
+            raise HTTPException(404, "no results for this analysis")
+        meta = store.read_json(pid, f"runs/{aid}/meta.json")
+        cfg = analysis.get("config", {})
+        spec = cfg.get("spec") or []
+        if len(spec) < 2:
+            raise HTTPException(422, "analysis has no PSD spectrum")
+        base_g = float(cfg.get("base_g", 1.0))
+
+        out = []
+        for curve in meta.get("frf", []):
+            t = random_vib.transmissibility(
+                curve["freq"], curve["module"], curve.get("phase") or [], base_g)
+            r = random_vib.response(curve["freq"], t, spec, base_g)
+            r.update({"probe": curve["probe"], "comp": curve["comp"],
+                      "trans": t})
+            out.append(r)
+
+        # Miles cross-check on the dominant peak of each curve
+        modes = (meta.get("tables", {}).get("modes") or [{}])[0]
+        fi = modes.get("columns", []).index("FREQ") if "FREQ" in modes.get("columns", []) else None
+        zeta = float(cfg.get("damping", 0.02))
+        checks = []
+        if fi is not None:
+            for row in modes.get("rows", [])[:6]:
+                fn = row[fi]
+                if isinstance(fn, (int, float)) and fn > 0:
+                    checks.append(random_vib.miles(fn, 1.0 / (2 * zeta), spec))
+
+        part = (meta.get("tables", {}).get("participation") or [None])[0]
+        return {"curves": out, "miles": checks,
+                "participation": random_vib.cumulative_participation(part),
+                "grms_in": random_vib.grms_input(spec)}
 
     @app.get("/api/projects/{pid}/results/{aid}/field")
     def result_field(pid: str, aid: str, name: str, step: str, comp: str = "MAG"):

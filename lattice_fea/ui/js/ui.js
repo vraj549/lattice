@@ -584,14 +584,38 @@ export function defaultAnalysis(type) {
   const base = { id: uid(), type, name: "" };
   if (type === "static") return { ...base, name: "Static structural", config: {} };
   if (type === "modal") return { ...base, name: "Modal", config: { n_modes: 10 } };
+  if (type === "random") {
+    return { ...base, name: "Random vibration",
+             config: { spec: [[20, 0.01], [80, 0.04], [350, 0.04], [2000, 0.007]],
+                       base_dir: [0, 0, 1], damping: 0.02, n_steps: 600,
+                       field_freqs: [] } };
+  }
   return { ...base, name: "Harmonic response",
            config: { f_min: 20, f_max: 2000, n_steps: 150, spacing: "log",
-                     damping: 0.02, field_freqs: [] } };
+                     damping: 0.02, excitation: "force", base_dir: [0, 0, 1],
+                     base_g: 1.0, field_freqs: [] } };
 }
 
 /** A peak is only resolved if several sweep points fall inside its
  *  half-power band (width ~ f/Q). Too coarse a sweep silently UNDER-reports Q,
  *  which would understate resonant response. */
+function gramsOf(spec) {
+  // matches random_vib.grms_input: exact integral of log-log segments
+  const pts = spec.map((r) => [Number(r[0]), Number(r[1])])
+    .filter((r) => r[0] > 0).sort((a, b) => a[0] - b[0]);
+  let tot = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const [f0, w0] = pts[i - 1], [f1, w1] = pts[i];
+    if (f1 <= f0) continue;
+    if (w0 <= 0 || w1 <= 0) { tot += 0.5 * (w0 + w1) * (f1 - f0); continue; }
+    const m = Math.log(w1 / w0) / Math.log(f1 / f0);
+    tot += Math.abs(m + 1) < 1e-9
+      ? w0 * f0 * Math.log(f1 / f0)
+      : (w0 / Math.pow(f0, m)) * (Math.pow(f1, m + 1) - Math.pow(f0, m + 1)) / (m + 1);
+  }
+  return Math.sqrt(Math.max(tot, 0)).toFixed(2);
+}
+
 function resolutionWarning(S, peaks) {
   const a = S.project.setup.analyses.find((x) => x.id === S.activeResult?.aid)
          || S.project.setup.analyses.find((x) => x.type === "harmonic");
@@ -631,7 +655,27 @@ function panelAnalysis(S, A, put, id) {
       el("div", { class: "hint" }, "Lowest modes above the supports (Sorensen/ARPACK).")));
   }
   if (a.type === "harmonic") {
-    secs.push(sec("Sweep",
+    secs.push(sec("Excitation",
+      selInput("Driven by", c.excitation || "force",
+        [["force", "Force (loads in the tree)"],
+         ["base", "Base acceleration (shaker)"]],
+        (v) => A.mutate(() => { c.excitation = v; })),
+      c.excitation === "base" ? el("div", {},
+        el("div", { class: "frm-row" },
+          numInput("dir X", c.base_dir?.[0] ?? 0, (v) => A.mutate(() => { c.base_dir = [v || 0, c.base_dir?.[1] ?? 0, c.base_dir?.[2] ?? 1]; })),
+          numInput("dir Y", c.base_dir?.[1] ?? 0, (v) => A.mutate(() => { c.base_dir = [c.base_dir?.[0] ?? 0, v || 0, c.base_dir?.[2] ?? 1]; })),
+          numInput("dir Z", c.base_dir?.[2] ?? 1, (v) => A.mutate(() => { c.base_dir = [c.base_dir?.[0] ?? 0, c.base_dir?.[1] ?? 0, v ?? 1]; }))),
+        numInput("Input amplitude (g)", c.base_g ?? 1, (v) => A.mutate(() => { c.base_g = v ?? 1; })),
+        el("div", { class: "hint" },
+          "Every fixed support becomes the moving fixture (mono-support). " +
+          "Forces in the tree are ignored. Drive at 1 g and the plot reads " +
+          "directly as transmissibility."),
+        el("div", { class: "hint" },
+          "Response is RELATIVE to the base — that is what stresses the part. " +
+          "Absolute acceleration adds the base motion back, which the " +
+          "transmissibility view does for you."),
+      ) : null),
+    sec("Sweep",
       el("div", { class: "frm-row2" },
         numInput("f min (Hz)", c.f_min, (v) => A.mutate(() => { c.f_min = v || 1; })),
         numInput("f max (Hz)", c.f_max, (v) => A.mutate(() => { c.f_max = v || 1000; }))),
@@ -664,6 +708,43 @@ function panelAnalysis(S, A, put, id) {
     if (!S.project.setup.probes.length) {
       secs.push(sec(null, el("div", { class: "hint warn" },
         "⚠ Add at least one probe — FRF curves are extracted at probe locations.")));
+    }
+  }
+  if (a.type === "random") {
+    const spec = c.spec || [];
+    const specRow = (row, i) => el("div", { class: "frm-row2" },
+      numInput("Hz", row[0], (v) => A.mutate(() => { spec[i][0] = v || 0; })),
+      el("div", { style: "display:flex;gap:6px;align-items:end" },
+        numInput("g²/Hz", row[1], (v) => A.mutate(() => { spec[i][1] = v || 0; })),
+        el("button", { class: "btn btn-small btn-danger",
+          onclick: () => A.mutate(() => { spec.splice(i, 1); }) }, "✕")));
+    secs.push(sec("Input spectrum (PSD breakpoints)",
+      ...spec.map(specRow),
+      el("div", { class: "btnrow" },
+        el("button", { class: "btn btn-small",
+          onclick: () => A.mutate(() => {
+            const last = spec[spec.length - 1] || [20, 0.01];
+            spec.push([last[0] * 2, last[1]]);
+          }) }, "+ breakpoint")),
+      el("div", { class: "hint" },
+        "Log-log interpolated between breakpoints, zero outside — the standard " +
+        "qualification-spec format."),
+      el("div", { class: "hint good" }, `Input overall: ${gramsOf(spec)} g RMS`)));
+    secs.push(sec("Direction and damping",
+      el("div", { class: "frm-row" },
+        numInput("dir X", c.base_dir?.[0] ?? 0, (v) => A.mutate(() => { c.base_dir = [v || 0, c.base_dir?.[1] ?? 0, c.base_dir?.[2] ?? 1]; })),
+        numInput("dir Y", c.base_dir?.[1] ?? 0, (v) => A.mutate(() => { c.base_dir = [c.base_dir?.[0] ?? 0, v || 0, c.base_dir?.[2] ?? 1]; })),
+        numInput("dir Z", c.base_dir?.[2] ?? 1, (v) => A.mutate(() => { c.base_dir = [c.base_dir?.[0] ?? 0, c.base_dir?.[1] ?? 0, v ?? 1]; }))),
+      numInput("Modal damping ratio ζ", c.damping, (v) => A.mutate(() => { c.damping = v ?? 0.02; }),
+        { min: 0, max: 1, step: 0.005 }),
+      numInput("Sweep steps", c.n_steps, (v) => A.mutate(() => { c.n_steps = v || 600; })),
+      el("div", { class: "hint" },
+        "Solved as a 1 g base sweep across the spectrum; the response PSD is " +
+        "|T(f)|² × input PSD, integrated for g RMS. Resolution matters — a " +
+        "resonance spread over too few points under-reports the RMS.")));
+    if (!S.project.setup.probes.length) {
+      secs.push(sec(null, el("div", { class: "hint warn" },
+        "⚠ Add at least one probe — response is extracted there.")));
     }
   }
   if (a.type === "static") {
@@ -712,6 +793,7 @@ function panelAnalysis(S, A, put, id) {
     ...blockers.map((t) => el("div", { class: "hint warn" }, "⚠ " + t))));
 
   if (done && S.results[a.id]) secs.push(...resultSections(S, A, a));
+  if (done && a.type === "random") secs.push(...randomSections(S, A, a));
   secs.push(sec(null, delBtn("analysis", () => A.removeItem("analyses", id))));
   put(a.name || a.type, a.type, ...secs);
 }
@@ -924,6 +1006,86 @@ function resultSections(S, A, a) {
 
   if (meta.warnings?.length) {
     secs.push(sec("Warnings", ...meta.warnings.map((w) => el("div", { class: "hint warn" }, w))));
+  }
+  return secs;
+}
+
+function randomSections(S, A, a) {
+  const R = S.randomResults?.[a.id];
+  if (!R) {
+    A.loadRandom(a.id);
+    return [sec("Random response", el("div", { class: "hint" }, "Computing…"))];
+  }
+  const secs = [];
+  const worst = R.curves.reduce((m, c) => (c.grms > (m?.grms ?? -1) ? c : m), null);
+  const probes = S.project.setup.probes;
+  const nameOf = (c) => `${probes[c.probe - 1]?.name || "P" + c.probe}·${c.comp}`;
+
+  secs.push(sec("Random response",
+    el("table", { class: "rtable" },
+      el("tr", {}, ["Probe", "g RMS", "3σ (g)"].map((t) => el("th", {}, t))),
+      R.curves.map((c) => el("tr", {},
+        el("td", {}, nameOf(c)),
+        el("td", {}, c.grms.toFixed(2)),
+        el("td", {}, c.three_sigma.toFixed(2))))),
+    el("div", { class: "hint" },
+      `Input ${R.grms_in.toFixed(2)} g RMS \u2192 worst response ` +
+      `${worst ? worst.grms.toFixed(2) : "\u2014"} g RMS ` +
+      `(amplification ${worst && R.grms_in ? (worst.grms / R.grms_in).toFixed(1) : "\u2014"}\u00d7). ` +
+      `3\u03c3 is the usual design peak.`)));
+
+  // response PSD plot
+  const canvas = el("canvas", { class: "frfbig" });
+  secs.push(sec("Response PSD (g²/Hz)", canvas,
+    el("div", { class: "hint" },
+      "Dashed = input spectrum, solid = response at each probe.")));
+  requestAnimationFrame(() => {
+    if (!canvas.isConnected) return;
+    const curves = R.curves.map((c, i) => ({
+      label: nameOf(c), freq: c.freq, module: c.psd_out, color: seriesColor(i),
+    }));
+    if (R.curves[0]) {
+      curves.push({ label: "input", freq: R.curves[0].freq,
+                    module: R.curves[0].psd_in, color: "#8899aa" });
+    }
+    frfPlot(canvas, curves, { annotate: false });
+  });
+
+  // Miles cross-check
+  if (R.miles?.length) {
+    secs.push(sec("Miles' equation cross-check",
+      el("table", { class: "rtable" },
+        el("tr", {}, ["fn (Hz)", "PSD @ fn", "g RMS", "3σ"].map((t) => el("th", {}, t))),
+        R.miles.filter((m) => m.psd_at_fn > 0).map((m) => el("tr", {},
+          el("td", {}, fmtVal(m.fn)),
+          el("td", {}, m.psd_at_fn.toFixed(4)),
+          el("td", {}, m.grms.toFixed(2)),
+          el("td", {}, m.three_sigma.toFixed(2))))),
+      el("div", { class: "hint" },
+        "Single-DOF estimate per mode. Close agreement with the table above " +
+        "means one mode dominates and the shortcut is valid; a big gap means " +
+        "several modes contribute and you should trust the integrated result.")));
+  }
+
+  // truncation check — warn, do not block
+  const part = R.participation;
+  if (part && part.length) {
+    const last = part[part.length - 1];
+    const dir = a.config.base_dir || [0, 0, 1];
+    const k = dir.indexOf(Math.max(...dir.map(Math.abs))) >= 0
+      ? [Math.abs(dir[0]), Math.abs(dir[1]), Math.abs(dir[2])].indexOf(
+          Math.max(Math.abs(dir[0]), Math.abs(dir[1]), Math.abs(dir[2]))) : 2;
+    const pct = (last[k] || 0) * 100;
+    secs.push(sec("Modal truncation",
+      dl([["Cumulative effective mass", `${pct.toFixed(1)} %`],
+          ["Modes retained", String(part.length)]]),
+      pct < 90 ? el("div", { class: "hint warn" },
+        `\u26a0 Retained modes carry only ${pct.toFixed(1)} % of the effective mass ` +
+        `in the drive direction. Base excitation acts through inertia, so the ` +
+        `missing mass makes this result LOW. Extract more modes (raise f max) ` +
+        `before trusting the RMS.`)
+        : el("div", { class: "hint good" },
+        `\u2713 ${pct.toFixed(1)} % effective mass captured — truncation is acceptable.`)));
   }
   return secs;
 }

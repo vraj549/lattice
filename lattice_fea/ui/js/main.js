@@ -77,8 +77,8 @@ const A = {
     A.pickPoint(p);
   },
   addAnalysis() {
-    const type = prompt("Analysis type: static, modal, or harmonic", "static");
-    if (!["static", "modal", "harmonic"].includes(type)) return;
+    const type = prompt("Analysis type: static, modal, harmonic, or random", "static");
+    if (!["static", "modal", "harmonic", "random"].includes(type)) return;
     const a = defaultAnalysis(type);
     S.project.setup.analyses.push(a);
     S.selection = { kind: "analysis", id: a.id };
@@ -238,6 +238,18 @@ const A = {
   },
 
   refreshPanel() { refresh(); },
+
+  async loadRandom(aid) {
+    if (S.randomPending?.[aid]) return;
+    (S.randomPending ||= {})[aid] = true;
+    try {
+      const r = await api.get(`/api/projects/${S.project.id}/results/${aid}/random`);
+      (S.randomResults ||= {})[aid] = r;
+      refresh();
+    } catch (e) {
+      logLine(`random response: ${e.message}`, "badln");
+    } finally { S.randomPending[aid] = false; }
+  },
 
   restyleContours() {
     viewer.setContourStyle();
@@ -530,7 +542,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.7.0";
+const UI_BUILD = "0.8.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;

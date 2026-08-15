@@ -544,12 +544,26 @@ def write_harmonic(setup: dict, meta: dict, mesh_stats: dict, cfg: dict) -> Comm
     field_freqs = cfg.get("field_freqs") or []
     field_freqs = sorted({round(float(f), 6) for f in field_freqs if f0 <= float(f) <= f1})
 
+    # Excitation: forces defined in the tree, or rigid-base acceleration.
+    base = None
+    if cfg.get("excitation") == "base":
+        d = cfg.get("base_dir", [0.0, 0.0, 1.0])
+        n = math.sqrt(sum(c * c for c in d)) or 1.0
+        base = {"dir": [c / n for c in d],
+                "accel": float(cfg.get("base_g", 1.0)) * G_MM}   # g -> mm/s^2
+
     b = CommBuild()
     _prelude(b, setup, meta, mesh_stats, need_probes=True)
     fix = _supports(b, setup)
-    load = _loads(b, setup, meta, harmonic=True)
-    if load is None:
-        raise ValueError("Harmonic analysis needs a load to excite the structure.")
+    load = None
+    if base is None:
+        load = _loads(b, setup, meta, harmonic=True)
+        if load is None:
+            raise ValueError("Harmonic analysis needs a load to excite the structure, "
+                             "or set excitation to base acceleration.")
+    if not mesh_stats.get("probes"):
+        raise ValueError("Harmonic analysis needs at least one probe — "
+                         "response is extracted there.")
 
     modal_cfg = {"band": [0.0, 1.6 * f1]}
     _modal_core(b, setup, modal_cfg, fix)
@@ -560,8 +574,16 @@ def write_harmonic(setup: dict, meta: dict, mesh_stats: dict, cfg: dict) -> Comm
         x.result_files.append((38, "modes.csv"))
     _optional(b, "modal basis table", hfreqs)
     cara_kw = " CARA_ELEM=cara," if getattr(b, "has_beams", False) else ""
-    b.w(f"vel = CALC_VECT_ELEM(OPTION='CHAR_MECA', CHARGE=({load},),{cara_kw} CHAM_MATER=chmat)")
-    b.w("fas = ASSE_VECTEUR(VECT_ELEM=vel, NUME_DDL=nddl)")
+    if base is not None:
+        d = base["dir"]
+        b.w("# Base (support) excitation: CALC_CHAR_SEISME builds the -M.d")
+        b.w("# inertial load for a rigid base moving as one body. Response is")
+        b.w("# RELATIVE to the base — absolute motion adds the base term back.")
+        b.w("fas = CALC_CHAR_SEISME(MATR_MASS=MM, MONO_APPUI='OUI',")
+        b.w(f"                       DIRECTION=({_fmt(d[0])}, {_fmt(d[1])}, {_fmt(d[2])}))")
+    else:
+        b.w(f"vel = CALC_VECT_ELEM(OPTION='CHAR_MECA', CHARGE=({load},),{cara_kw} CHAM_MATER=chmat)")
+        b.w("fas = ASSE_VECTEUR(VECT_ELEM=vel, NUME_DDL=nddl)")
     b.w()
     b.w("PROJ_BASE(BASE=modes, STOCKAGE='PLEIN',")
     b.w("          MATR_ASSE_GENE=(_F(MATRICE=CO('KG'), MATR_ASSE=MK),")
@@ -571,10 +593,11 @@ def write_harmonic(setup: dict, meta: dict, mesh_stats: dict, cfg: dict) -> Comm
     vals = ", ".join(_fmt(f) for f in freqs)
     b.w(f"lfr = DEFI_LIST_REEL(VALE=({vals},))")
     b.w()
+    coef = base["accel"] if base else 1.0
     b.w("dyng = DYNA_VIBRA(TYPE_CALCUL='HARM', BASE_CALCUL='GENE',")
     b.w("                  MATR_MASS=MG, MATR_RIGI=KG, LIST_FREQ=lfr,")
     b.w(f"                  AMOR_MODAL=_F(AMOR_REDUIT=({_fmt(zeta)},)),")
-    b.w("                  EXCIT=(_F(VECT_ASSE_GENE=FG, COEF_MULT=1.0),))")
+    b.w(f"                  EXCIT=(_F(VECT_ASSE_GENE=FG, COEF_MULT={_fmt(coef)}),))")
     b.w()
 
     probes = mesh_stats.get("probes", [])
@@ -607,7 +630,34 @@ def write_harmonic(setup: dict, meta: dict, mesh_stats: dict, cfg: dict) -> Comm
 
 # --------------------------------------------------------------------------
 
-WRITERS = {"static": write_static, "modal": write_modal, "harmonic": write_harmonic}
+def write_random(setup: dict, meta: dict, mesh_stats: dict, cfg: dict) -> CommBuild:
+    """Random vibration = a unit-g base sweep spanning the input spectrum.
+
+    Driving with exactly 1 g makes the exported FRF read directly as
+    transmissibility, and the response PSD is then |T|^2 * PSD_in, integrated
+    in random_vib.py. That keeps the solver side identical to the harmonic
+    case which is already proven, instead of relying on a separate random
+    operator chain.
+    """
+    spec = cfg.get("spec") or []
+    pts = sorted((float(a), float(b)) for a, b in spec if float(a) > 0)
+    if len(pts) < 2:
+        raise ValueError("Random vibration needs at least two PSD breakpoints.")
+    f0, f1 = pts[0][0], pts[-1][0]
+    hcfg = {
+        **cfg,
+        "excitation": "base",
+        "base_g": 1.0,                      # unit input => transmissibility
+        "f_min": f0, "f_max": f1,
+        "spacing": "log",
+        "n_steps": int(cfg.get("n_steps", 600)),
+        "field_freqs": cfg.get("field_freqs") or [],
+    }
+    return write_harmonic(setup, meta, mesh_stats, hcfg)
+
+
+WRITERS = {"static": write_static, "modal": write_modal,
+           "harmonic": write_harmonic, "random": write_random}
 
 
 def build_run(analysis: dict, setup: dict, meta: dict, mesh_stats: dict,

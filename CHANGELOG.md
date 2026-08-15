@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.8.0
+
+**Base excitation and random vibration.**
+
+- **Harmonic gains an excitation mode**: force (loads in the tree) or **base
+  acceleration**. Base uses `CALC_CHAR_SEISME(MONO_APPUI='OUI')` to build the
+  -M.d inertial load, so every fixed support becomes the moving fixture. Drive
+  at 1 g and the result reads directly as transmissibility.
+- **Random vibration analysis type**: enter the qualification spec as
+  (Hz, g^2/Hz) breakpoints, log-log interpolated. Solved as a 1 g base sweep
+  across the spectrum; the response PSD is `|T(f)|^2 * PSD_in(f)`, integrated
+  for overall g RMS and 3-sigma.
+- Results: RMS / 3-sigma per probe, response-PSD plot against the input
+  spectrum, and a **Miles' equation cross-check** per mode — agreement means a
+  single mode dominates and the shortcut is valid, a gap means it is not.
+- **Modal-truncation check.** Base excitation acts through inertia, so missing
+  effective mass makes the answer low while looking normal. The cumulative
+  effective mass in the drive direction is reported, with a warning below 90 %.
+
+The random maths lives in `random_vib.py` and is computed from the swept
+transmissibility rather than a separate solver operator, so it is unit-tested:
+transmissibility recovered from a relative-displacement FRF matches closed-form
+SDOF base-excitation theory to 0.2 %, peak transmissibility equals Q, a flat
+spectrum integrates to sqrt(W*df), and the full integration agrees with Miles
+for an isolated mode. 8 new tests, 28 total.
+
+Also: the demo solver now models base excitation (relative displacement for a
+1 g input) instead of fabricating an arbitrary FRF, so demo-mode random results
+are physically sensible rather than absurd.
+
 ## 0.7.0
 
 - **Light mode is now the default**, with a toggle in the app bar that is
