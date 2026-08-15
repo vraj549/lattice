@@ -10,8 +10,11 @@ import tempfile
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import (FileResponse, JSONResponse, Response,
+                               StreamingResponse)
 from fastapi.staticfiles import StaticFiles
+
+import hashlib
 
 from . import __version__, comm_writer, config, random_vib, results
 from .materials import LIBRARY
@@ -46,6 +49,32 @@ def run_gmsh_worker(job, args: dict) -> None:
             os.unlink(argfile)
         except OSError:
             pass
+
+
+def solve_signature(analysis: dict, setup: dict, mesh_stats: dict) -> str:
+    """Fingerprint of everything that changes the answer.
+
+    Stored with the results and re-checked when they are served, so results
+    that no longer correspond to the current model are reported as OUT OF
+    DATE rather than silently presented as current. Presenting stale numbers
+    as live is the one failure mode that produces wrong engineering
+    conclusions, so it is detected rather than left to the user to remember.
+    """
+    payload = {
+        "analysis": {k: analysis.get(k) for k in ("type", "config", "supports", "loads")},
+        "materials": setup.get("materials"),
+        "assignments": setup.get("assignments"),
+        "bolts": setup.get("bolts"),
+        "ties": setup.get("ties"),
+        "probes": setup.get("probes"),
+        "mesh": {"nodes": mesh_stats.get("nodes"),
+                 "elements": mesh_stats.get("elements"),
+                 "groups": mesh_stats.get("face_groups"),
+                 "bolts": mesh_stats.get("bolts"),
+                 "remotes": mesh_stats.get("remotes")},
+    }
+    blob = json.dumps(payload, sort_keys=True, default=str).encode()
+    return hashlib.sha256(blob).hexdigest()[:16]
 
 
 def create_app(workspace: str = "workspace") -> FastAPI:
@@ -216,6 +245,7 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             meta = results.build_results(run_dir, geo["bbox"],
                                          mesh_stats.get("geo_volume"))
             meta["exit_code"] = rc
+            meta["signature"] = solve_signature(analysis, proj["setup"], mesh_stats)
             store.write_json(pid, f"runs/{aid}/meta.json", meta)
             if rc != 0 and not meta["fields"] and not meta["tables"]:
                 raise RuntimeError(f"solver failed (exit {rc}) — see log")
@@ -231,10 +261,44 @@ def create_app(workspace: str = "workspace") -> FastAPI:
 
     @app.get("/api/projects/{pid}/results/{aid}")
     def result_meta(pid: str, aid: str):
-        _project(pid)
+        proj = _project(pid)
         if not store.exists(pid, f"runs/{aid}/meta.json"):
             raise HTTPException(404, "no results for this analysis")
-        return store.read_json(pid, f"runs/{aid}/meta.json")
+        meta = store.read_json(pid, f"runs/{aid}/meta.json")
+        analysis = next((a for a in proj["setup"].get("analyses", [])
+                         if a["id"] == aid), None)
+        mesh_stats = (store.read_json(pid, "mesh/stats.json")
+                      if store.exists(pid, "mesh/stats.json") else {})
+        if analysis is not None:
+            now = solve_signature(analysis, proj["setup"], mesh_stats)
+            meta["stale"] = bool(meta.get("signature")) and meta["signature"] != now
+            meta["no_signature"] = not meta.get("signature")
+        return meta
+
+    @app.get("/api/projects/{pid}/results-status")
+    def results_status(pid: str):
+        """Which analyses have results, and whether they still match the model.
+
+        Deliberately tiny: the UI re-checks this after every edit so the tree
+        badges stay honest, and re-reading full result payloads (an FRF is
+        hundreds of kB) for that would be absurd.
+        """
+        proj = _project(pid)
+        mesh_stats = (store.read_json(pid, "mesh/stats.json")
+                      if store.exists(pid, "mesh/stats.json") else {})
+        out = {}
+        for a in proj["setup"].get("analyses", []):
+            aid = a["id"]
+            if not store.exists(pid, f"runs/{aid}/meta.json"):
+                continue
+            meta = store.read_json(pid, f"runs/{aid}/meta.json")
+            sig = meta.get("signature")
+            out[aid] = {
+                "has_results": True,
+                "no_signature": not sig,
+                "stale": bool(sig) and sig != solve_signature(a, proj["setup"], mesh_stats),
+            }
+        return out
 
     @app.post("/api/projects/{pid}/results/{aid}/reparse")
     def reparse(pid: str, aid: str):
@@ -257,6 +321,76 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         meta["reparsed"] = True
         store.write_json(pid, f"runs/{aid}/meta.json", meta)
         return {"ok": True, "found": produced, "meta": meta}
+
+    @app.get("/api/projects/{pid}/results/{aid}/export")
+    def export_results(pid: str, aid: str, what: str = "all"):
+        """Everything from a run as CSV, so numbers can leave the tool.
+
+        `what`: tables | frf | random | nodes | all. Returns text/csv with
+        blocks separated by blank lines when several are requested.
+        """
+        proj = _project(pid)
+        if not store.exists(pid, f"runs/{aid}/meta.json"):
+            raise HTTPException(404, "no results for this analysis")
+        meta = store.read_json(pid, f"runs/{aid}/meta.json")
+        analysis = next((a for a in proj["setup"].get("analyses", [])
+                         if a["id"] == aid), None)
+        name = (analysis or {}).get("name") or aid
+        mesh_stats = (store.read_json(pid, "mesh/stats.json")
+                      if store.exists(pid, "mesh/stats.json") else {})
+        stale = False
+        if analysis is not None and meta.get("signature"):
+            stale = meta["signature"] != solve_signature(analysis, proj["setup"], mesh_stats)
+        out = [f"# Lattice export — {proj.get('name')} / {name}",
+               f"# analysis type: {(analysis or {}).get('type')}",
+               f"# units: mm, N, MPa, Hz",
+               # exported numbers outlive the session — say on the file itself
+               # whether they still matched the model when it was written
+               "# status: OUT OF DATE — the model changed after this run" if stale
+               else "# status: current for the model as saved",
+               ""]
+
+        if what in ("all", "tables"):
+            for key, blocks in (meta.get("tables") or {}).items():
+                for bi, blk in enumerate(blocks):
+                    out.append(f"# table: {key}" + (f" [{bi}]" if bi else ""))
+                    out.append(",".join(str(c) for c in blk["columns"]))
+                    for row in blk["rows"]:
+                        out.append(",".join("" if v is None else str(v) for v in row))
+                    out.append("")
+
+        if what in ("all", "frf") and meta.get("frf"):
+            probes = proj["setup"].get("probes", [])
+            for c in meta["frf"]:
+                pname = probes[c["probe"] - 1]["name"] if c["probe"] - 1 < len(probes) else f"P{c['probe']}"
+                out.append(f"# FRF: {pname} {c['comp']}")
+                out.append("freq_Hz,module,phase_rad")
+                ph = c.get("phase") or []
+                for i, f in enumerate(c["freq"]):
+                    out.append(f"{f},{c['module'][i]},{ph[i] if i < len(ph) else ''}")
+                out.append("")
+
+        if what in ("all", "random") and analysis and analysis.get("type") == "random":
+            cfg = analysis.get("config", {})
+            spec = cfg.get("spec") or []
+            if len(spec) >= 2 and meta.get("frf"):
+                base_g = float(cfg.get("base_g", 1.0))
+                out.append("# random response")
+                out.append("probe,comp,grms,three_sigma")
+                for c in meta["frf"]:
+                    t = random_vib.transmissibility(
+                        c["freq"], c["module"], c.get("phase") or [], base_g)
+                    r = random_vib.response(c["freq"], t, spec, base_g)
+                    out.append(f"{c['probe']},{c['comp']},{r['grms']:.6g},{r['three_sigma']:.6g}")
+                out.append("")
+
+        if what == "nodes":
+            raise HTTPException(422, "per-node export: request a specific field via /field")
+
+        body = "\n".join(out) + "\n"
+        fn = f"{proj.get('name', 'lattice')}-{name}".replace(" ", "_")
+        return Response(content=body, media_type="text/csv",
+                        headers={"Content-Disposition": f'attachment; filename="{fn}.csv"'})
 
     @app.get("/api/projects/{pid}/results/{aid}/random")
     def random_response(pid: str, aid: str):
@@ -313,6 +447,40 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                 proj["geometry"]["bbox"], mesh_stats.get("geo_volume")))
         except Exception as e:  # noqa: BLE001
             raise HTTPException(422, f"field read failed: {e}")
+
+    @app.get("/api/projects/{pid}/results/{aid}/field.csv")
+    def result_field_csv(pid: str, aid: str, name: str, step: str):
+        """Every nodal value of one field/step, for post-processing elsewhere.
+
+        All components are written, not just the one on screen — re-exporting
+        per component to rebuild a tensor is not something anyone should have
+        to do."""
+        proj = _project(pid)
+        run_dir = store.path(pid, "runs", aid)
+        mesh_stats = (store.read_json(pid, "mesh/stats.json")
+                      if store.exists(pid, "mesh/stats.json") else {})
+        analysis = next((a for a in proj["setup"].get("analyses", [])
+                         if a["id"] == aid), None)
+        label = (analysis or {}).get("name") or aid
+
+        def gen():
+            yield f"# Lattice nodal export — {proj.get('name')} / {label}\n"
+            yield f"# field: {name}  step: {step}\n"
+            yield "# units: mm, MPa\n"
+            try:
+                for line in results.field_csv_rows(
+                        run_dir, name, step, proj["geometry"]["bbox"],
+                        mesh_stats.get("geo_volume")):
+                    yield line
+            except Exception as e:  # noqa: BLE001
+                # the response has already started, so the failure has to be
+                # reported inside the file rather than as a status code
+                yield f"# EXPORT FAILED: {e}\n"
+
+        fn = f"{proj.get('name', 'lattice')}-{label}-{name}".replace(" ", "_")
+        return StreamingResponse(
+            gen(), media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{fn}.csv"'})
 
     # ---------------- jobs ----------------
     @app.get("/api/jobs/{jid}")

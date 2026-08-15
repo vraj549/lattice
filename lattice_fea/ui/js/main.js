@@ -1,6 +1,6 @@
 import { api } from "./api.js";
 import { Viewer } from "./viewer.js";
-import { renderTree, renderPanel, defaultAnalysis, el } from "./ui.js";
+import { renderTree, renderPanel, defaultAnalysis, solutionItems, el } from "./ui.js";
 import { renderLegend, fmtVal, contourStyle } from "./colormap.js";
 
 const uid = () => Math.random().toString(36).slice(2, 8);
@@ -24,13 +24,25 @@ let pickCtx = null;          // {item, key} | {probe}
 
 // ---------------- actions ----------------
 const A = {
+  // Selecting is now only selecting. It used to jump straight into results
+  // and switch the viewport, so you could not open an analysis to edit it.
   select(kind, id) {
     S.selection = { kind, id };
-    if (kind === "analysis" && S.runStatus[id] === "done" && !S.results[id]) {
-      A.openResults(id);
-      return;
-    }
+    if (kind === "result") A.ensureActiveResult(String(id).split("|")[0]);
     refresh();
+  },
+
+  /** Point the result controls at this analysis, defaulting to its first
+   *  real field. Without this, opening a result panel left activeResult null
+   *  and every contour action quietly no-opped. */
+  ensureActiveResult(aid) {
+    if (S.activeResult?.aid === aid) return S.activeResult;
+    const f = S.results[aid]?.fields?.find((x) => x.part !== "I");
+    S.activeResult = {
+      aid, field: f?.name, stepIdx: 0, defMult: 1,
+      comp: f?.kind === "DEPL" ? "MAG" : (f?.comps?.[0] || ""),
+    };
+    return S.activeResult;
   },
 
   mutate(fn) { fn(); scheduleSave(); refresh(); },
@@ -46,11 +58,17 @@ const A = {
     return { analysis: null, item: null };
   },
   currentAnalysis() {
-    const setup = S.project.setup;
+    const setup = S.project?.setup;
+    if (!setup) return null;
+    const list = setup.analyses || [];
     const { kind, id } = S.selection;
-    if (kind === "analysis") return setup.analyses.find((a) => a.id === id);
+    if (kind === "analysis") return list.find((a) => a.id === id);
+    if (kind === "result") {
+      const aid = String(id).split("|")[0];
+      return list.find((a) => a.id === aid);
+    }
     if (kind === "support" || kind === "load") return A.findAnalysisOf(kind, id).analysis;
-    return setup.analyses[0];
+    return list[0];
   },
   addSupport(aid) {
     const a = (S.project.setup.analyses || []).find((x) => x.id === aid) || A.currentAnalysis();
@@ -97,10 +115,12 @@ const A = {
     A.mutate(() => {});
     A.pickPoint(p);
   },
-  addAnalysis() {
-    const type = prompt("Analysis type: static, modal, harmonic, or random", "static");
-    if (!["static", "modal", "harmonic", "random"].includes(type)) return;
+  addAnalysis() { showAnalysisDialog(); },
+
+  createAnalysis(type, { name, excitation } = {}) {
     const a = defaultAnalysis(type);
+    if (name) a.name = name;
+    if (type === "harmonic" && excitation) a.config.excitation = excitation;
     a.supports = []; a.loads = [];
     S.project.setup.analyses.push(a);
     S.selection = { kind: "analysis", id: a.id };
@@ -173,6 +193,8 @@ const A = {
         setView("mesh");
         viewer.showMeshPreview(S.meshData.skin);
         updateStat();
+        // a new mesh invalidates every result that was computed on the old one
+        await refreshResultStatus();
         refresh();
       });
     } catch (e) { logLine(`mesh: ${e.message}`, "badln"); }
@@ -211,17 +233,50 @@ const A = {
     } catch (e) { logLine(`recover failed: ${e.message}`, "badln"); }
   },
 
-  async openResults(aid) {
+  /** Load a run's metadata. `select` picks the first solution item in the
+   *  tree — wanted after a run finishes, unwanted when a panel is merely
+   *  filling in data for a row the user already clicked. */
+  async openResults(aid, { select = true, show = true } = {}) {
+    if (S.resultsPending?.[aid]) return;
+    (S.resultsPending ||= {})[aid] = true;
     try {
       S.results[aid] = await api.get(`/api/projects/${S.project.id}/results/${aid}`);
       S.runStatus[aid] = "done";
-      S.selection = { kind: "analysis", id: aid };
-      const f = S.results[aid].fields?.find((x) => x.part !== "I");
-      S.activeResult = { aid, field: f?.name, comp: f?.kind === "DEPL" ? "MAG" : (f?.comps[0] || ""),
-                         stepIdx: 0, defMult: 1 };
+      S.activeResult = null;
+      const f = A.ensureActiveResult(aid).field
+        ? S.results[aid].fields.find((x) => x.name === S.activeResult.field) : null;
+      if (select) {
+        const a = S.project.setup.analyses.find((x) => x.id === aid);
+        const first = a ? solutionItems(S, a)[0] : null;
+        S.selection = first ? { kind: "result", id: `${aid}|${first.what}` }
+                            : { kind: "analysis", id: aid };
+      }
       refresh();
-      if (f) await A.loadField(aid);
-    } catch (e) { logLine(`results: ${e.message}`, "badln"); }
+      if (f && show) await A.loadField(aid);
+    } catch (e) {
+      logLine(`results: ${e.message}`, "badln");
+    } finally { S.resultsPending[aid] = false; }
+  },
+
+  /** Hand the browser a CSV. The endpoint sets Content-Disposition, so a
+   *  plain navigation downloads it rather than replacing the app. */
+  exportResults(aid, what = "all") {
+    const url = `/api/projects/${S.project.id}/results/${aid}/export?what=${encodeURIComponent(what)}`;
+    downloadUrl(url);
+    logLine(`export: ${what} — check your downloads folder.`);
+  },
+
+  /** Every nodal value of the field currently on screen. */
+  exportField(aid) {
+    const R = S.activeResult;
+    const meta = S.results[aid];
+    if (!R || R.aid !== aid || !meta) { logLine("Show a field first.", "warnln"); return; }
+    const f = meta.fields.find((x) => x.name === R.field) || meta.fields[0];
+    if (!f) return;
+    const step = f.steps[Math.min(R.stepIdx || 0, f.steps.length - 1)];
+    downloadUrl(`/api/projects/${S.project.id}/results/${aid}/field.csv` +
+                `?name=${encodeURIComponent(f.name)}&step=${encodeURIComponent(step.key)}`);
+    logLine(`export: ${f.name} nodal values — this can be a large file.`);
   },
 
   setResultField(aid, patch) {
@@ -238,9 +293,9 @@ const A = {
   },
 
   async loadField(aid) {
-    const R = S.activeResult;
-    if (!R || R.aid !== aid) return;
+    const R = A.ensureActiveResult(aid);
     const meta = S.results[aid];
+    if (!meta) return;
     const f = meta.fields.find((x) => x.name === R.field) || meta.fields[0];
     if (!f) return;
     const step = f.steps[Math.min(R.stepIdx || 0, f.steps.length - 1)];
@@ -343,6 +398,86 @@ const A = {
   },
 };
 
+function downloadUrl(url) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.rel = "noopener";
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+
+// ---------------- new-analysis dialog ----------------
+// A prompt() asking the user to type "harmonic" was the least defensible
+// thing in the interface: no discoverability, no explanation of what each
+// study does, and a typo silently did nothing.
+
+const ANALYSIS_TYPES = [
+  { type: "static", name: "Static structural",
+    blurb: "Stress and deflection under steady loads. Bolt preload acts here." },
+  { type: "modal", name: "Modal",
+    blurb: "Natural frequencies and mode shapes. Supports only — no loads." },
+  { type: "harmonic", name: "Harmonic response",
+    blurb: "Sine sweep for amplification and Q. Driven by force, or by base " +
+           "acceleration the way a shaker test is run." },
+  { type: "random", name: "Random vibration",
+    blurb: "PSD in g²/Hz, response in g RMS and 3σ. Base-driven; needs a probe." },
+];
+
+function showAnalysisDialog() {
+  let type = "static";
+  let excitation = "base";
+  const nameIn = el("input", { type: "text", placeholder: "optional" });
+
+  const exRow = el("div", { class: "sec", hidden: true },
+    el("span", { class: "lbl" }, "Driven by"),
+    el("label", { class: "frm" }, "",
+      el("select", { onchange: (e) => { excitation = e.target.value; } },
+        el("option", { value: "base" }, "Base acceleration (shaker)"),
+        el("option", { value: "force" }, "Force applied to faces"))),
+    el("div", { class: "hint" },
+      "A base-driven study takes no applied loads, so Lattice will not offer " +
+      "them in the tree. You can change this later."));
+
+  const cards = ANALYSIS_TYPES.map((t) => {
+    const card = el("label", { class: "optcard" },
+      el("input", { type: "radio", name: "atype", value: t.type,
+        onchange: () => {
+          type = t.type;
+          exRow.hidden = t.type !== "harmonic";
+          for (const c of cards) c.setAttribute("aria-selected", String(c === card));
+          if (!nameIn.value.trim() || ANALYSIS_TYPES.some((x) => x.name === nameIn.value)) {
+            nameIn.value = t.name;
+          }
+        } }),
+      el("div", {},
+        el("b", {}, t.name),
+        el("div", { class: "hint" }, t.blurb)));
+    return card;
+  });
+  cards[0].querySelector("input").checked = true;
+  cards[0].setAttribute("aria-selected", "true");
+  nameIn.value = ANALYSIS_TYPES[0].name;
+
+  const create = () => {
+    closeDialog();
+    A.createAnalysis(type, { name: nameIn.value.trim(), excitation });
+  };
+
+  openDialog(el("div", {},
+    el("h1", { class: "modal-title" }, "New analysis"),
+    el("p", { class: "modal-sub" },
+      "Each analysis owns its own supports and loads, so only what that study " +
+      "needs appears under it."),
+    el("div", { class: "optcards" }, ...cards),
+    exRow,
+    el("div", { class: "sec" },
+      el("label", { class: "frm" }, "Name", nameIn)),
+    el("div", { class: "btnrow" },
+      el("button", { class: "btn btn-accent", onclick: create }, "Create analysis"),
+      el("button", { class: "btn", onclick: () => closeDialog() }, "Cancel"))));
+}
+
 // ---------------- pick bar ----------------
 function showPickBar(msg) {
   const bar = document.getElementById("pickBar");
@@ -426,8 +561,34 @@ function scheduleSave() {
 async function saveNow() {
   clearTimeout(S.saveTimer);
   if (!S.project) return;
-  try { await api.put(`/api/projects/${S.project.id}/setup`, S.project.setup); }
-  catch (e) { logLine(`save failed: ${e.message}`, "badln"); }
+  try {
+    await api.put(`/api/projects/${S.project.id}/setup`, S.project.setup);
+    await refreshResultStatus();
+  } catch (e) { logLine(`save failed: ${e.message}`, "badln"); }
+}
+
+/** Re-check whether existing results still match the model.
+ *
+ *  The server owns the comparison — a second implementation here would
+ *  eventually disagree with it, and the whole point of the badge is that it
+ *  is trustworthy. */
+async function refreshResultStatus() {
+  if (!S.project) return;
+  try {
+    const st = await api.get(`/api/projects/${S.project.id}/results-status`);
+    let changed = false;
+    for (const [aid, s] of Object.entries(st)) {
+      const meta = S.results[aid];
+      if (!meta) continue;
+      if (meta.stale !== s.stale) { meta.stale = s.stale; changed = true; }
+      meta.no_signature = s.no_signature;
+    }
+    // an analysis whose results vanished from disk should stop claiming them
+    for (const aid of Object.keys(S.results)) {
+      if (!st[aid] && S.results[aid]) { delete S.results[aid]; changed = true; }
+    }
+    if (changed) refresh();
+  } catch { /* status is advisory; never let it break editing */ }
 }
 
 // ---------------- views ----------------
@@ -450,8 +611,12 @@ document.getElementById("viewTabs").addEventListener("click", (e) => {
   const b = e.target.closest(".vtab");
   if (!b) return;
   if (b.dataset.view === "results") {
-    const done = Object.entries(S.runStatus).find(([, st]) => st === "done");
-    if (done) A.openResults(done[0]);
+    // prefer results for whatever the user is looking at, not an arbitrary run
+    const cur = A.currentAnalysis?.();
+    const aid = (cur && S.results[cur.id]) ? cur.id
+      : Object.keys(S.results).find((k) => S.results[k]);
+    if (aid) A.openResults(aid);
+    else logLine("No results yet — run an analysis first.", "warnln");
     return;
   }
   setView(b.dataset.view);
@@ -513,13 +678,15 @@ async function openProject(pid) {
 
   try { S.meshData = await api.get(`/api/projects/${pid}/mesh`); } catch { /* not meshed */ }
 
-  // discover existing results
-  for (const a of S.project.setup.analyses) {
-    try {
-      S.results[a.id] = await api.get(`/api/projects/${pid}/results/${a.id}`);
-      S.runStatus[a.id] = "done";
-    } catch { /* no results yet */ }
-  }
+  // Discover existing results. Ask which analyses have any first, rather than
+  // probing each one and eating a 404 for every analysis that has never run.
+  try {
+    const status = await api.get(`/api/projects/${pid}/results-status`);
+    for (const aid of Object.keys(status)) {
+      S.results[aid] = await api.get(`/api/projects/${pid}/results/${aid}`);
+      S.runStatus[aid] = "done";
+    }
+  } catch (e) { logLine(`results: ${e.message}`, "warnln"); }
   updateStat();
   refresh();
 }
@@ -546,6 +713,131 @@ async function showOverlay() {
     item.append(del);
     list.append(item);
   }
+}
+
+// ---------------- resizable panes ----------------
+const PANE = { minL: 150, maxL: 560, minR: 200, maxR: 680, minViewport: 300 };
+
+function paneWidths() {
+  const body = document.getElementById("body");
+  const cs = getComputedStyle(body);
+  return {
+    body,
+    total: body.clientWidth || window.innerWidth,
+    L: parseFloat(cs.getPropertyValue("--wL")) || 232,
+    R: parseFloat(cs.getPropertyValue("--wR")) || 300,
+  };
+}
+
+/** Keep the 3D view usable no matter what widths were saved.
+ *
+ *  Pane sizes persist across sessions, so a layout set up on a wide monitor
+ *  would otherwise reopen on a laptop with the viewport crushed to nothing —
+ *  and the splitters pushed off-screen, leaving no way to undo it. */
+function clampPanes() {
+  const { body, total, L, R } = paneWidths();
+  let l = Math.min(Math.max(L, PANE.minL), PANE.maxL);
+  let r = Math.min(Math.max(R, PANE.minR), PANE.maxR);
+  const spare = total - PANE.minViewport - 8;   // 8px for the two splitters
+  if (l + r > spare) {
+    const scale = Math.max(spare, PANE.minL + PANE.minR) / (l + r);
+    l = Math.max(Math.floor(l * scale), PANE.minL);
+    r = Math.max(Math.floor(r * scale), PANE.minR);
+  }
+  body.style.setProperty("--wL", `${Math.round(l)}px`);
+  body.style.setProperty("--wR", `${Math.round(r)}px`);
+}
+
+function savePanes() {
+  const body = document.getElementById("body");
+  localStorage.setItem("lattice-panes", JSON.stringify({
+    wL: body.style.getPropertyValue("--wL"),
+    wR: body.style.getPropertyValue("--wR"),
+    logH: document.getElementById("logDrawer").style.height,
+  }));
+}
+
+function initSplitters() {
+  const body = document.getElementById("body");
+  const saved = JSON.parse(localStorage.getItem("lattice-panes") || "{}");
+  if (saved.wL) body.style.setProperty("--wL", saved.wL);
+  if (saved.wR) body.style.setProperty("--wR", saved.wR);
+  if (saved.logH) document.getElementById("logDrawer").style.height = saved.logH;
+  clampPanes();
+  window.addEventListener("resize", () => { clampPanes(); viewer?.resize(); });
+
+  const drag = (el, onMove, vertical) => {
+    el.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+      el.classList.add("dragging");
+      document.body.classList.add(vertical ? "resizing-v" : "resizing");
+      const move = (ev) => onMove(ev);
+      const up = () => {
+        el.classList.remove("dragging");
+        document.body.classList.remove("resizing", "resizing-v");
+        el.removeEventListener("pointermove", move);
+        el.removeEventListener("pointerup", up);
+        savePanes();
+        viewer.resize();
+      };
+      el.addEventListener("pointermove", move);
+      el.addEventListener("pointerup", up);
+    });
+  };
+
+  drag(document.getElementById("splitL"), (e) => {
+    const { total, R } = paneWidths();
+    const max = Math.min(PANE.maxL, total - R - PANE.minViewport - 8);
+    const w = Math.min(Math.max(e.clientX - body.getBoundingClientRect().left, PANE.minL),
+                       Math.max(max, PANE.minL));
+    body.style.setProperty("--wL", w + "px");
+    viewer.resize();
+  });
+  drag(document.getElementById("splitR"), (e) => {
+    const { total, L } = paneWidths();
+    const max = Math.min(PANE.maxR, total - L - PANE.minViewport - 8);
+    const w = Math.min(Math.max(body.getBoundingClientRect().right - e.clientX, PANE.minR),
+                       Math.max(max, PANE.minR));
+    body.style.setProperty("--wR", w + "px");
+    viewer.resize();
+  });
+  // The separators are focusable, so they have to be operable from the
+  // keyboard too — arrows nudge, Home resets to the default layout.
+  const keys = (id, apply) => {
+    document.getElementById(id).addEventListener("keydown", (e) => {
+      const step = e.shiftKey ? 40 : 8;
+      if (e.key === "ArrowLeft" || e.key === "ArrowUp") apply(-step);
+      else if (e.key === "ArrowRight" || e.key === "ArrowDown") apply(step);
+      else if (e.key === "Home") apply(null);
+      else return;
+      e.preventDefault();
+      clampPanes();
+      viewer.resize();
+      savePanes();
+    });
+  };
+  keys("splitL", (d) => {
+    const { L } = paneWidths();
+    body.style.setProperty("--wL", (d === null ? 232 : L + d) + "px");
+  });
+  keys("splitR", (d) => {
+    const { R } = paneWidths();
+    body.style.setProperty("--wR", (d === null ? 300 : R - d) + "px");
+  });
+  keys("splitLog", (d) => {
+    const log = document.getElementById("logDrawer");
+    const h = log.getBoundingClientRect().height;
+    log.style.height = (d === null ? 148 : Math.max(60, h - d)) + "px";
+  });
+
+  drag(document.getElementById("splitLog"), (e) => {
+    const log = document.getElementById("logDrawer");
+    if (log.dataset.open === "false") log.dataset.open = "true";
+    const h = Math.min(Math.max(window.innerHeight - e.clientY, 60), window.innerHeight * 0.6);
+    log.style.height = h + "px";
+    viewer.resize();
+  }, true);
 }
 
 document.getElementById("btnProjects").addEventListener("click", showOverlay);
@@ -691,7 +983,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.10.0";
+const UI_BUILD = "0.11.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;
@@ -793,6 +1085,7 @@ async function boot() {
 
   updateSolverChip();
   checkVersionSkew();
+  initSplitters();
   await showOverlay();
 }
 

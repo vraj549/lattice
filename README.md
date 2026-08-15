@@ -150,14 +150,31 @@ ncpus = 6
    bonded — no contact setup needed. The Connections tree entry lists what got bonded.
 2. **Materials** — click each solid, pick from the library (or note the checks panel
    nagging you).
-3. **Supports / Loads / Probes** — add one, then click faces (or a point) in the
-   viewport and press *Done*. Faces stay tinted violet (supports) / amber (loads).
-4. **Mesh** — set a target size or take the default, *Generate mesh*. Watch the
+3. **Analyses** — *+ add* opens a dialog: static, modal, harmonic or random.
+   Each analysis owns its own supports and loads, so only what that study needs
+   appears beneath it. A base-driven harmonic or a random study is driven
+   through its supports, so it offers no loads at all.
+4. **Supports / Loads / Probes** — add one under an analysis, then click faces
+   (or a point) in the viewport and press *Done*. Faces stay tinted violet
+   (supports) / amber (loads).
+5. **Mesh** — set a target size or take the default, *Generate mesh*. Watch the
    node/DOF count and the memory estimate against your solver limit.
-5. **Analyses** — *+ add* → static, modal, or harmonic → configure → *Run analysis*.
-   The job log streams the real code_aster output.
-6. **Results** — contours with deformation scaling, animated mode shapes with
-   effective-mass table, FRF module/phase curves at your probes, reaction-force check.
+6. **Run analysis** — the job log streams the real code_aster output.
+7. **Results** appear as their own branch under the analysis: contours with
+   deformation scaling and banded colour, mode shapes with the effective-mass
+   table, FRF curves with annotated peaks and Q, random-vibration g RMS with a
+   Miles' cross-check, bolt end forces, reactions. Every panel exports to CSV,
+   and *Export nodal values* dumps the whole field on screen.
+
+Panes are resizable — drag the separators, or focus one and use the arrow keys
+(Shift for coarse steps, Home to reset).
+
+**Status symbols.** Each analysis carries a mark in the tree: green ✓ results
+are current, amber ! **out of date**, red ✕ the run failed. Out of date means
+the mesh, materials, connections or boundary conditions changed after the run —
+Lattice fingerprints all of it and re-checks as you edit, so results that no
+longer describe the model on screen say so instead of being presented as
+current.
 
 Try it immediately with `examples/bracket_assembly.step` (regenerate with
 `python examples/make_examples.py`).

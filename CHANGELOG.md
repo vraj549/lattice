@@ -1,5 +1,81 @@
 # Changelog
 
+## 0.11.0
+
+Interface overhaul: results became a place you go, not a wall you scroll, and
+the tool now tells you when what you are looking at no longer matches the model.
+
+### Are these results still valid?
+
+- **Every run is fingerprinted.** A SHA-256 over the analysis type and config,
+  its supports and loads, materials, assignments, bolts, ties, probes and the
+  mesh is stamped into the results when they are written, and re-checked
+  whenever they are served. Change any of it and the analysis is flagged
+  **out of date**.
+- **Status symbols in the tree**: green `✓` current, amber `!` out of date,
+  amber pulse running, red `✕` failed. The Mesh row carries the same `!` when
+  boundary conditions have moved on since it was generated.
+- Any panel showing stale numbers leads with an **Out of date** banner and a
+  Re-run button. Results written before fingerprinting existed say so rather
+  than claiming to be current.
+- A `results-status` endpoint re-checks this after every edit, so the badges
+  keep up while you work. The comparison lives on the server only — a second
+  implementation in the browser would eventually disagree with it.
+
+### Results you can actually use
+
+- **Each output is its own tree item and its own panel** — Contours, Modes,
+  Frequency response, Random response, Bolt forces, Reactions, Solver
+  messages. They used to be concatenated below the Run button, so finding a
+  number meant scrolling past every other number.
+- **Exports everywhere.** Per-panel and whole-run CSV of every table, FRF and
+  random-response result, plus **nodal values for the field on screen** (all
+  components, streamed, so it works on the mesh you actually ran). Exported
+  files carry a header line recording whether they were current when written.
+
+### Choosing an analysis
+
+- The `prompt()` asking you to type "harmonic" is gone. A **dialog** describes
+  what each study does, and for a harmonic sweep asks up front whether it is
+  driven by force or by base acceleration.
+- **Inapplicable options are not offered.** A base-driven harmonic or a random
+  vibration study shows no Loads branch and no "+ add" — instead it shows what
+  is driving it (`Base excitation · 1 g · Z`, `PSD 6.06 g · Z`). Modal has
+  neither.
+- Removed a warning that said base excitation was not implemented. It has been
+  since 0.9; the sweep guidance now follows the excitation you selected.
+
+### Layout
+
+- **Resizable panes** with draggable separators, persisted across sessions,
+  keyboard-operable (arrows nudge, Shift for coarse, Home resets). Saved
+  widths are clamped to the current window, so a layout from a wide monitor
+  cannot reopen with the viewport crushed to nothing.
+- Expanding an analysis and selecting it are separate clicks now; the caret
+  owns expansion. Selecting an analysis no longer jumps into its results.
+
+### Fixed
+
+- **Skin triangles are wound consistently outward.** Nothing had guaranteed
+  this: the four faces of a tet, listed by a fixed corner ordering, come out
+  with mixed handedness, so roughly a third of the surface faced inward. Per
+  node normals partly cancelled, which is what made contours look speckled,
+  and front/back-face tests flickered triangle to triangle. Checked by a test
+  that sums signed volumes over the closed surface and compares with the known
+  enclosed volume.
+- Contour shading amplitude cut from 28 % to 12 % of range, with the
+  brightness fold at the silhouette removed. A contour plot is read by colour;
+  shading that competes with the band colour is misleading.
+- The mesh overlay line colour follows the theme — a fixed near-black line
+  vanished into the dark viewport.
+- **Fixed: opening a result and pressing Show contours did nothing.** The
+  active-result state was only initialised by the old "View results" button,
+  so reaching contours any other way left it null and every action no-opped.
+- A collapsed job drawer no longer keeps the height the splitter gave it.
+- Opening a project asks once which analyses have results instead of probing
+  each one and eating a 404 for every analysis that has never run.
+- Added a favicon.
+
 ## 0.10.0
 
 - **Mesh overlaid on the result contours**, the way commercial post-processors

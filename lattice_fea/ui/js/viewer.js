@@ -73,19 +73,26 @@ export class Viewer {
   /** Viewport ground follows the UI theme; light mode uses the pale
    *  background commercial pre/post-processors default to. */
   applyTheme() {
-    // Read the resolved token rather than guessing, so the viewport ground
-    // always matches the chrome it sits inside.
-    const cs = getComputedStyle(document.documentElement);
-    const dark = document.documentElement.getAttribute("data-theme") === "dark"
-      || (!document.documentElement.getAttribute("data-theme")
-          && window.matchMedia("(prefers-color-scheme: dark)").matches);
-    const bg = dark ? 0x11161a : 0xe7ebef;
+    const bg = this._dark() ? 0x11161a : 0xe7ebef;
     this.scene.background = new THREE.Color(bg);
     this.renderer.setClearColor(bg, 1);
     // model surfaces need a touch more ambient on a light ground
-    if (this._hemi) this._hemi.intensity = dark ? 0.9 : 1.15;
+    if (this._hemi) this._hemi.intensity = this._dark() ? 0.9 : 1.15;
+    if (this._edgeLines) {
+      this._edgeLines.material.uniforms.uCol.value.setHex(this._edgeColor());
+    }
     this.requestRender();
   }
+
+  _dark() {
+    const attr = document.documentElement.getAttribute("data-theme");
+    return attr === "dark"
+      || (!attr && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  }
+
+  /** Mesh-overlay line colour. Dark ink on light contours, pale ink on dark —
+   *  a fixed near-black vanished into the dark theme's viewport. */
+  _edgeColor() { return this._dark() ? 0xc6d2dc : 0x1b2228; }
 
   // ---------------- render loop ----------------
   requestRender() { this._needsRender = true; }
@@ -367,7 +374,20 @@ export class Viewer {
             t = (floor(min(t * uBands, uBands - 1.0)) + 0.5) / uBands;
           }
           vec3 c = texture2D(tMap, vec2(t, 0.5)).rgb;
-          float l = 0.72 + 0.28 * abs(normalize(vN).z);
+
+          // Shading is deliberately almost flat. The skin of a tet mesh shares
+          // one averaged normal per node, so across a crease — every part edge,
+          // every fillet run-out — neighbouring facets get normals that differ
+          // by tens of degrees. At the old 0.28 amplitude that painted visible
+          // blotches inside what should read as one flat contour band, and a
+          // contour plot is read by COLOUR: any shading that competes with the
+          // band colour is actively misleading. abs() made it worse by folding
+          // brightness back up past the silhouette. Now: a headlight term, a
+          // normal flipped to face the camera, and 12 % of range.
+          vec3 n = normalize(vN);
+          if (!gl_FrontFacing) n = -n;
+          float ndl = clamp(dot(n, normalize(vec3(0.22, 0.33, 1.0))), 0.0, 1.0);
+          float l = 0.88 + 0.12 * ndl;
           gl_FragColor = vec4(c * l, 1.0);
         }`,
       side: THREE.DoubleSide,
@@ -390,7 +410,8 @@ export class Viewer {
       eg.setAttribute("aDisp", new THREE.BufferAttribute(disp, 3));
       eg.setIndex(new THREE.BufferAttribute(decode(payload.edges), 1));
       const emat = new THREE.ShaderMaterial({
-        uniforms: { uDef: { value: defScale }, uCol: { value: new THREE.Color(0x1b2228) } },
+        uniforms: { uDef: { value: defScale },
+                    uCol: { value: new THREE.Color(this._edgeColor()) } },
         vertexShader: `
           attribute vec3 aDisp; uniform float uDef;
           void main() {
@@ -399,7 +420,7 @@ export class Viewer {
           }`,
         fragmentShader: `
           uniform vec3 uCol;
-          void main() { gl_FragColor = vec4(uCol, 0.30); }`,
+          void main() { gl_FragColor = vec4(uCol, 0.22); }`,
         transparent: true, depthWrite: false,
         clipping: true, clippingPlanes: this.clip.planes,
       });

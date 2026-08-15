@@ -38,6 +38,8 @@ TET10_FACES = [
     (2, 0, 3, 6, 7, 9),
 ]
 TET4_FACES = [(0, 1, 2), (0, 1, 3), (1, 2, 3), (2, 0, 3)]
+# corner of the tet that is NOT on each face above, in the same order
+TET_OPPOSITE = (3, 2, 0, 1)
 
 
 class MedFile:
@@ -197,6 +199,31 @@ class MedFile:
             return vals.reshape(n, ncomp)
         return vals.reshape(ncomp, n).T
 
+    def _orient_outward(self, boundary: np.ndarray, opposite: np.ndarray) -> np.ndarray:
+        """Wind every boundary face so its normal points out of the solid.
+
+        Nothing guarantees this from the element connectivity: the four faces
+        of a tet, listed by any fixed corner ordering, come out with mixed
+        handedness. Renderers then average per-node normals that partly cancel,
+        which shows up as speckle across what should be one flat contour band,
+        and any front/back-face test flickers triangle to triangle. Cheap to
+        fix once here; impossible to fix in a shader.
+        """
+        p = self.nodes
+        a, b, c = p[boundary[:, 0]], p[boundary[:, 1]], p[boundary[:, 2]]
+        n = np.cross(b - a, c - a)
+        # inward-pointing if the normal leans towards the opposite corner
+        flip = np.einsum("ij,ij->i", n, p[opposite] - a) > 0
+        if not flip.any():
+            return boundary
+        out = boundary.copy()
+        # reversing (c1,c2,c3) -> (c1,c3,c2) also swaps mid-sides 1 and 3;
+        # mid-side 2 is on edge c2-c3 either way
+        out[flip, 1], out[flip, 2] = boundary[flip, 2], boundary[flip, 1]
+        if boundary.shape[1] == 6:
+            out[flip, 3], out[flip, 5] = boundary[flip, 5], boundary[flip, 3]
+        return out
+
     # ---------------- skin ----------------
     def skin(self):
         """Boundary faces of the tet mesh.
@@ -216,9 +243,12 @@ class MedFile:
         else:
             faces = np.concatenate([t[:, f] for f in TET4_FACES])   # (4E, 3)
             corner = faces
+        # the tet corner NOT on each face — used below to orient it outward
+        opposite = np.concatenate([t[:, k] for k in TET_OPPOSITE])
         key = np.sort(corner, axis=1)
         _, inv, counts = np.unique(key, axis=0, return_inverse=True, return_counts=True)
-        boundary = faces[counts[inv] == 1]
+        keep = counts[inv] == 1
+        boundary = self._orient_outward(faces[keep], opposite[keep])
 
         if self.tet_npery == 10:
             c1, c2, c3, m1, m2, m3 = (boundary[:, k] for k in range(6))

@@ -37,14 +37,20 @@ export function renderTree(S, A) {
 
   const row = (kind, id, label, meta, opts = {}) => {
     const r = el("button", {
-      class: `row${opts.depth ? " d" + opts.depth : ""}`, role: "option",
+      class: `row${opts.depth ? " d" + opts.depth : ""}${opts.resultRow ? " result-row" : ""}`,
+      role: "option",
       "aria-selected": sel.kind === kind && String(sel.id) === String(id) ? "true" : "false",
       "aria-label": label,
+      title: opts.title || null,
       onclick: () => A.select(kind, id),
     });
     if (opts.dotClass) r.append(el("span", { class: `dot ${opts.dotClass}` }));
     if (opts.swatch) r.append(el("span", { class: "swatch", style: `background:${opts.swatch}` }));
     r.append(el("span", { class: "nm" }, label));
+    if (opts.badge) {
+      r.append(el("span", { class: `badge ${opts.badge.cls}`, title: opts.badge.title },
+                   opts.badge.text));
+    }
     if (meta) r.append(el("span", { class: `mt${opts.warnMeta ? " warn" : ""}` }, meta));
     return r;
   };
@@ -96,28 +102,44 @@ export function renderTree(S, A) {
   ));
 
   const ms = S.meshData?.stats;
+  const meshStale = ms ? staleForAnalyses(S).length > 0 : false;
   tree.append(grp("Mesh", null,
     row("mesh", "mesh", ms ? `Tet${ms.order === 2 ? "10" : "4"} · ${fmtVal(ms.size_mm)} mm` : "Not meshed",
         ms ? `${ms.nodes.toLocaleString()} n` : "configure",
-        { dotClass: ms ? "ok" : "idle", depth: 1 })));
+        { dotClass: ms ? (meshStale ? "warn" : "ok") : "idle", depth: 1,
+          badge: meshStale ? { text: "!", cls: "stale",
+                               title: "Boundary conditions changed since this mesh was "
+                                    + "generated — re-mesh before running." } : null })));
 
-  // ---- analyses: each owns its own supports and loads ----
+  // ---- analyses: each owns its own supports, loads and results ----
   const branches = [];
   for (const a of setup.analyses) {
     a.supports ||= []; a.loads ||= [];
-    const st = S.runStatus[a.id];
-    const dot = st === "running" ? "run" : st === "done" ? "ok" : st === "failed" ? "bad" : "idle";
+    const st = analysisStatus(S, a);
     const open = S.openAnalyses?.[a.id] !== false;
-    branches.push(el("button", {
+
+    const arow = el("button", {
       class: "row analysis-row", role: "option",
       "aria-selected": sel.kind === "analysis" && sel.id === a.id ? "true" : "false",
       "aria-label": a.name || a.type,
-      onclick: () => { (S.openAnalyses ||= {})[a.id] = !open; A.select("analysis", a.id); },
+      title: st.title,
+      onclick: () => A.select("analysis", a.id),
     },
-      el("span", { class: `dot ${dot}` }),
-      el("span", { class: "caret" }, open ? "▾" : "▸"),
+      el("span", { class: `dot ${st.dot}` }),
+      // Expanding and selecting used to be the same click, so re-selecting an
+      // analysis collapsed it. The caret owns expansion now.
+      el("span", { class: "caret", role: "button",
+        "aria-label": open ? "Collapse" : "Expand",
+        onclick: (e) => {
+          e.stopPropagation();
+          (S.openAnalyses ||= {})[a.id] = !open;
+          A.refreshPanel();
+        } }, open ? "▾" : "▸"),
       el("span", { class: "nm" }, a.name || a.type),
-      el("span", { class: "mt" }, a.type)));
+      st.badge ? el("span", { class: `badge ${st.badge.cls}`, title: st.badge.title },
+                    st.badge.text) : null,
+      el("span", { class: "mt" }, TYPE_SHORT[a.type] || a.type));
+    branches.push(arow);
 
     if (!open) continue;
     branches.push(el("div", { class: "grp-hd sub" },
@@ -128,7 +150,8 @@ export function renderTree(S, A) {
         sup.faces?.length ? `${sup.faces.length} face${sup.faces.length > 1 ? "s" : ""}` : "no faces",
         { swatch: "var(--constraint)", depth: 2, warnMeta: !sup.faces?.length }));
     }
-    if (NEEDS_LOADS.includes(a.type)) {
+
+    if (needsLoads(a)) {
       branches.push(el("div", { class: "grp-hd sub" },
         el("span", { class: "lbl" }, "Loads"),
         el("button", { class: "grp-add", onclick: (e) => { e.stopPropagation(); A.addLoad(a.id); } }, "+ add")));
@@ -137,22 +160,143 @@ export function renderTree(S, A) {
           { swatch: "var(--accent)", depth: 2,
             warnMeta: !["gravity", "rotation"].includes(l.type) && !l.faces?.length }));
       }
-      if (!a.loads.length && a.type === "harmonic" && a.config?.excitation === "base") {
-        branches.push(el("div", { class: "hint", style: "padding:2px 12px 4px 30px" },
-          "driven by base acceleration"));
+    } else if (a.type !== "modal") {
+      // Base-driven runs take no applied loads at all. Rather than show a
+      // "+ add" that would be ignored by the solver, show what IS driving it.
+      branches.push(row("analysis", a.id, "Base excitation", excitationMeta(a),
+        { swatch: "var(--accent)", depth: 2 }));
+    }
+
+    // ---- solution branch: results are outputs, not more settings ----
+    const items = solutionItems(S, a);
+    if (items.length) {
+      const res = S.results[a.id];
+      branches.push(el("div", { class: "grp-hd sub" },
+        el("span", { class: "lbl" }, "Solution"),
+        el("button", { class: "grp-add", title: "Export every result as CSV",
+          onclick: (e) => { e.stopPropagation(); A.exportResults(a.id, "all"); } }, "export")));
+      for (const it of items) {
+        branches.push(row("result", `${a.id}|${it.what}`, it.label, it.meta,
+          { resultRow: true, title: res?.stale ? "Out of date — the model changed after this ran" : null }));
       }
     }
-    if (a.type === "random") {
-      branches.push(el("div", { class: "hint", style: "padding:2px 12px 4px 30px" },
-        `PSD spec · ${(a.config?.spec || []).length} breakpoints`));
-    }
   }
-  tree.append(grp("Analyses", () => A.addAnalysis(), ...branches));
+  tree.append(grp("Analyses", () => A.addAnalysis(), ...branches,
+    setup.analyses.length ? null
+      : el("div", { class: "hint", style: "padding:2px 12px 4px 10px" },
+           "An analysis owns its own supports and loads — add one to start.")));
 }
 
-/** Analysis types that take applied loads. Modal has none by definition, and
- *  random is driven entirely by its input spectrum. */
-export const NEEDS_LOADS = ["static", "harmonic"];
+const TYPE_SHORT = { static: "static", modal: "modal",
+                     harmonic: "harmonic", random: "random" };
+
+/** Does this analysis take applied loads?
+ *
+ *  Modal has none by definition; random is driven entirely by its input
+ *  spectrum; a base-driven harmonic is driven through its supports. Offering
+ *  a Loads branch in those cases invites the user to define something the
+ *  solver will silently ignore. */
+export function needsLoads(a) {
+  if (a.type === "static") return true;
+  if (a.type === "harmonic") return (a.config?.excitation || "force") !== "base";
+  return false;
+}
+
+function excitationMeta(a) {
+  const c = a.config || {};
+  const d = c.base_dir || [0, 0, 1];
+  const ax = ["X", "Y", "Z"][d.map(Math.abs).indexOf(Math.max(...d.map(Math.abs)))] || "Z";
+  if (a.type === "random") return `PSD ${gramsOf(c.spec || [])} g · ${ax}`;
+  return `${fmtVal(c.base_g ?? 1)} g · ${ax}`;
+}
+
+/** Status of one analysis, as a dot + optional badge.
+ *
+ *  The badge is the answer to "can I trust what I am looking at" — the one
+ *  question a results tree has to answer without being asked. */
+export function analysisStatus(S, a) {
+  const st = S.runStatus[a.id];
+  const res = S.results[a.id];
+  if (st === "running") {
+    return { dot: "run", badge: null, title: "Running…" };
+  }
+  if (res && res.stale) {
+    return { dot: "warn", title: "Results are OUT OF DATE",
+      badge: { text: "!", cls: "stale",
+        title: "OUT OF DATE — the mesh, materials, connections or boundary "
+             + "conditions changed after this ran. Re-run before using these "
+             + "numbers." } };
+  }
+  if (res) {
+    return { dot: "ok", title: "Results are current for this model",
+      badge: { text: "✓", cls: "ok", title: "Results are current for this model" } };
+  }
+  if (st === "failed") {
+    return { dot: "bad", title: "The last run failed — see Job output",
+      badge: { text: "✕", cls: "bad", title: "The last run failed — see Job output" } };
+  }
+  return { dot: "idle", badge: null, title: "Not run yet" };
+}
+
+/** The result items that actually exist for this analysis, in reading order. */
+export function solutionItems(S, a) {
+  const meta = S.results[a.id];
+  if (!meta) return [];
+  const out = [];
+  const fields = (meta.fields || []).filter((f) => f.part !== "I");
+  if (fields.length) {
+    out.push({ what: "contours", label: "Contours", meta: `${fields.length} field${fields.length > 1 ? "s" : ""}` });
+  }
+  const modes = meta.tables?.modes?.[0];
+  if (modes && a.type !== "static") {
+    out.push({ what: "modes", label: "Modes", meta: `${modes.rows.length}` });
+  }
+  if (meta.frf?.length) {
+    out.push({ what: "frf", label: "Frequency response", meta: `${meta.frf.length} curve${meta.frf.length > 1 ? "s" : ""}` });
+  }
+  if (a.type === "random") {
+    out.push({ what: "random", label: "Random response", meta: "g RMS" });
+  }
+  if (meta.tables?.bolt_forces?.length) {
+    out.push({ what: "bolts", label: "Bolt forces", meta: "N" });
+  }
+  if (a.type === "static" && reactionRow(meta)) {
+    out.push({ what: "reactions", label: "Reactions", meta: "N" });
+  }
+  if (meta.warnings?.length) {
+    out.push({ what: "warnings", label: "Solver messages", meta: String(meta.warnings.length) });
+  }
+  return out;
+}
+
+/** Analyses whose mesh groups are missing from the current mesh. Shared by
+ *  the tree badge, the Mesh panel and the run blockers so all three agree. */
+export function staleForAnalyses(S) {
+  const stats = S.meshData?.stats;
+  const have = new Set(stats?.face_groups || []);
+  if (!have.size) return [];
+  const out = [];
+  (S.project?.setup?.analyses || []).forEach((a, ai0) => {
+    const ai = ai0 + 1;
+    const missing = requiredGroups(a, ai).filter((g) => !have.has(g));
+    if (missing.length) out.push({ analysis: a, missing });
+  });
+  return out;
+}
+
+/** Mesh group names this analysis will reference — must match meshing.py. */
+export function requiredGroups(a, ai) {
+  const need = [];
+  (a.supports || []).forEach((x, i) => { if (x.faces?.length) need.push(`SUP${ai}_${i + 1}`); });
+  if (needsLoads(a)) {
+    (a.loads || []).forEach((x, i) => {
+      if (["force", "pressure", "remote"].includes(x.type) && x.faces?.length) {
+        need.push(`LOA${ai}_${i + 1}`);
+      }
+    });
+  }
+  return need;
+}
 
 function loadMeta(l) {
   if (l.type === "gravity") return "gravity";
@@ -211,6 +355,7 @@ function renderPanelBody(S, A, put, kind, id) {
     case "probe": return panelProbe(S, A, put, id);
     case "mesh": return panelMesh(S, A, put);
     case "analysis": return panelAnalysis(S, A, put, id);
+    case "result": return panelResult(S, A, put, id);
     default: return panelModel(S, A, put);
   }
 }
@@ -608,21 +753,13 @@ function panelMesh(S, A, put) {
       el("button", { class: "btn btn-accent", onclick: () => A.runMesh() }, "Generate mesh"))),
   ];
   if (stats) {
-    const have = new Set(stats.face_groups || []);
-    const stale = [];
-    (setup.analyses || []).forEach((a, ai0) => {
-      const ai = ai0 + 1;
-      (a.supports || []).forEach((x, i) => {
-        if (x.faces?.length && have.size && !have.has(`SUP${ai}_${i + 1}`)) stale.push(a.name || a.type);
-      });
-      (a.loads || []).forEach((x, i) => {
-        if (["force", "pressure", "remote"].includes(x.type) && x.faces?.length
-            && have.size && !have.has(`LOA${ai}_${i + 1}`)) stale.push(a.name || a.type);
-      });
-    });
+    // one implementation of "is the mesh current", shared with the tree badge
+    // and the run blockers, so the three can never contradict each other
+    const stale = staleForAnalyses(S);
     if (stale.length) {
       secs.push(sec(null, el("div", { class: "hint bad" },
-        `⚠ Mesh is out of date for: ${[...new Set(stale)].join(", ")}. ` +
+        `⚠ Mesh is out of date for: ` +
+        `${[...new Set(stale.map((s) => s.analysis.name || s.analysis.type))].join(", ")}. ` +
         "Boundary conditions changed since it was generated — re-mesh before solving.")));
     }
     secs.push(sec("Current mesh", dl([
@@ -712,9 +849,8 @@ function resolutionWarning(S, peaks) {
 function panelAnalysis(S, A, put, id) {
   const a = S.project.setup.analyses.find((x) => x.id === id);
   if (!a) return put("Analysis", "");
-  const c = a.config;
+  const c = a.config || {};
   const running = S.runStatus[a.id] === "running";
-  const done = S.runStatus[a.id] === "done";
 
   const secs = [sec("Definition",
     textInput("Name", a.name, (v) => A.mutate(() => { a.name = v; })),
@@ -757,17 +893,26 @@ function panelAnalysis(S, A, put, id) {
       numInput("Modal damping ratio ζ", c.damping, (v) => A.mutate(() => { c.damping = v ?? 0.02; }),
         { min: 0, max: 1, step: 0.005 }),
       el("div", { class: "hint" },
-        "Modal superposition on a basis up to 1.6 × f max. Loads defined above " +
-        "are applied as the harmonic excitation; response is read at the probes."),
-      el("div", { class: "hint" },
-        "This is a FORCE-driven sweep. The analysis is linear, so response " +
-        "scales exactly with input: use 1 N to read the result directly as a " +
-        "transfer function. Peak frequencies and Q do not depend on the " +
-        "magnitude you enter."),
-      el("div", { class: "hint warn" },
+        "Modal superposition on a basis up to 1.6 × f max; response is read " +
+        "at the probes."),
+      // Guidance follows the excitation actually selected. Showing the
+      // force-driven advice next to a base-driven setup was worse than
+      // showing nothing.
+      c.excitation === "base"
+        ? el("div", { class: "hint" },
+            "Shaker qualification specifies base acceleration, which is what " +
+            "this sweep applies. At 1 g the response curve reads directly as " +
+            "transmissibility, and its peaks give fₙ and Q for a " +
+            "Miles'-equation random estimate.")
+        : el("div", { class: "hint" },
+            "This is a FORCE-driven sweep. The analysis is linear, so response " +
+            "scales exactly with input: use 1 N to read the result directly as a " +
+            "transfer function. Peak frequencies and Q do not depend on the " +
+            "magnitude you enter."),
+      c.excitation === "base" ? null : el("div", { class: "hint warn" },
         "⚠ Shaker qualification specifies BASE acceleration, not force. " +
-        "Base excitation is not implemented yet — for now this gives you f_n " +
-        "and Q, which is what a Miles'-equation random-vibration estimate needs.")));
+        "Switch “Driven by” to base acceleration to sweep the way the test " +
+        "is actually run.")));
     secs.push(sec("Field export",
       textInput("Frequencies (Hz, comma-separated — optional)",
         (c.field_freqs || []).join(", "),
@@ -851,14 +996,7 @@ function panelAnalysis(S, A, put, id) {
     const have = new Set(S.meshData.stats.face_groups || []);
     if (have.size) {
       const ai = 1 + S.project.setup.analyses.findIndex((x) => x.id === a.id);
-      const need = [];
-      (a.supports || []).forEach((x, i) => { if (x.faces?.length) need.push(`SUP${ai}_${i + 1}`); });
-      (a.loads || []).forEach((x, i) => {
-        if (["force", "pressure", "remote"].includes(x.type) && x.faces?.length) {
-          need.push(`LOA${ai}_${i + 1}`);
-        }
-      });
-      const missing = need.filter((g) => !have.has(g));
+      const missing = requiredGroups(a, ai).filter((g) => !have.has(g));
       if (missing.length) {
         blockers.push(`The mesh is out of date for this analysis (missing ${missing.join(", ")}). ` +
                       "Re-mesh before running.");
@@ -877,20 +1015,20 @@ function panelAnalysis(S, A, put, id) {
   const hasLoad = (a.loads || []).some(
     (x) => ["gravity", "rotation"].includes(x.type) || x.faces?.length);
   const hasPreload = (S.project.setup.bolts || []).some((x) => x.preload_N > 0);
-  const baseDriven = a.type === "random"
-    || (a.type === "harmonic" && a.config?.excitation === "base");
-  if (NEEDS_LOADS.includes(a.type) && !baseDriven && !hasLoad && !hasPreload) {
+  if (needsLoads(a) && !hasLoad && !hasPreload) {
     blockers.push("This analysis has no load — add one, or a bolt preload.");
   }
   if (["harmonic", "random"].includes(a.type) && !(S.project.setup.probes || []).length) {
     blockers.push("Add a probe — frequency response is extracted at probes.");
+  }
+  if (a.type === "random" && (c.spec || []).length < 2) {
+    blockers.push("The input spectrum needs at least two breakpoints.");
   }
 
   secs.push(sec(null,
     el("div", { class: "btnrow" },
       el("button", { class: "btn btn-accent", disabled: running || blockers.length > 0,
         onclick: () => A.runAnalysis(a.id) }, running ? "Running…" : "Run analysis"),
-      done ? el("button", { class: "btn", onclick: () => A.openResults(a.id) }, "View results") : null,
       // a solve can finish and a later step still fail — offer recovery
       S.runStatus[a.id] === "failed"
         ? el("button", { class: "btn", onclick: () => A.recoverResults(a.id) },
@@ -900,20 +1038,110 @@ function panelAnalysis(S, A, put, id) {
         : null),
     ...blockers.map((t) => el("div", { class: "hint warn" }, "⚠ " + t))));
 
-  if (done && S.results[a.id]) secs.push(...resultSections(S, A, a));
-  if (done && a.type === "random") secs.push(...randomSections(S, A, a));
+  // Results live in their own tree branch now. What belongs here is a way in
+  // — and, above everything else in the panel, whether they can be trusted.
+  const items = solutionItems(S, a);
+  if (items.length) {
+    secs.push(sec("Solution",
+      el("div", { class: "btnrow" },
+        items.map((it) => el("button", {
+          class: "btn btn-small",
+          onclick: () => A.select("result", `${a.id}|${it.what}`) }, it.label))),
+      el("div", { class: "btnrow" },
+        el("button", { class: "btn btn-small",
+          onclick: () => A.exportResults(a.id, "all") }, "Export all (CSV)"))));
+  }
+
   secs.push(sec(null, delBtn("analysis", () => A.removeItem("analyses", id))));
-  put(a.name || a.type, a.type, ...secs);
+  put(a.name || a.type, a.type, ...statusHead(S, A, a), ...secs);
+}
+
+/** Banner shown above every panel that presents results, saying whether they
+ *  still describe the model on screen. Stale numbers presented as live is the
+ *  one failure mode that produces wrong engineering conclusions. */
+function statusHead(S, A, a) {
+  const meta = S.results[a.id];
+  if (!meta) return [];
+  if (meta.stale) {
+    return [el("div", { class: "stalebar" },
+      el("b", {}, "⚠ Out of date. "),
+      "The model changed after this ran — mesh, materials, connections or " +
+      "boundary conditions. These numbers describe the older model.",
+      el("div", { class: "btnrow" },
+        el("button", { class: "btn btn-small btn-accent",
+          onclick: () => A.runAnalysis(a.id) }, "Re-run analysis")))];
+  }
+  if (meta.no_signature) {
+    return [el("div", { class: "stalebar" },
+      "These results predate change tracking, so Lattice cannot tell whether " +
+      "they still match the model. Re-run to be certain.")];
+  }
+  return [];
 }
 
 // ---------- results ----------
+//
+// Each output gets its own panel, reached from its own row in the tree. They
+// used to be concatenated below the run button in one endless scroll, which
+// meant finding a number involved scrolling past every other number.
 
-function resultSections(S, A, a) {
+const RESULT_TITLES = {
+  contours: "Contours", modes: "Modes", frf: "Frequency response",
+  random: "Random response", bolts: "Bolt forces", reactions: "Reactions",
+  warnings: "Solver messages",
+};
+
+function panelResult(S, A, put, id) {
+  const [aid, what] = String(id).split("|");
+  const a = (S.project.setup.analyses || []).find((x) => x.id === aid);
+  if (!a) return put("Results", "");
+  const meta = S.results[aid];
+  if (!meta) {
+    // fill in data for a row the user already clicked — do not move them
+    A.openResults(aid, { select: false });
+    return put(RESULT_TITLES[what] || "Results", a.name || a.type,
+               sec(null, el("div", { class: "hint" }, "Loading results…")));
+  }
+  const body = {
+    contours: () => secContours(S, A, a),
+    modes: () => secModes(S, A, a),
+    frf: () => secFRF(S, A, a),
+    random: () => randomSections(S, A, a),
+    bolts: () => secBolts(S, A, a),
+    reactions: () => secReactions(S, A, a),
+    warnings: () => secWarnings(S, A, a),
+  }[what]?.() || [];
+
+  const exportWhat = { frf: "frf", random: "random" }[what] || "tables";
+  const tail = sec(null,
+    el("div", { class: "btnrow" },
+      el("button", { class: "btn btn-small",
+        onclick: () => A.exportResults(aid, exportWhat) }, "Export this (CSV)"),
+      el("button", { class: "btn btn-small",
+        onclick: () => A.exportResults(aid, "all") }, "Export all (CSV)"),
+      el("button", { class: "btn btn-small",
+        onclick: () => A.select("analysis", aid) }, "Analysis setup")));
+
+  put(RESULT_TITLES[what] || "Results", a.name || a.type,
+      ...statusHead(S, A, a), ...body, tail);
+}
+
+/** The reaction-force block, if the run produced one. */
+function reactionRow(meta) {
+  for (const b of meta.tables?.tables || []) {
+    const ix = ["DX", "DY", "DZ"].map((c) => b.columns.indexOf(c));
+    if (ix.every((i) => i >= 0) && b.rows.length) {
+      return { row: b.rows[b.rows.length - 1], ix };
+    }
+  }
+  return null;
+}
+
+function secModes(S, A, a) {
   const meta = S.results[a.id];
   const secs = [];
   const R = S.activeResult;
 
-  // tables
   const modes = meta.tables?.modes?.[0];
   if (modes && a.type !== "static") {
     const fi = modes.columns.indexOf("FREQ");   // NUME_MODE numbers the rows
@@ -933,8 +1161,12 @@ function resultSections(S, A, a) {
       el("div", { class: "hint" }, "Select a mode to view / animate its shape."),
       part ? partTable(part, meta.tables?.tables) : null));
   }
+  return secs;
+}
 
-  // FRF
+function secFRF(S, A, a) {
+  const meta = S.results[a.id];
+  const secs = [];
   if (meta.frf?.length) {
     const probes = S.project.setup.probes;
     // Total applied force, so the response can be shown per unit input —
@@ -1006,8 +1238,13 @@ function resultSections(S, A, a) {
     // is deferred — nothing is appended to the DOM from here
     requestAnimationFrame(() => { if (canvas.isConnected) frfPlot(canvas, curves); });
   }
+  return secs;
+}
 
-  // fields
+function secContours(S, A, a) {
+  const meta = S.results[a.id];
+  const secs = [];
+  const R = S.activeResult;
   const realFields = meta.fields?.filter((f) => f.part !== "I") || [];
   if (realFields.length) {
     const cur = R?.aid === a.id ? R : null;
@@ -1042,10 +1279,16 @@ function resultSections(S, A, a) {
             el("button", { class: "btn", onclick: () => A.toggleAnimate() },
               S.animating ? "Stop animation" : "Animate")) : null,
       el("div", { class: "btnrow" },
-        el("button", { class: "btn btn-accent", onclick: () => A.loadField(a.id) }, "Show contours"))));
+        el("button", { class: "btn btn-accent", onclick: () => A.loadField(a.id) }, "Show contours"),
+        el("button", { class: "btn btn-small",
+          onclick: () => A.exportField(a.id) }, "Export nodal values (CSV)"))));
   }
+  return secs;
+}
 
-  // bolt forces for static
+function secBolts(S, A, a) {
+  const meta = S.results[a.id];
+  const secs = [];
   const boltBlocks = meta.tables?.bolt_forces || [];
   if (boltBlocks.length) {
     const rows = [];
@@ -1094,28 +1337,31 @@ function resultSections(S, A, a) {
           "check shank stress and joint margins per your bolt spec (e.g. VDI 2230).")));
     }
   }
-
-  // reactions for static
-  const reactions = meta.tables?.tables?.find?.((b) => b.columns.includes("DX") && b.columns.includes("INTITULE"));
-  if (a.type === "static" && meta.tables?.tables) {
-    for (const b of meta.tables.tables) {
-      const ix = ["DX", "DY", "DZ"].map((c) => b.columns.indexOf(c));
-      if (ix.every((i) => i >= 0) && b.rows.length) {
-        const r = b.rows[b.rows.length - 1];
-        secs.push(sec("Reaction forces (supports)", dl([
-          ["ΣFx", `${fmtVal(r[ix[0]] ?? 0)} N`],
-          ["ΣFy", `${fmtVal(r[ix[1]] ?? 0)} N`],
-          ["ΣFz", `${fmtVal(r[ix[2]] ?? 0)} N`],
-        ])));
-        break;
-      }
-    }
-  }
-
-  if (meta.warnings?.length) {
-    secs.push(sec("Warnings", ...meta.warnings.map((w) => el("div", { class: "hint warn" }, w))));
-  }
   return secs;
+}
+
+function secReactions(S, A, a) {
+  const meta = S.results[a.id];
+  const hit = reactionRow(meta);
+  if (!hit) return [];
+  const { row: r, ix } = hit;
+  const sum = [0, 1, 2].map((k) => r[ix[k]] ?? 0);
+  return [sec("Reaction forces (supports)",
+    dl([["ΣFx", `${fmtVal(sum[0])} N`],
+        ["ΣFy", `${fmtVal(sum[1])} N`],
+        ["ΣFz", `${fmtVal(sum[2])} N`],
+        ["|ΣF|", `${fmtVal(Math.hypot(...sum))} N`]]),
+    el("div", { class: "hint" },
+      "Sum of nodal reactions over the supported faces. For a static run these " +
+      "should balance the applied load — a large residual points at a load that " +
+      "did not attach to the mesh."))];
+}
+
+function secWarnings(S, A, a) {
+  const meta = S.results[a.id];
+  if (!meta.warnings?.length) return [];
+  return [sec("Solver messages",
+    ...meta.warnings.map((w) => el("div", { class: "hint warn" }, w)))];
 }
 
 function randomSections(S, A, a) {

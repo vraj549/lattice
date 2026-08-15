@@ -142,6 +142,32 @@ def field_payload(run_dir: str, field: str, step_key: str, comp: str,
         med.close()
 
 
+def field_csv_rows(run_dir: str, field: str, step_key: str,
+                   expect_bbox=None, expect_volume=None):
+    """Yield CSV lines of every nodal value for one field/step.
+
+    Streamed a line at a time rather than built as one string: a 300k-node
+    stress field is ~30 MB of text, and the point of an export is that it
+    works on the model you actually ran, not a small one.
+    """
+    med = MedFile(os.path.join(run_dir, "result.med"), expect_bbox, expect_volume)
+    try:
+        fields = {f["name"]: f for f in med.list_fields()}
+        f = fields.get(field)
+        if f is None:
+            raise ValueError(f"field {field} not in MED")
+        vals = med.read_field(field, step_key)
+        comps = [c or f"C{i + 1}" for i, c in enumerate(f["comps"])]
+        nodes = med.nodes
+        yield ",".join(["node", "X_mm", "Y_mm", "Z_mm", *comps]) + "\n"
+        for i in range(len(nodes)):
+            x, y, z = nodes[i]
+            row = ",".join(f"{v:.9g}" for v in vals[i])
+            yield f"{i + 1},{x:.9g},{y:.9g},{z:.9g},{row}\n"
+    finally:
+        med.close()
+
+
 # --------------------------------------------------------------------------
 # text parsers
 # --------------------------------------------------------------------------

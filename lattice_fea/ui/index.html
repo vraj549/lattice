@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lattice — FEA workbench</title>
-<link rel="stylesheet" href="/ui/app.css?v=0.10.0">
+<link rel="icon" type="image/svg+xml" href="/ui/favicon.svg">
+<link rel="stylesheet" href="/ui/app.css?v=0.11.0">
 <script type="importmap">
 { "imports": { "three": "/ui/vendor/three.module.js" } }
 </script>
@@ -37,13 +38,15 @@
     <button class="btn btn-ghost infobtn" id="btnResources" title="Solver resources — click for how to change them">i</button>
   </header>
 
-  <div class="body">
-    <aside class="pane pane-l">
+  <div class="body" id="body">
+    <aside class="pane pane-l" id="paneL">
       <div class="pane-hd">
         <span class="lbl">Simulation tree</span>
       </div>
       <div class="pane-body" id="tree" role="listbox" aria-label="Simulation tree"></div>
     </aside>
+
+    <div class="splitter" id="splitL" role="separator" aria-orientation="vertical" tabindex="0"></div>
 
     <section class="vp" id="vp">
       <canvas id="scene"></canvas>
@@ -85,7 +88,9 @@
       <div class="vp-hover" id="vpHover"></div>
     </section>
 
-    <aside class="pane pane-r">
+    <div class="splitter" id="splitR" role="separator" aria-orientation="vertical" tabindex="0"></div>
+
+    <aside class="pane pane-r" id="paneR">
       <div class="pane-hd">
         <span class="lbl" id="ctxTitle">Model</span>
         <span class="lbl num" id="ctxMeta"></span>
@@ -94,6 +99,7 @@
     </aside>
   </div>
 
+  <div class="splitter h" id="splitLog" role="separator" aria-orientation="horizontal" tabindex="0"></div>
   <section class="log" id="logDrawer" data-open="false">
     <div class="log-hd">
       <button class="drawer-toggle" id="logToggle" aria-expanded="false">▾</button>
@@ -134,6 +140,6 @@
   </div>
 </div>
 
-<script type="module" src="/ui/js/main.js?v=0.10.0"></script>
+<script type="module" src="/ui/js/main.js?v=0.11.0"></script>
 </body>
 </html>

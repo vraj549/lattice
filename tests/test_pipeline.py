@@ -219,6 +219,53 @@ def test_med_layout_fallback_without_hint(tmp_path):
         blind.close()
 
 
+def test_skin_triangles_all_wind_outward(tmp_path):
+    """Every skin triangle must be wound so its normal points out of the part.
+
+    Mixed winding makes averaged vertex normals partly cancel, which renders
+    as speckle across a contour band, and makes front/back-face tests flicker
+    per triangle. The divergence theorem gives an exact check: summing the
+    signed tetrahedron volumes of a consistently outward-wound closed surface
+    reproduces the enclosed volume, and any flipped triangle subtracts.
+    """
+    import gmsh
+    import numpy as np
+    from lattice_fea.med_reader import MedFile
+
+    med = str(tmp_path / "m.med")
+    try:
+        gmsh.initialize(interruptible=False)
+    except TypeError:
+        gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+    gmsh.clear()
+    gmsh.model.add("box")
+    gmsh.model.occ.addBox(0, 0, 0, 30, 20, 10)
+    gmsh.model.occ.synchronize()
+    gmsh.option.setNumber("Mesh.MeshSizeMax", 8)
+    gmsh.model.mesh.generate(3)
+    gmsh.model.mesh.setOrder(2)
+    gmsh.write(med)
+    gmsh.clear()
+    gmsh.finalize()
+
+    f = MedFile(med, [0, 0, 0, 30, 20, 10])
+    try:
+        tri, used, _, _ = f.skin()
+        p = f.nodes[used]
+        a, b, c = p[tri[:, 0]], p[tri[:, 1]], p[tri[:, 2]]
+        signed = np.einsum("ij,ij->i", a, np.cross(b, c)) / 6.0
+        assert abs(signed.sum() - 30 * 20 * 10) < 1.0, "skin is not consistently outward"
+        # and no triangle points the wrong way: outward normals must all agree
+        # with the direction away from the part centre on a convex solid
+        centre = p.mean(0)
+        n = np.cross(b - a, c - a)
+        outward = np.einsum("ij,ij->i", n, (a + b + c) / 3 - centre)
+        assert (outward > 0).all(), f"{(outward <= 0).sum()} inward-facing triangles"
+    finally:
+        f.close()
+
+
 def test_stale_mesh_group_names_are_caught(meshed):
     """A mesh built before the BCs changed (or under an older group-naming
     scheme) must be rejected up front, not by the solver minutes later."""
