@@ -261,9 +261,25 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         return {"ok": True}
 
     # ---------------- UI ----------------
+    # The UI is served from local disk to one user; caching buys nothing and
+    # costs correctness. ES module imports (./ui.js) carry no version query,
+    # so a stale cached module can silently shadow a fixed one on disk —
+    # that shipped once already. no-store makes it impossible.
+    NO_CACHE = {"Cache-Control": "no-store, must-revalidate",
+                "Pragma": "no-cache", "Expires": "0"}
+
     @app.get("/")
     def index():
-        return FileResponse(os.path.join(UI_DIR, "index.html"))
+        return FileResponse(os.path.join(UI_DIR, "index.html"), headers=NO_CACHE)
 
-    app.mount("/ui", StaticFiles(directory=UI_DIR), name="ui")
+    class NoCacheStatic(StaticFiles):
+        def is_not_modified(self, response_headers, request_headers) -> bool:
+            return False  # never answer 304 for UI assets
+
+        async def get_response(self, path, scope):
+            resp = await super().get_response(path, scope)
+            resp.headers.update(NO_CACHE)
+            return resp
+
+    app.mount("/ui", NoCacheStatic(directory=UI_DIR), name="ui")
     return app

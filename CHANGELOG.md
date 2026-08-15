@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2
+
+- **Fixed: the 0.3.1 button fix could not reach the browser.** `index.html`
+  version-stamps `main.js?v=…`, but ES module imports inside it (`./ui.js`,
+  `./viewer.js`, …) carry no query string, so the browser kept serving a cached
+  `ui.js` — which is exactly where the `el()` fix lived. The UI is now served
+  `Cache-Control: no-store` and never answers `304`. Caching a local
+  single-user tool bought nothing and cost a shipped fix.
+
 ## 0.3.1
 
 - **Fixed: "Run analysis" was permanently disabled.** The DOM helper called
