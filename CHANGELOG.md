@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.5.0
+
+- **Orientation triad** in the bottom-right corner: RGB = XYZ, the CAD
+  convention. Rendered as a separate scissored viewport so it always sits on
+  top, never scales with the model, and turns as you orbit.
+- **Boundary-condition and load symbols in 3D**, following the conventions the
+  commercial tools use (Abaqus draws a distinct arrow per type; Ansys colours
+  supports blue and loads red; textbook FEA uses ground-triangles for encastre
+  and rollers for frictionless):
+
+  | Item | Symbol |
+  |---|---|
+  | Fixed support | violet cone into the face + ground pad |
+  | Frictionless / symmetry | violet rollers on the face |
+  | Prescribed displacement | violet arrow into the face |
+  | Force | amber arrow along the force vector |
+  | Pressure | amber arrows pressing into the face |
+  | Gravity | one large amber arrow at the model centre |
+  | Rotational velocity | amber curved arrow about the spin axis |
+  | Remote force / moment | amber arrow at the point + dashed RBE3 spider legs |
+  | Bolt | steel-blue shank with head and nut |
+
+  Symbols are spread *spatially* across a face (grid sampling of the
+  tessellation) rather than by vertex index, which otherwise clustered them
+  wherever the mesher happened to emit vertices.
+
 ## 0.4.2
 
 **code_aster ran a Lattice-generated deck end to end for the first time**, on

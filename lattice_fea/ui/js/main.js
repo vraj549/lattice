@@ -416,6 +416,7 @@ function refresh() {
   renderTree(S, A);
   renderPanel(S, A);
   viewer.setFaceStates(faceStates());
+  viewer.setGlyphs(S.project.setup, S.project.geometry);
 }
 
 // ---------------- project bootstrap ----------------
@@ -505,7 +506,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.4.2";
+const UI_BUILD = "0.5.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;

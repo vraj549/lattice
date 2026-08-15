@@ -2,6 +2,8 @@ import * as THREE from "three";
 import { Orbit } from "./orbit.js";
 import { decode } from "./b64.js";
 import { makeTexture } from "./colormap.js";
+import { AxisTriad } from "./axes.js";
+import { buildGlyphs } from "./glyphs.js";
 
 const SOLID_COLORS = [0x7fa8bd, 0xb99f7a, 0x8fae8a, 0xa48fb8, 0xbd9a8f, 0x8f9ebd];
 const HOVER = 0xe8b06a, SELECTED = 0xe89344, SUPPORT = 0x8d7dec, LOAD = 0xd97a28,
@@ -30,8 +32,11 @@ export class Viewer {
     this.geoGroup = new THREE.Group();     // B-rep faces + edges
     this.meshGroup = new THREE.Group();    // mesh preview
     this.resultGroup = new THREE.Group();  // contour mesh
-    this.scene.add(this.geoGroup, this.meshGroup, this.resultGroup);
+    this.glyphGroup = new THREE.Group();   // BC / load symbols
+    this.scene.add(this.geoGroup, this.meshGroup, this.resultGroup, this.glyphGroup);
 
+    this.triad = new AxisTriad();
+    this.faceInfo = new Map();    // tag -> {centroid, normal, positions}
     this.faceMeshes = new Map();  // tag -> Mesh
     this.faceStates = new Map();  // tag -> 'support' | 'load'
     this.solidOfFace = new Map(); // tag -> [solidTags]
@@ -75,6 +80,7 @@ export class Viewer {
     if (this._needsRender) {
       this._needsRender = false;
       this.renderer.render(this.scene, this.camera);
+      this.triad.render(this.renderer, this.camera, this.orbit.target);
     }
   }
 
@@ -94,6 +100,7 @@ export class Viewer {
   setGeometry(tess, meta) {
     this.geoGroup.clear();
     this.faceMeshes.clear();
+    this.faceInfo.clear();
     this.solidOfFace.clear();
     this.bbox = meta.bbox;
 
@@ -119,6 +126,21 @@ export class Viewer {
       this.geoGroup.add(mesh);
       this.faceMeshes.set(f.tag, mesh);
       this.solidOfFace.set(f.tag, solids);
+
+      // centroid + outward normal, for placing BC/load glyphs on this face
+      const pos = geom.getAttribute("position").array;
+      const nrm = geom.getAttribute("normal").array;
+      const c = new THREE.Vector3();
+      const n = new THREE.Vector3();
+      const cnt = pos.length / 3;
+      for (let i = 0; i < cnt; i++) {
+        c.x += pos[i * 3]; c.y += pos[i * 3 + 1]; c.z += pos[i * 3 + 2];
+        n.x += nrm[i * 3]; n.y += nrm[i * 3 + 1]; n.z += nrm[i * 3 + 2];
+      }
+      c.multiplyScalar(1 / Math.max(cnt, 1));
+      if (n.lengthSq() < 1e-12) n.set(0, 0, 1);
+      n.normalize();
+      this.faceInfo.set(f.tag, { centroid: c, normal: n, positions: pos });
     }
 
     if (tess.edges && tess.edges.vtx) {
@@ -139,6 +161,19 @@ export class Viewer {
   setFaceStates(map) {
     this.faceStates = map;
     this._applyFaceColors();
+  }
+
+  /** Rebuild the BC/load symbol overlay from the current setup. */
+  setGlyphs(setup, geometry) {
+    this.glyphGroup.clear();
+    if (!setup || !geometry || !this.faceInfo.size) { this.requestRender(); return; }
+    try {
+      this.glyphGroup.add(buildGlyphs(setup, geometry, this.faceInfo));
+    } catch (e) {
+      console.warn("glyph build failed:", e);   // never let symbols break the view
+    }
+    this.glyphGroup.visible = this.geoGroup.visible;
+    this.requestRender();
   }
 
   setHiddenSolids(set) {
@@ -227,6 +262,7 @@ export class Viewer {
   // ---------------- view switching ----------------
   showGeometry() {
     this.geoGroup.visible = true;
+    this.glyphGroup.visible = true;
     this.meshGroup.visible = false;
     this.resultGroup.visible = false;
     this.anim = null;
@@ -252,6 +288,7 @@ export class Viewer {
       this.meshGroup.add(solid, wire);
     }
     this.geoGroup.visible = false;
+    this.glyphGroup.visible = false;
     this.meshGroup.visible = true;
     this.resultGroup.visible = false;
     this.anim = null;
@@ -307,6 +344,7 @@ export class Viewer {
     this._defScale = defScale;
 
     this.geoGroup.visible = false;
+    this.glyphGroup.visible = false;
     this.meshGroup.visible = false;
     this.resultGroup.visible = true;
     this.anim = animate ? {} : null;
