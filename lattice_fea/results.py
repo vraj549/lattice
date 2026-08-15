@@ -71,7 +71,7 @@ def build_results(run_dir: str, expect_bbox=None, expect_volume=None) -> dict:
         p = os.path.join(run_dir, fname)
         if os.path.isfile(p):
             try:
-                meta["tables"][key] = parse_tableau(open(p, errors="replace").read())
+                meta["tables"][key] = parse_tableau(open(p, encoding="utf-8", errors="replace").read())
             except Exception as e:  # noqa: BLE001
                 meta["warnings"].append(f"{fname}: {e}")
 
@@ -80,7 +80,7 @@ def build_results(run_dir: str, expect_bbox=None, expect_volume=None) -> dict:
         if not m:
             continue
         try:
-            curves = parse_fonction(open(p, errors="replace").read())
+            curves = parse_fonction(open(p, encoding="utf-8", errors="replace").read())
             meta["frf"].append({"probe": int(m.group(1)), "comp": m.group(2).upper(),
                                 **curves})
         except Exception as e:  # noqa: BLE001

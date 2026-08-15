@@ -111,7 +111,7 @@ def doctor(workspace: str) -> None:
             if not _os.path.isfile(pj):
                 continue
             try:
-                with open(pj) as f:
+                with open(pj, encoding="utf-8") as f:
                     p = _json.load(f)
             except Exception:  # noqa: BLE001
                 continue

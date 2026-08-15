@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.2
+
+**code_aster ran a Lattice-generated deck end to end for the first time**, on
+Windows/WSL2. It reached `FIN()` with no solver error — the failure was in
+Lattice's own logging, after the physics was finished.
+
+- **Fixed: `UnicodeEncodeError` killed runs on Windows.** The run log was
+  opened without an explicit encoding, so Python used the locale codec
+  (cp1252), which cannot represent code_aster's French output. Every text file
+  the app opens (18 call sites: logs, run.comm/export, project.json, meshes,
+  result tables) is now explicitly UTF-8.
+- Log writing can no longer fail a run: by the time output streams, the solve
+  is already done, so write errors are swallowed rather than raised.
+- **Result recovery.** `POST /api/projects/{pid}/results/{aid}/reparse` rebuilds
+  results from whatever the solver left on disk. A failed job now automatically
+  attempts recovery, and offers a "Recover results from files" button — a
+  completed solve is never thrown away because a later step tripped.
+
 ## 0.4.1
 
 - **Fixed: Ctrl+C could not stop the server on Windows.** Child processes

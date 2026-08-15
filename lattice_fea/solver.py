@@ -150,7 +150,7 @@ def run_solver(cfg: SolverConfig, jobdir: str, job: Job) -> int:
     job.append(f"$ {' '.join(argv)}")
     logfile = os.path.join(jobdir, "log.txt")
     cwd = jobdir if cfg.mode == "native" else None
-    with open(logfile, "w") as lf:
+    with open(logfile, "w", encoding="utf-8", errors="replace") as lf:
         proc = popen_isolated(argv, cwd=cwd, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True,
                               errors="replace", bufsize=1)
@@ -158,7 +158,12 @@ def run_solver(cfg: SolverConfig, jobdir: str, job: Job) -> int:
         try:
             assert proc.stdout is not None
             for line in proc.stdout:
-                lf.write(line)
+                # Never let a logging problem destroy a finished solve: the
+                # physics is already done by the time output is streaming.
+                try:
+                    lf.write(line)
+                except Exception:  # noqa: BLE001
+                    pass
                 job.append(line)
             rc = proc.wait()
         finally:

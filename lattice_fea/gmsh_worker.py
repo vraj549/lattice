@@ -41,9 +41,9 @@ def op_import(a: dict) -> None:
             ncyl += fit.get("kind") == "cylinder"
     if ncyl:
         log(f"  {ncyl} cylindrical face(s) detected (bolt-hole candidates)")
-    with gzip.open(a["tess"], "wt") as f:
+    with gzip.open(a["tess"], "wt", encoding="utf-8") as f:
         json.dump(tess, f)
-    with open(a["meta_out"], "w") as f:
+    with open(a["meta_out"], "w", encoding="utf-8") as f:
         json.dump(meta, f)
     log("Import complete.")
 
@@ -51,9 +51,9 @@ def op_import(a: dict) -> None:
 def op_mesh(a: dict) -> None:
     from . import meshing
     out = meshing.mesh_project(a["brep"], a["unv"], a["meta"], a["setup"], progress=log)
-    with open(a["stats_out"], "w") as f:
+    with open(a["stats_out"], "w", encoding="utf-8") as f:
         json.dump(out["stats"], f)
-    with gzip.open(a["skin_out"], "wt") as f:
+    with gzip.open(a["skin_out"], "wt", encoding="utf-8") as f:
         json.dump(out["skin"], f)
     s = out["stats"]
     log(f"Mesh: {s['nodes']:,} nodes / {s['elements']:,} elements "
@@ -67,7 +67,7 @@ def op_mesh(a: dict) -> None:
 
 
 def main() -> int:
-    with open(sys.argv[1]) as f:
+    with open(sys.argv[1], encoding="utf-8") as f:
         a = json.load(f)
     try:
         {"import": op_import, "mesh": op_mesh}[a["op"]](a)

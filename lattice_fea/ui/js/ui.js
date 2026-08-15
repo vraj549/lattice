@@ -668,6 +668,10 @@ function panelAnalysis(S, A, put, id) {
       el("button", { class: "btn btn-accent", disabled: running || blockers.length > 0,
         onclick: () => A.runAnalysis(a.id) }, running ? "Running…" : "Run analysis"),
       done ? el("button", { class: "btn", onclick: () => A.openResults(a.id) }, "View results") : null,
+      // a solve can finish and a later step still fail — offer recovery
+      S.runStatus[a.id] === "failed"
+        ? el("button", { class: "btn", onclick: () => A.recoverResults(a.id) },
+             "Recover results from files") : null,
       !S.config?.solver?.available
         ? el("button", { class: "btn btn-small", onclick: () => A.recheckSolver() }, "Recheck solver")
         : null),

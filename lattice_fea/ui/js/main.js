@@ -153,6 +153,12 @@ const A = {
       watchJob(job, "Solving", async (ok) => {
         S.runStatus[aid] = ok ? "done" : "failed";
         if (ok) await A.openResults(aid);
+        else {
+          // the solve may have completed and only a later step failed —
+          // try to salvage whatever landed on disk before giving up
+          logLine("Job reported failure; checking for usable output …", "warnln");
+          await A.recoverResults(aid);
+        }
         refresh();
       });
     } catch (e) {
@@ -160,6 +166,15 @@ const A = {
       logLine(`solve: ${e.message}`, "badln");
       refresh();
     }
+  },
+
+  async recoverResults(aid) {
+    try {
+      logLine("Re-parsing files the solver already wrote …");
+      const r = await api.post(`/api/projects/${S.project.id}/results/${aid}/reparse`);
+      logLine(`recovered: ${r.found.join(", ")}`, "");
+      await A.openResults(aid);
+    } catch (e) { logLine(`recover failed: ${e.message}`, "badln"); }
   },
 
   async openResults(aid) {
@@ -490,7 +505,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.4.1";
+const UI_BUILD = "0.4.2";
 
 function checkVersionSkew() {
   const server = S.config?.version;

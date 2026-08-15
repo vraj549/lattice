@@ -59,7 +59,7 @@ class ProjectStore:
             pj = os.path.join(self.root, pid, "project.json")
             if os.path.isfile(pj):
                 try:
-                    with open(pj) as f:
+                    with open(pj, encoding="utf-8") as f:
                         j = json.load(f)
                     out.append({"id": pid, "name": j.get("name", pid),
                                 "created": j.get("created"),
@@ -70,7 +70,7 @@ class ProjectStore:
         return out
 
     def load(self, pid: str) -> dict:
-        with open(self.path(pid, "project.json")) as f:
+        with open(self.path(pid, "project.json"), encoding="utf-8") as f:
             return json.load(f)
 
     def save(self, pid: str, data: dict) -> None:
@@ -82,22 +82,22 @@ class ProjectStore:
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with _LOCK:
             tmp = p + ".tmp"
-            with open(tmp, "w") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f)
             os.replace(tmp, p)
 
     def read_json(self, pid: str, rel: str):
-        with open(self.path(pid, rel)) as f:
+        with open(self.path(pid, rel), encoding="utf-8") as f:
             return json.load(f)
 
     def write_json_gz(self, pid: str, rel: str, data) -> None:
         p = self.path(pid, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        with gzip.open(p, "wt") as f:
+        with gzip.open(p, "wt", encoding="utf-8") as f:
             json.dump(data, f)
 
     def read_json_gz(self, pid: str, rel: str):
-        with gzip.open(self.path(pid, rel), "rt") as f:
+        with gzip.open(self.path(pid, rel), "rt", encoding="utf-8") as f:
             return json.load(f)
 
     def exists(self, pid: str, rel: str) -> bool:

@@ -100,7 +100,7 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                 "tess": store.path(pid, "tess.json.gz"),
                 "meta_out": meta_out,
             })
-            with open(meta_out) as f:
+            with open(meta_out, encoding="utf-8") as f:
                 meta = json.load(f)
             proj = store.load(pid)
             proj["geometry"] = meta
@@ -192,9 +192,9 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         except ValueError as e:
             raise HTTPException(422, str(e))
 
-        with open(os.path.join(run_dir, "run.comm"), "w") as f:
+        with open(os.path.join(run_dir, "run.comm"), "w", encoding="utf-8") as f:
             f.write(comm)
-        with open(os.path.join(run_dir, "run.export"), "w") as f:
+        with open(os.path.join(run_dir, "run.export"), "w", encoding="utf-8") as f:
             f.write(export)
         shutil.copyfile(store.path(pid, "mesh", "mesh.unv"),
                         os.path.join(run_dir, "mesh.unv"))
@@ -231,6 +231,28 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         if not store.exists(pid, f"runs/{aid}/meta.json"):
             raise HTTPException(404, "no results for this analysis")
         return store.read_json(pid, f"runs/{aid}/meta.json")
+
+    @app.post("/api/projects/{pid}/results/{aid}/reparse")
+    def reparse(pid: str, aid: str):
+        """Rebuild meta.json from whatever the solver already left on disk.
+
+        A solve can finish and write result.med while a later step fails —
+        this recovers those results without paying for the run again."""
+        proj = _project(pid)
+        run_dir = store.path(pid, "runs", aid)
+        if not os.path.isdir(run_dir):
+            raise HTTPException(404, "no run directory for this analysis")
+        produced = [f for f in ("result.med", "modes.csv", "tables.txt",
+                                "bolt_forces.csv") if os.path.isfile(os.path.join(run_dir, f))]
+        if not produced:
+            raise HTTPException(409, "the run produced no result files to parse")
+        mesh_stats = (store.read_json(pid, "mesh/stats.json")
+                      if store.exists(pid, "mesh/stats.json") else {})
+        meta = results.build_results(run_dir, proj["geometry"]["bbox"],
+                                     mesh_stats.get("geo_volume"))
+        meta["reparsed"] = True
+        store.write_json(pid, f"runs/{aid}/meta.json", meta)
+        return {"ok": True, "found": produced, "meta": meta}
 
     @app.get("/api/projects/{pid}/results/{aid}/field")
     def result_field(pid: str, aid: str, name: str, step: str, comp: str = "MAG"):
