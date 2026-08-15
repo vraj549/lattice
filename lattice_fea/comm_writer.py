@@ -7,15 +7,19 @@ Logical unit map (run_aster copies fort.<n> back for R entries):
   19  mesh.unv          (D)   IDEAS mesh from gmsh
   80  result.med        (R)   fields
   37  tables.txt        (R)   mass / reactions (block CSV)
-  38  modes.csv         (R)   frequency table (written before MED so a late
-                              failure can't lose it)
-  39  participation.csv (R)   effective-mass table (last: most likely to vary
-                              across versions, degrades gracefully)
+  38  modes.csv         (R)   frequency table
+  39  participation.csv (R)   effective-mass table
   40+ frf_p<i>_<c>.csv  (R)   FRF module+phase per probe component
 
-Output ordering inside the .comm is deliberate: cheap/critical prints first,
-version-fragile extras last, so a failure late in the file still leaves a
-usable run directory.
+Ordering and failure policy: the expensive result (the MED) is written FIRST,
+because it is produced by IMPR_RESU, the most version-stable command here.
+Every table afterwards is emitted inside `try/except` via _optional(), since a
+.comm executes as Python and code_aster <EXCEPTION> errors are catchable.
+
+This is deliberate. The first real modal run computed all ten modes and then
+threw them away, because a table used NOM_PARA='NUME_ORDRE' (a MODE_MECA
+publishes NUME_MODE) and the abort happened before the MED was written.
+No single table may ever discard a completed solve again.
 """
 from __future__ import annotations
 
@@ -244,20 +248,22 @@ def _bolt_forces_out(b: CommBuild, result_var: str) -> None:
     if not getattr(b, "has_bolts", False):
         return
     beam_groups = _group_tuple([f"BOLT{br['index']}" for br in b.bolts])
-    b.w(f"{result_var} = CALC_CHAMP(reuse={result_var}, RESULTAT={result_var},")
-    b.w(f"                CARA_ELEM=cara, GROUP_MA={beam_groups},")
-    b.w("                CONTRAINTE=('EFGE_ELNO',))")
-    b.w()
-    for br in b.bolts:
-        for side in ("A", "B"):
-            b.w(f"bt{br['index']}{side} = POST_RELEVE_T(ACTION=_F(")
-            b.w(f"    INTITULE='BOLT{br['index']}_{side}', OPERATION='EXTRACTION',")
-            b.w(f"    RESULTAT={result_var}, NOM_CHAM='EFGE_ELNO',")
-            b.w(f"    GROUP_NO='BN{br['index']}{side}', TOUT_CMP='OUI'))")
-            b.w(f"IMPR_TABLE(TABLE=bt{br['index']}{side}, UNITE=36, "
-                f"FORMAT='TABLEAU', SEPARATEUR=',')")
-    b.result_files.append((36, "bolt_forces.csv"))
-    b.w()
+    bolts = list(b.bolts)
+
+    def bolt_block(x):
+        x.w(f"{result_var} = CALC_CHAMP(reuse={result_var}, RESULTAT={result_var},")
+        x.w(f"                CARA_ELEM=cara, GROUP_MA={beam_groups},")
+        x.w("                CONTRAINTE=('EFGE_ELNO',))")
+        for br in bolts:
+            for side in ("A", "B"):
+                x.w(f"bt{br['index']}{side} = POST_RELEVE_T(ACTION=_F(")
+                x.w(f"    INTITULE='BOLT{br['index']}_{side}', OPERATION='EXTRACTION',")
+                x.w(f"    RESULTAT={result_var}, NOM_CHAM='EFGE_ELNO',")
+                x.w(f"    GROUP_NO='BN{br['index']}{side}', TOUT_CMP='OUI'))")
+                x.w(f"IMPR_TABLE(TABLE=bt{br['index']}{side}, UNITE=36, "
+                    f"FORMAT='TABLEAU', SEPARATEUR=',')")
+        x.result_files.append((36, "bolt_forces.csv"))
+    _optional(b, "bolt end forces", bolt_block)
 
 
 def _supports(b: CommBuild, setup: dict) -> str:
@@ -415,13 +421,16 @@ def write_static(setup: dict, meta: dict, mesh_stats: dict, cfg: dict) -> CommBu
     b.w()
     _bolt_forces_out(b, "res")
     groups = _support_groups(setup)
-    b.w("rtab = POST_RELEVE_T(ACTION=_F(INTITULE='REACTIONS', OPERATION='EXTRACTION',")
-    b.w("                               RESULTANTE=('DX', 'DY', 'DZ'),")
-    b.w(f"                               RESULTAT=res, NOM_CHAM='REAC_NODA',")
-    b.w(f"                               GROUP_NO={_group_tuple(groups)}))")
-    b.w("IMPR_TABLE(TABLE=rtab, UNITE=37, FORMAT='TABLEAU', SEPARATEUR=',')")
-    b.result_files.append((37, "tables.txt"))
-    b.w()
+
+    def reactions(x):
+        x.w("rtab = POST_RELEVE_T(ACTION=_F(INTITULE='REACTIONS', OPERATION='EXTRACTION',")
+        x.w("                               RESULTANTE=('DX', 'DY', 'DZ'),")
+        x.w("                               RESULTAT=res, NOM_CHAM='REAC_NODA',")
+        x.w(f"                               GROUP_NO={_group_tuple(groups)}))")
+        x.w("IMPR_TABLE(TABLE=rtab, UNITE=37, FORMAT='TABLEAU', SEPARATEUR=',')")
+        x.result_files.append((37, "tables.txt"))
+    _optional(b, "reaction forces", reactions)
+
     b.w("FIN()")
     return b
 
@@ -453,32 +462,60 @@ def _modal_core(b: CommBuild, setup: dict, cfg: dict, fix: str) -> None:
     b.w()
 
 
+def _optional(b: CommBuild, comment: str, body) -> None:
+    """Emit a block that must never abort the run.
+
+    A .comm is executed as Python, so a catchable code_aster <EXCEPTION>
+    (a wrong NOM_PARA, a parameter a given version doesn't publish) can be
+    contained. Without this, one unavailable table throws away results that
+    were already computed — which is exactly what happened to the first real
+    modal run.
+    """
+    b.w(f"# optional: {comment}")
+    b.w("try:")
+    inner = CommBuild()
+    body(inner)
+    for line in inner.lines:
+        b.w(f"    {line}" if line else "")
+    b.result_files.extend(inner.result_files)
+    b.w("except Exception as _e:")
+    b.w(f"    print('Lattice: skipped {comment} —', _e)")
+    b.w()
+
+
 def write_modal(setup: dict, meta: dict, mesh_stats: dict, cfg: dict) -> CommBuild:
     b = CommBuild()
     _prelude(b, setup, meta, mesh_stats, need_probes=False)
     fix = _supports(b, setup)
     _modal_core(b, setup, cfg, fix)
 
-    # 1) frequencies — cheapest, most important, printed first
-    b.w("ftab = RECU_TABLE(CO=modes, NOM_PARA=('NUME_ORDRE', 'FREQ'))")
-    b.w("IMPR_TABLE(TABLE=ftab, UNITE=38, FORMAT='TABLEAU', SEPARATEUR=',')")
-    b.result_files.append((38, "modes.csv"))
-    b.w()
-    # 2) shapes
+    # Mode shapes FIRST: IMPR_RESU is the most stable command here and the
+    # result is the expensive one. Tables come after, each individually
+    # non-fatal, so a version quirk in a table can't discard the modes.
     b.w("IMPR_RESU(FORMAT='MED', UNITE=80, RESU=_F(RESULTAT=modes, NOM_CHAM='DEPL'))")
     b.result_files.append((80, "result.med"))
     b.w()
-    # 3) model mass
-    b.w("mtab = POST_ELEM(MODELE=model, CHAM_MATER=chmat, MASS_INER=_F(TOUT='OUI'))")
-    b.w("IMPR_TABLE(TABLE=mtab, UNITE=37, FORMAT='TABLEAU', SEPARATEUR=',')")
-    b.result_files.append((37, "tables.txt"))
-    b.w()
-    # 4) effective masses — parameter set can vary between versions, so last
-    b.w("ptab = RECU_TABLE(CO=modes, NOM_PARA=('NUME_ORDRE', 'FREQ', 'MASS_GENE',")
-    b.w("                  'MASS_EFFE_UN_DX', 'MASS_EFFE_UN_DY', 'MASS_EFFE_UN_DZ'))")
-    b.w("IMPR_TABLE(TABLE=ptab, UNITE=39, FORMAT='TABLEAU', SEPARATEUR=',')")
-    b.result_files.append((39, "participation.csv"))
-    b.w()
+
+    # MODE_MECA numbers modes with NUME_MODE (NUME_ORDRE does not exist on it)
+    def freqs(x):
+        x.w("ftab = RECU_TABLE(CO=modes, NOM_PARA=('NUME_MODE', 'FREQ'))")
+        x.w("IMPR_TABLE(TABLE=ftab, UNITE=38, FORMAT='TABLEAU', SEPARATEUR=',')")
+        x.result_files.append((38, "modes.csv"))
+    _optional(b, "frequency table", freqs)
+
+    def mass(x):
+        x.w("mtab = POST_ELEM(MODELE=model, CHAM_MATER=chmat, MASS_INER=_F(TOUT='OUI'))")
+        x.w("IMPR_TABLE(TABLE=mtab, UNITE=37, FORMAT='TABLEAU', SEPARATEUR=',')")
+        x.result_files.append((37, "tables.txt"))
+    _optional(b, "model mass", mass)
+
+    def part(x):
+        x.w("ptab = RECU_TABLE(CO=modes, NOM_PARA=('NUME_MODE', 'FREQ', 'MASS_GENE',")
+        x.w("                  'MASS_EFFE_UN_DX', 'MASS_EFFE_UN_DY', 'MASS_EFFE_UN_DZ'))")
+        x.w("IMPR_TABLE(TABLE=ptab, UNITE=39, FORMAT='TABLEAU', SEPARATEUR=',')")
+        x.result_files.append((39, "participation.csv"))
+    _optional(b, "effective mass table", part)
+
     b.w("FIN()")
     return b
 
@@ -517,10 +554,11 @@ def write_harmonic(setup: dict, meta: dict, mesh_stats: dict, cfg: dict) -> Comm
     modal_cfg = {"band": [0.0, 1.6 * f1]}
     _modal_core(b, setup, modal_cfg, fix)
 
-    b.w("ftab = RECU_TABLE(CO=modes, NOM_PARA=('NUME_ORDRE', 'FREQ'))")
-    b.w("IMPR_TABLE(TABLE=ftab, UNITE=38, FORMAT='TABLEAU', SEPARATEUR=',')")
-    b.result_files.append((38, "modes.csv"))
-    b.w()
+    def hfreqs(x):
+        x.w("ftab = RECU_TABLE(CO=modes, NOM_PARA=('NUME_MODE', 'FREQ'))")
+        x.w("IMPR_TABLE(TABLE=ftab, UNITE=38, FORMAT='TABLEAU', SEPARATEUR=',')")
+        x.result_files.append((38, "modes.csv"))
+    _optional(b, "modal basis table", hfreqs)
     cara_kw = " CARA_ELEM=cara," if getattr(b, "has_beams", False) else ""
     b.w(f"vel = CALC_VECT_ELEM(OPTION='CHAR_MECA', CHARGE=({load},),{cara_kw} CHAM_MATER=chmat)")
     b.w("fas = ASSE_VECTEUR(VECT_ELEM=vel, NUME_DDL=nddl)")

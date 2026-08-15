@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.1
+
+First real **modal** run: code_aster extracted all 10 modes correctly
+(267.5 Hz … 8110.7 Hz, error norms ~1e-10, Sturm-verified) and then Lattice
+discarded them.
+
+- **Fixed: `RECU_TABLE(NOM_PARA='NUME_ORDRE')` aborted every modal and
+  harmonic run.** A `MODE_MECA` numbers its modes with **`NUME_MODE`**;
+  `NUME_ORDRE` does not exist on it, so the command raised and killed the job.
+- **Fixed: output ordering threw away completed work.** The frequency table was
+  written *before* the MED, so the abort happened before any mode shape was
+  saved and the run directory was left empty — nothing to recover. The MED is
+  now written first, by `IMPR_RESU`, the most version-stable command here.
+- **Every table is now non-fatal.** A `.comm` executes as Python and
+  code_aster `<EXCEPTION>` errors are catchable, so each optional output
+  (frequencies, model mass, effective mass, reactions, bolt end forces) is
+  emitted inside `try/except`. A parameter one version doesn't publish now
+  prints a note and continues instead of destroying the solve.
+- New tests: generated decks must parse as Python (guards the try/except
+  indentation), must not contain `NUME_ORDRE`, and must write the MED before
+  any table.
+
 ## 0.5.0
 
 - **Orientation triad** in the bottom-right corner: RGB = XYZ, the CAD

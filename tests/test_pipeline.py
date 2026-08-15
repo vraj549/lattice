@@ -130,3 +130,33 @@ def test_tableau_parser():
     blocks = parse_tableau(text)
     assert blocks and blocks[0]["columns"] == ["NUME_ORDRE", "FREQ"]
     assert blocks[0]["rows"][1][1] == 618.4
+
+
+def test_comm_is_valid_python(meshed):
+    """A .comm executes as Python, and optional outputs are wrapped in
+    try/except — so a generated deck must parse. Guards the indentation."""
+    import ast
+    _, out, setup, meta = meshed
+    setup["materials"] = [{"id": "al", "name": "Al", "E_GPa": 68.9, "nu": 0.33,
+                           "rho_kgm3": 2700}]
+    setup["assignments"] = {str(s["tag"]): "al" for s in meta["solids"]}
+    for a in [{"id": "s", "type": "static", "config": {}},
+              {"id": "m", "type": "modal", "config": {"n_modes": 6}},
+              {"id": "h", "type": "harmonic",
+               "config": {"f_min": 20, "f_max": 900, "n_steps": 20, "damping": 0.02}}]:
+        comm, _ = comm_writer.build_run(a, setup, meta, out["stats"], SolverConfig())
+        ast.parse(comm)                      # raises SyntaxError if malformed
+        assert "NUME_ORDRE" not in comm, "MODE_MECA publishes NUME_MODE, not NUME_ORDRE"
+
+
+def test_med_written_before_optional_tables(meshed):
+    """The expensive result must land before anything that can fail."""
+    _, out, setup, meta = meshed
+    setup["materials"] = [{"id": "al", "name": "Al", "E_GPa": 68.9, "nu": 0.33,
+                           "rho_kgm3": 2700}]
+    setup["assignments"] = {str(s["tag"]): "al" for s in meta["solids"]}
+    comm, _ = comm_writer.build_run({"id": "m", "type": "modal", "config": {}},
+                                    setup, meta, out["stats"], SolverConfig())
+    assert comm.index("IMPR_RESU") < comm.index("RECU_TABLE")
+    # and every table sits inside a guard
+    assert comm.count("try:") >= 3

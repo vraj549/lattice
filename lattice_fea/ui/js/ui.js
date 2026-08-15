@@ -692,7 +692,7 @@ function resultSections(S, A, a) {
   // tables
   const modes = meta.tables?.modes?.[0];
   if (modes && a.type !== "static") {
-    const fi = modes.columns.indexOf("FREQ");
+    const fi = modes.columns.indexOf("FREQ");   // NUME_MODE numbers the rows
     const rows = modes.rows.map((r, i) => ({ n: i + 1, f: r[fi] })).filter((r) => r.f != null);
     const fmax = Math.max(...rows.map((r) => r.f), 1);
     const part = meta.tables?.participation?.[0];
