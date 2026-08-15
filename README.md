@@ -166,8 +166,26 @@ ncpus = 6
    Miles' cross-check, bolt end forces, reactions. Every panel exports to CSV,
    and *Export nodal values* dumps the whole field on screen.
 
-Panes are resizable — drag the separators, or focus one and use the arrow keys
-(Shift for coarse steps, Home to reset).
+The tree is one hierarchy you work top to bottom — geometry, connections,
+probes and mesh are shared by the model; each analysis owns its settings, its
+boundary conditions and a **Solution** node holding its results:
+
+```
+bracket assembly                 3 solids
+  Geometry / Connections / Probes / Mesh
+  Static structural              ✓
+    Analysis Settings
+    Fixed base                   2 faces
+    Bearing load                 1 face
+    Solution                     ✓
+      Contours · Bolt forces · Reactions
+```
+
+Every branch collapses (state is remembered per project), rows carry a type
+icon and a status mark, and the **+** on a row inserts into it. Arrow keys
+navigate; left/right collapse and expand. Panes are resizable — drag the
+separators, or focus one and use the arrow keys (Shift for coarse steps, Home
+to reset).
 
 **Status symbols.** Each analysis carries a mark in the tree: green ✓ results
 are current, amber ! **out of date**, red ✕ the run failed. Out of date means

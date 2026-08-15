@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.12.0
+
+The simulation tree rebuilt as one real hierarchy, the way Ansys Mechanical and
+the SimScale workbench present a model — a single top-to-bottom structure you
+work down, rather than a stack of flat section headers.
+
+```
+bolted plates                    2 solids
+  Geometry                       15 faces
+    Solid 1                      Structural steel S235
+    Bonded interfaces            1
+  Connections                    2
+    Bolt @25                     M6 · 8362 N
+  Probes                         1
+  Mesh                           34,221 n
+  Preload + pull-off             ✓
+    Analysis Settings
+    Base                         1 face
+    Pull-off                     4500 N
+    Solution                     ✓
+      Contours                   2 fields
+      Bolt forces
+      Reactions
+```
+
+- **Solution is a node, not a heading.** It sits under its analysis, collapses
+  with it, carries its own status mark, and holds the individual results.
+- **Analysis Settings is its own node.** The analysis row answers "can I run
+  this"; the settings row answers "what exactly am I running". They were one
+  panel that had grown to a screen and a half of scrolling.
+- **Boundary conditions sit directly under their analysis**, as in Ansys,
+  rather than inside Supports/Loads sub-headers.
+- **Icons on every row**, per type — solids, bolts, ties, probes, mesh,
+  supports, loads, and a distinct glyph per analysis type, so the type no
+  longer has to spend a text column next to a name you chose yourself.
+  Constraint violet and load amber carry over from the viewport.
+- **Everything collapses**, with indent guides, and the open/closed state
+  persists per project. A finished study can be folded away.
+- **Keyboard navigation**: up/down to move, left/right to collapse and expand,
+  Home/End, Enter to select.
+- **Insert menus** on the "+" of a row rather than "+ add" text buttons.
+  Options that do not apply are shown disabled with the reason — a base-driven
+  study offers "Load" greyed out with "this study is driven through its
+  supports", which teaches the model rather than just hiding a control.
+
+### Fixed
+
+- **The whole shell could be forced wider than the window.** A grid item's
+  default minimum width is its min-content, so the toolbar — which cannot
+  shrink past its chips — widened the app and pushed the right panel
+  off-screen at anything under about 1000px. Nothing in the shell may do that
+  now, and the solver chips truncate or drop instead.
+- Insert menus clamp into the viewport and scroll their row into view first,
+  instead of opening below the window when anchored to a scrolled-out row.
+- The "+" affordance no longer disappears after a click: revealing it only on
+  hover meant it vanished on every selection, because selecting re-renders the
+  row and CSS `:hover` does not re-evaluate until the pointer moves.
+- Tree scroll position survives a re-render.
+- A Solution node reached before its run says so instead of waiting forever on
+  a 404.
+
 ## 0.11.0
 
 Interface overhaul: results became a place you go, not a wall you scroll, and

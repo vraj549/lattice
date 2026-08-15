@@ -26,168 +26,13 @@ const uid = () => Math.random().toString(36).slice(2, 8);
 
 // ============================================================ tree
 
-export function renderTree(S, A) {
-  const tree = document.getElementById("tree");
-  tree.innerHTML = "";
-  const geo = S.project?.geometry;
-  if (!geo) return;
-  const setup = S.project.setup;
-  setup.bolts ||= []; setup.ties ||= []; setup.probes ||= []; setup.analyses ||= [];
-  const sel = S.selection;
+// The tree itself lives in tree.js. What stays here is the shared logic it
+// asks about a model — what an analysis needs, what results it produced, and
+// whether the mesh still matches — so the tree, the panels and the run
+// blockers can never give three different answers to the same question.
 
-  const row = (kind, id, label, meta, opts = {}) => {
-    const r = el("button", {
-      class: `row${opts.depth ? " d" + opts.depth : ""}${opts.resultRow ? " result-row" : ""}`,
-      role: "option",
-      "aria-selected": sel.kind === kind && String(sel.id) === String(id) ? "true" : "false",
-      "aria-label": label,
-      title: opts.title || null,
-      onclick: () => A.select(kind, id),
-    });
-    if (opts.dotClass) r.append(el("span", { class: `dot ${opts.dotClass}` }));
-    if (opts.swatch) r.append(el("span", { class: "swatch", style: `background:${opts.swatch}` }));
-    r.append(el("span", { class: "nm" }, label));
-    if (opts.badge) {
-      r.append(el("span", { class: `badge ${opts.badge.cls}`, title: opts.badge.title },
-                   opts.badge.text));
-    }
-    if (meta) r.append(el("span", { class: `mt${opts.warnMeta ? " warn" : ""}` }, meta));
-    return r;
-  };
 
-  const grp = (label, addFn, ...rows) => {
-    const hd = el("div", { class: "grp-hd" }, el("span", { class: "lbl" }, label));
-    if (addFn) hd.append(el("button", { class: "grp-add", title: `Add ${label}`, onclick: addFn }, "+ add"));
-    return el("div", { class: "grp" }, hd, ...rows.flat());
-  };
-
-  // ---- shared model data ----
-  tree.append(grp("Geometry", null,
-    row("model", "root", S.project.name,
-        `${geo.solids.length} solid${geo.solids.length > 1 ? "s" : ""}`),
-    ...geo.solids.map((sd) => {
-      const mid = setup.assignments[String(sd.tag)];
-      const mat = setup.materials.find((m) => m.id === mid);
-      return row("solid", sd.tag, sd.name || `Solid ${sd.tag}`,
-                 mat ? mat.name : "no material", { warnMeta: !mat, depth: 1 });
-    }),
-    geo.interfaces.length
-      ? row("connections", "all", "Bonded interfaces", `${geo.interfaces.length}`, { depth: 1 })
-      : null,
-  ));
-
-  tree.append(grp("Connections", () => A.addBolt(),
-    ...setup.bolts.map((bl, i) =>
-      row("bolt", bl.id, bl.name || `Bolt ${i + 1}`,
-          bl.side_a_faces?.length && bl.side_b_faces?.length
-            ? `M${bl.d_mm ?? "?"} · ${fmtVal(bl.preload_N || 0)} N` : "pick faces",
-          { swatch: "#7fb2d8", depth: 1,
-            warnMeta: !(bl.side_a_faces?.length && bl.side_b_faces?.length) })),
-    ...setup.ties.map((t, i) =>
-      row("tie", t.id, t.name || `Tie ${i + 1}`,
-          t.slave_faces?.length && t.master_solid ? `→ solid ${t.master_solid}` : "incomplete",
-          { swatch: "var(--ok)", depth: 1,
-            warnMeta: !(t.slave_faces?.length && t.master_solid) })),
-    geo.solids.length > 1
-      ? el("div", { class: "btnrow", style: "padding:2px 12px 0 14px" },
-          el("button", { class: "btn btn-small", onclick: () => A.addTie() }, "+ tie"))
-      : null,
-  ));
-
-  tree.append(grp("Probes", () => A.addProbe(),
-    ...setup.probes.map((pr, i) =>
-      row("probe", pr.id, pr.name || `Probe ${i + 1}`,
-          `${fmtVal(pr.x)}, ${fmtVal(pr.y)}, ${fmtVal(pr.z)}`,
-          { swatch: "#22b07d", depth: 1 })),
-  ));
-
-  const ms = S.meshData?.stats;
-  const meshStale = ms ? staleForAnalyses(S).length > 0 : false;
-  tree.append(grp("Mesh", null,
-    row("mesh", "mesh", ms ? `Tet${ms.order === 2 ? "10" : "4"} · ${fmtVal(ms.size_mm)} mm` : "Not meshed",
-        ms ? `${ms.nodes.toLocaleString()} n` : "configure",
-        { dotClass: ms ? (meshStale ? "warn" : "ok") : "idle", depth: 1,
-          badge: meshStale ? { text: "!", cls: "stale",
-                               title: "Boundary conditions changed since this mesh was "
-                                    + "generated — re-mesh before running." } : null })));
-
-  // ---- analyses: each owns its own supports, loads and results ----
-  const branches = [];
-  for (const a of setup.analyses) {
-    a.supports ||= []; a.loads ||= [];
-    const st = analysisStatus(S, a);
-    const open = S.openAnalyses?.[a.id] !== false;
-
-    const arow = el("button", {
-      class: "row analysis-row", role: "option",
-      "aria-selected": sel.kind === "analysis" && sel.id === a.id ? "true" : "false",
-      "aria-label": a.name || a.type,
-      title: st.title,
-      onclick: () => A.select("analysis", a.id),
-    },
-      el("span", { class: `dot ${st.dot}` }),
-      // Expanding and selecting used to be the same click, so re-selecting an
-      // analysis collapsed it. The caret owns expansion now.
-      el("span", { class: "caret", role: "button",
-        "aria-label": open ? "Collapse" : "Expand",
-        onclick: (e) => {
-          e.stopPropagation();
-          (S.openAnalyses ||= {})[a.id] = !open;
-          A.refreshPanel();
-        } }, open ? "▾" : "▸"),
-      el("span", { class: "nm" }, a.name || a.type),
-      st.badge ? el("span", { class: `badge ${st.badge.cls}`, title: st.badge.title },
-                    st.badge.text) : null,
-      el("span", { class: "mt" }, TYPE_SHORT[a.type] || a.type));
-    branches.push(arow);
-
-    if (!open) continue;
-    branches.push(el("div", { class: "grp-hd sub" },
-      el("span", { class: "lbl" }, "Supports"),
-      el("button", { class: "grp-add", onclick: (e) => { e.stopPropagation(); A.addSupport(a.id); } }, "+ add")));
-    for (const sup of a.supports) {
-      branches.push(row("support", sup.id, sup.name || "Support",
-        sup.faces?.length ? `${sup.faces.length} face${sup.faces.length > 1 ? "s" : ""}` : "no faces",
-        { swatch: "var(--constraint)", depth: 2, warnMeta: !sup.faces?.length }));
-    }
-
-    if (needsLoads(a)) {
-      branches.push(el("div", { class: "grp-hd sub" },
-        el("span", { class: "lbl" }, "Loads"),
-        el("button", { class: "grp-add", onclick: (e) => { e.stopPropagation(); A.addLoad(a.id); } }, "+ add")));
-      for (const l of a.loads) {
-        branches.push(row("load", l.id, l.name || "Load", loadMeta(l),
-          { swatch: "var(--accent)", depth: 2,
-            warnMeta: !["gravity", "rotation"].includes(l.type) && !l.faces?.length }));
-      }
-    } else if (a.type !== "modal") {
-      // Base-driven runs take no applied loads at all. Rather than show a
-      // "+ add" that would be ignored by the solver, show what IS driving it.
-      branches.push(row("analysis", a.id, "Base excitation", excitationMeta(a),
-        { swatch: "var(--accent)", depth: 2 }));
-    }
-
-    // ---- solution branch: results are outputs, not more settings ----
-    const items = solutionItems(S, a);
-    if (items.length) {
-      const res = S.results[a.id];
-      branches.push(el("div", { class: "grp-hd sub" },
-        el("span", { class: "lbl" }, "Solution"),
-        el("button", { class: "grp-add", title: "Export every result as CSV",
-          onclick: (e) => { e.stopPropagation(); A.exportResults(a.id, "all"); } }, "export")));
-      for (const it of items) {
-        branches.push(row("result", `${a.id}|${it.what}`, it.label, it.meta,
-          { resultRow: true, title: res?.stale ? "Out of date — the model changed after this ran" : null }));
-      }
-    }
-  }
-  tree.append(grp("Analyses", () => A.addAnalysis(), ...branches,
-    setup.analyses.length ? null
-      : el("div", { class: "hint", style: "padding:2px 12px 4px 10px" },
-           "An analysis owns its own supports and loads — add one to start.")));
-}
-
-const TYPE_SHORT = { static: "static", modal: "modal",
+export const TYPE_SHORT = { static: "static", modal: "modal",
                      harmonic: "harmonic", random: "random" };
 
 /** Does this analysis take applied loads?
@@ -202,7 +47,7 @@ export function needsLoads(a) {
   return false;
 }
 
-function excitationMeta(a) {
+export function excitationMeta(a) {
   const c = a.config || {};
   const d = c.base_dir || [0, 0, 1];
   const ax = ["X", "Y", "Z"][d.map(Math.abs).indexOf(Math.max(...d.map(Math.abs)))] || "Z";
@@ -298,7 +143,7 @@ export function requiredGroups(a, ai) {
   return need;
 }
 
-function loadMeta(l) {
+export function loadMeta(l) {
   if (l.type === "gravity") return "gravity";
   if (l.type === "rotation") return `${fmtVal(l.rpm || 0)} rpm`;
   if (l.type === "pressure") return `${fmtVal(l.pressure || 0)} MPa`;
@@ -355,6 +200,8 @@ function renderPanelBody(S, A, put, kind, id) {
     case "probe": return panelProbe(S, A, put, id);
     case "mesh": return panelMesh(S, A, put);
     case "analysis": return panelAnalysis(S, A, put, id);
+    case "settings": return panelSettings(S, A, put, id);
+    case "solution": return panelSolution(S, A, put, id);
     case "result": return panelResult(S, A, put, id);
     default: return panelModel(S, A, put);
   }
@@ -846,15 +693,17 @@ function resolutionWarning(S, peaks) {
     `around each mode) to resolve resonances.`);
 }
 
-function panelAnalysis(S, A, put, id) {
+/** Everything that configures HOW the study is solved.
+ *
+ *  Split out of the analysis panel and given its own tree node, the way Ansys
+ *  and SimScale both do it: the analysis row answers "can I run this", and the
+ *  settings row answers "what exactly am I running". They were one panel, and
+ *  it had grown to a screen and a half of scrolling. */
+function panelSettings(S, A, put, id) {
   const a = S.project.setup.analyses.find((x) => x.id === id);
-  if (!a) return put("Analysis", "");
+  if (!a) return put("Analysis Settings", "");
   const c = a.config || {};
-  const running = S.runStatus[a.id] === "running";
-
-  const secs = [sec("Definition",
-    textInput("Name", a.name, (v) => A.mutate(() => { a.name = v; })),
-    dl([["Type", a.type], ["Solver", "code_aster · MUMPS"]]))];
+  const secs = [];
 
   if (a.type === "modal") {
     secs.push(sec("Extraction",
@@ -980,9 +829,15 @@ function panelAnalysis(S, A, put, id) {
       "Displacement, von Mises / principal stresses, stress tensor, and reaction " +
       "forces at the supports.")));
   }
+  secs.push(sec(null, el("div", { class: "btnrow" },
+    el("button", { class: "btn", onclick: () => A.select("analysis", a.id) },
+      "Back to analysis"))));
+  put("Analysis Settings", a.name || a.type, ...secs);
+}
 
-  // Every reason the run button can be blocked, stated explicitly — a
-  // greyed-out button with no explanation is a dead end for the user.
+/** Everything the run needs to be allowed to start. Stated explicitly — a
+ *  greyed-out button with no explanation is a dead end. */
+function runBlockers(S, a) {
   const blockers = [];
   if (!S.config?.solver?.available) {
     blockers.push("No code_aster solver detected. Set it up (README → Solver setup), " +
@@ -1021,39 +876,112 @@ function panelAnalysis(S, A, put, id) {
   if (["harmonic", "random"].includes(a.type) && !(S.project.setup.probes || []).length) {
     blockers.push("Add a probe — frequency response is extracted at probes.");
   }
-  if (a.type === "random" && (c.spec || []).length < 2) {
+  if (a.type === "random" && ((a.config || {}).spec || []).length < 2) {
     blockers.push("The input spectrum needs at least two breakpoints.");
   }
+  return blockers;
+}
 
-  secs.push(sec(null,
-    el("div", { class: "btnrow" },
-      el("button", { class: "btn btn-accent", disabled: running || blockers.length > 0,
-        onclick: () => A.runAnalysis(a.id) }, running ? "Running…" : "Run analysis"),
-      // a solve can finish and a later step still fail — offer recovery
-      S.runStatus[a.id] === "failed"
-        ? el("button", { class: "btn", onclick: () => A.recoverResults(a.id) },
-             "Recover results from files") : null,
-      !S.config?.solver?.available
-        ? el("button", { class: "btn btn-small", onclick: () => A.recheckSolver() }, "Recheck solver")
-        : null),
-    ...blockers.map((t) => el("div", { class: "hint warn" }, "⚠ " + t))));
-
-  // Results live in their own tree branch now. What belongs here is a way in
-  // — and, above everything else in the panel, whether they can be trusted.
+/** The analysis node: what this study is, and whether it can run. */
+function panelAnalysis(S, A, put, id) {
+  const a = S.project.setup.analyses.find((x) => x.id === id);
+  if (!a) return put("Analysis", "");
+  const running = S.runStatus[a.id] === "running";
+  const blockers = runBlockers(S, a);
   const items = solutionItems(S, a);
+
+  const secs = [
+    sec("Definition",
+      textInput("Name", a.name, (v) => A.mutate(() => { a.name = v; })),
+      dl([["Type", TYPE_NAMES[a.type] || a.type],
+          ["Driven by", drivenBy(a)],
+          ["Solver", "code_aster · MUMPS"]])),
+    sec(null,
+      el("div", { class: "btnrow" },
+        el("button", { class: "btn btn-accent", disabled: running || blockers.length > 0,
+          onclick: () => A.runAnalysis(a.id) }, running ? "Running…" : "Run analysis"),
+        el("button", { class: "btn", onclick: () => A.select("settings", a.id) },
+          "Settings"),
+        // a solve can finish and a later step still fail — offer recovery
+        S.runStatus[a.id] === "failed"
+          ? el("button", { class: "btn", onclick: () => A.recoverResults(a.id) },
+               "Recover results") : null,
+        !S.config?.solver?.available
+          ? el("button", { class: "btn btn-small", onclick: () => A.recheckSolver() },
+               "Recheck solver") : null),
+      ...blockers.map((t) => el("div", { class: "hint warn" }, "⚠ " + t)),
+      !blockers.length && !running && !items.length
+        ? el("div", { class: "hint good" }, "✓ Ready to run.") : null),
+  ];
+
   if (items.length) {
     secs.push(sec("Solution",
       el("div", { class: "btnrow" },
-        items.map((it) => el("button", {
-          class: "btn btn-small",
-          onclick: () => A.select("result", `${a.id}|${it.what}`) }, it.label))),
-      el("div", { class: "btnrow" },
+        el("button", { class: "btn btn-small",
+          onclick: () => A.select("solution", a.id) }, "Open solution"),
         el("button", { class: "btn btn-small",
           onclick: () => A.exportResults(a.id, "all") }, "Export all (CSV)"))));
   }
 
   secs.push(sec(null, delBtn("analysis", () => A.removeItem("analyses", id))));
-  put(a.name || a.type, a.type, ...statusHead(S, A, a), ...secs);
+  put(a.name || a.type, TYPE_NAMES[a.type] || a.type, ...statusHead(S, A, a), ...secs);
+}
+
+const TYPE_NAMES = { static: "Static structural", modal: "Modal",
+                     harmonic: "Harmonic response", random: "Random vibration" };
+
+function drivenBy(a) {
+  if (a.type === "modal") return "nothing — free vibration";
+  if (a.type === "random") return "base PSD";
+  if (a.type === "harmonic") {
+    return (a.config?.excitation || "force") === "base" ? "base acceleration" : "applied force";
+  }
+  return "applied loads";
+}
+
+/** The Solution node: an index of what the run produced, and the one place
+ *  that says plainly whether it still matches the model. */
+function panelSolution(S, A, put, id) {
+  const a = S.project.setup.analyses.find((x) => x.id === id);
+  if (!a) return put("Solution", "");
+  const meta = S.results[a.id];
+  if (!meta) {
+    // Reached before a run, or after the run directory was removed. Say so
+    // rather than sitting on "Loading…" forever waiting for a 404.
+    if (S.runStatus[a.id] !== "done") {
+      return put("Solution", a.name || a.type,
+        sec(null,
+          el("div", { class: "hint" }, "This analysis has not produced results yet."),
+          el("div", { class: "btnrow" },
+            el("button", { class: "btn btn-accent", onclick: () => A.runAnalysis(a.id) },
+              "Run analysis"))));
+    }
+    A.openResults(a.id, { select: false });
+    return put("Solution", a.name || a.type,
+               sec(null, el("div", { class: "hint" }, "Loading results…")));
+  }
+  const items = solutionItems(S, a);
+  const rows = items.map((it) => el("button", {
+    class: "listrow", onclick: () => A.select("result", `${a.id}|${it.what}`) },
+    el("span", { class: "nm" }, it.label),
+    el("span", { class: "mt" }, it.meta || "")));
+
+  put("Solution", a.name || a.type, ...statusHead(S, A, a),
+    sec("Outputs", el("div", { class: "listrows" }, rows)),
+    sec("Export",
+      el("div", { class: "btnrow" },
+        el("button", { class: "btn btn-accent",
+          onclick: () => A.exportResults(a.id, "all") }, "Export all (CSV)"),
+        el("button", { class: "btn",
+          onclick: () => A.exportResults(a.id, "tables") }, "Tables only")),
+      el("div", { class: "hint" },
+        "Nodal values of a field are exported from the Contours panel — they " +
+        "are one file per field and step, and much larger.")),
+    sec("Re-run",
+      el("div", { class: "btnrow" },
+        el("button", { class: "btn", onclick: () => A.runAnalysis(a.id) }, "Run again"),
+        el("button", { class: "btn", onclick: () => A.select("settings", a.id) },
+          "Analysis Settings"))));
 }
 
 /** Banner shown above every panel that presents results, saying whether they

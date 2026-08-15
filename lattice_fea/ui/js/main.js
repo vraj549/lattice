@@ -1,6 +1,7 @@
 import { api } from "./api.js";
 import { Viewer } from "./viewer.js";
-import { renderTree, renderPanel, defaultAnalysis, solutionItems, el } from "./ui.js";
+import { renderPanel, defaultAnalysis, solutionItems, el } from "./ui.js";
+import { renderTree, installTreeKeys } from "./tree.js";
 import { renderLegend, fmtVal, contourStyle } from "./colormap.js";
 
 const uid = () => Math.random().toString(36).slice(2, 8);
@@ -17,6 +18,7 @@ const S = {
   activeResult: null,        // {aid, field, comp, stepIdx, defMult}
   animating: false,
   saveTimer: null,
+  expanded: {},              // tree node key -> open?
 };
 
 let viewer = null;
@@ -31,6 +33,26 @@ const A = {
     if (kind === "result") A.ensureActiveResult(String(id).split("|")[0]);
     refresh();
   },
+
+  /** Expand or collapse one tree node. Persisted per project, because a
+   *  collapsed branch is a decision about how you want to work, not a
+   *  transient view state that should reset on every reload. */
+  toggleNode(key, open) {
+    S.expanded[key] = open;
+    if (S.project) {
+      try {
+        localStorage.setItem(`lattice-tree-${S.project.id}`, JSON.stringify(S.expanded));
+      } catch { /* private browsing, quota — not worth failing over */ }
+    }
+    refresh();
+    // keep focus on the row that was just toggled
+    requestAnimationFrame(() => {
+      const row = document.querySelector(`.tnode[data-key="${CSS.escape(key)}"]`);
+      if (row) { row.tabIndex = 0; row.focus({ preventScroll: true }); }
+    });
+  },
+
+  openInsertMenu(anchor, items) { showMenu(anchor, items); },
 
   /** Point the result controls at this analysis, defaulting to its first
    *  real field. Without this, opening a result panel left activeResult null
@@ -124,7 +146,7 @@ const A = {
     a.supports = []; a.loads = [];
     S.project.setup.analyses.push(a);
     S.selection = { kind: "analysis", id: a.id };
-    (S.openAnalyses ||= {})[a.id] = true;
+    S.expanded[`an:${a.id}`] = true;   // a new branch opens to show its parts
     A.mutate(() => {});
     A.addSupport(a.id);          // every analysis needs at least one support
   },
@@ -397,6 +419,45 @@ const A = {
     refresh();
   },
 };
+
+// ---------------- insert menu ----------------
+// The "+" on a tree row. Options that do not apply to the node are shown
+// disabled with the reason, rather than hidden — a missing option reads as a
+// bug, an explained one teaches how the tool works.
+
+function showMenu(anchor, items) {
+  closeMenu();
+  // A row scrolled out of the tree still has a rect, so a menu anchored to it
+  // would open outside the window. Bring the row into view first.
+  anchor.scrollIntoView({ block: "nearest", inline: "nearest" });
+  const r = anchor.getBoundingClientRect();
+  const menu = el("div", { class: "menu", id: "insertMenu", role: "menu" },
+    items.map((it) => el("button", {
+      class: "menu-item", role: "menuitem", disabled: !!it.disabled,
+      title: it.hint || null,
+      onclick: () => { closeMenu(); it.onclick?.(); } },
+      el("span", {}, it.label),
+      it.hint ? el("span", { class: "menu-hint" }, it.hint) : null)));
+  document.body.append(menu);
+  // flip up when there is no room below
+  const h = menu.offsetHeight;
+  const below = window.innerHeight - r.bottom;
+  const top = below > h + 8 ? r.bottom + 2 : r.top - h - 2;
+  menu.style.left = `${Math.max(4, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8))}px`;
+  // clamped both ways: a menu that opens off-screen is a dead control
+  menu.style.top = `${Math.max(4, Math.min(top, window.innerHeight - h - 4))}px`;
+  setTimeout(() => {
+    document.addEventListener("pointerdown", onMenuOutside, true);
+    document.addEventListener("keydown", onMenuKey, true);
+  }, 0);
+}
+function closeMenu() {
+  document.getElementById("insertMenu")?.remove();
+  document.removeEventListener("pointerdown", onMenuOutside, true);
+  document.removeEventListener("keydown", onMenuKey, true);
+}
+function onMenuOutside(e) { if (!e.target.closest?.("#insertMenu")) closeMenu(); }
+function onMenuKey(e) { if (e.key === "Escape") { e.stopPropagation(); closeMenu(); } }
 
 function downloadUrl(url) {
   const a = document.createElement("a");
@@ -672,6 +733,8 @@ async function openProject(pid) {
   document.getElementById("overlay").hidden = true;
   S.results = {}; S.runStatus = {}; S.meshData = null; S.activeResult = null;
   S.selection = { kind: "model", id: "root" };
+  try { S.expanded = JSON.parse(localStorage.getItem(`lattice-tree-${pid}`) || "{}"); }
+  catch { S.expanded = {}; }
 
   S.tess = await api.get(`/api/projects/${pid}/tessellation`);
   viewer.setGeometry(S.tess, S.project.geometry);
@@ -724,7 +787,7 @@ function paneWidths() {
   return {
     body,
     total: body.clientWidth || window.innerWidth,
-    L: parseFloat(cs.getPropertyValue("--wL")) || 232,
+    L: parseFloat(cs.getPropertyValue("--wL")) || 264,
     R: parseFloat(cs.getPropertyValue("--wR")) || 300,
   };
 }
@@ -819,7 +882,7 @@ function initSplitters() {
   };
   keys("splitL", (d) => {
     const { L } = paneWidths();
-    body.style.setProperty("--wL", (d === null ? 232 : L + d) + "px");
+    body.style.setProperty("--wL", (d === null ? 264 : L + d) + "px");
   });
   keys("splitR", (d) => {
     const { R } = paneWidths();
@@ -983,7 +1046,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.11.0";
+const UI_BUILD = "0.12.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;
@@ -1086,6 +1149,7 @@ async function boot() {
   updateSolverChip();
   checkVersionSkew();
   initSplitters();
+  installTreeKeys(S, A);
   await showOverlay();
 }
 
