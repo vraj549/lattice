@@ -233,6 +233,17 @@ const A = {
     }
   },
 
+  async recheckSolver() {
+    try {
+      const r = await api.post("/api/config/recheck");
+      S.config.solver = r.solver;
+      updateSolverChip();
+      logLine(`solver: ${r.solver.detail}`, r.solver.available ? "" : "warnln");
+      for (const n of r.solver.notes || []) logLine(`  ${n}`, "warnln");
+      refresh();
+    } catch (e) { logLine(`recheck failed: ${e.message}`, "badln"); }
+  },
+
   toggleAnimate() {
     S.animating = !S.animating;
     viewer.setAnimate(S.animating);
@@ -475,6 +486,27 @@ clipPos.addEventListener("input", () => {
   viewer.setClip(clipAxis.value || null, Number(clipPos.value) / 1000);
 });
 
+function updateSolverChip() {
+  const chip = document.getElementById("solverChip");
+  const chipText = document.getElementById("solverChipText");
+  const sv = S.config?.solver;
+  if (!sv) return;
+  if (sv.available) {
+    chip.querySelector(".dot").className = "dot ok";
+    chipText.textContent = `code_aster · ${sv.mode}${sv.wsl_distro ? " · " + sv.wsl_distro : ""}`;
+  } else {
+    chip.querySelector(".dot").className = "dot bad";
+    chipText.textContent = "no solver — demo mode";
+  }
+  chip.title = sv.detail + (sv.notes?.length ? "\n" + sv.notes.join("\n") : "");
+  const ov = document.getElementById("ovSolver");
+  if (ov) {
+    ov.textContent = sv.available
+      ? `Solver: ${sv.detail}`
+      : `⚠ ${sv.detail} — meshing and setup still work; see README to enable solving.`;
+  }
+}
+
 // ---------------- boot ----------------
 async function boot() {
   viewer = new Viewer(document.getElementById("scene"), {
@@ -498,20 +530,7 @@ async function boot() {
   S.config = await api.get("/api/config");
   S.library = await api.get("/api/materials");
 
-  const chip = document.getElementById("solverChip");
-  const chipText = document.getElementById("solverChipText");
-  const sv = S.config.solver;
-  if (sv.available) {
-    chip.querySelector(".dot").className = "dot ok";
-    chipText.textContent = `code_aster · ${sv.mode}${sv.wsl_distro ? " · " + sv.wsl_distro : ""}`;
-  } else {
-    chip.querySelector(".dot").className = "dot bad";
-    chipText.textContent = "no solver — demo mode";
-  }
-  chip.title = sv.detail + (sv.notes?.length ? "\n" + sv.notes.join("\n") : "");
-  document.getElementById("ovSolver").textContent =
-    sv.available ? `Solver: ${sv.detail}` : `⚠ ${sv.detail} — meshing and setup still work; see README to enable solving.`;
-
+  updateSolverChip();
   await showOverlay();
 }
 

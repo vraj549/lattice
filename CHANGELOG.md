@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1
+
+- **Fixed: "Run analysis" was permanently disabled.** The DOM helper called
+  `setAttribute("disabled", false)`, and because `disabled` is a boolean
+  attribute it disables on *presence* — `disabled="false"` still disables. The
+  button could never be clicked, in any state. Boolean attributes are now only
+  set when true.
+- The run button now lists **every** reason it is blocked (no solver, unmeshed,
+  missing material, no support, no load) instead of greying out silently.
+- **Recheck solver** button + `POST /api/config/recheck`: re-runs detection
+  without restarting the server, for when code_aster is installed or configured
+  while Lattice is already running.
+
 ## 0.3.0
 
 - **Frictionless / symmetry support** (`FACE_IMPO` `DNOR=0`) — normal-only

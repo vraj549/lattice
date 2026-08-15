@@ -63,6 +63,15 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         return {"version": __version__, "solver": solver_cfg.as_dict(),
                 "workspace": os.path.abspath(workspace)}
 
+    @app.post("/api/config/recheck")
+    def recheck_solver():
+        """Re-run solver detection without restarting — for when code_aster is
+        installed or configured while Lattice is already running."""
+        nonlocal solver_cfg
+        solver_cfg = config.detect(workspace)
+        print(f"[lattice] solver recheck: {solver_cfg.mode} — {solver_cfg.detail}")
+        return {"solver": solver_cfg.as_dict()}
+
     @app.get("/api/materials")
     def get_materials():
         return LIBRARY

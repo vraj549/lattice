@@ -8,6 +8,11 @@ export function el(tag, attrs = {}, ...children) {
     if (k === "class") n.className = v;
     else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
     else if (k === "html") n.innerHTML = v;
+    // boolean attributes (disabled, hidden, checked, …) disable/enable by
+    // PRESENCE — setAttribute(k, false) would render disabled="false" and
+    // still apply. Only set them when actually true.
+    else if (v === false) continue;
+    else if (v === true) n.setAttribute(k, "");
     else if (v !== null && v !== undefined) n.setAttribute(k, v);
   }
   for (const c of children.flat()) {
@@ -633,14 +638,40 @@ function panelAnalysis(S, A, put, id) {
       "forces at the supports.")));
   }
 
-  const solverOk = S.config?.solver?.available;
+  // Every reason the run button can be blocked, stated explicitly — a
+  // greyed-out button with no explanation is a dead end for the user.
+  const blockers = [];
+  if (!S.config?.solver?.available) {
+    blockers.push("No code_aster solver detected. Set it up (README → Solver setup), " +
+                  "then use Recheck solver — the check runs when the server starts.");
+  }
+  if (!S.meshData?.stats) {
+    blockers.push("The model is not meshed yet — open Mesh and press Generate mesh.");
+  }
+  for (const s of S.project.geometry.solids) {
+    if (!S.project.setup.assignments[String(s.tag)]) {
+      blockers.push(`Solid "${s.name || s.tag}" has no material assigned.`);
+    }
+  }
+  if (!S.project.setup.supports.some((x) => x.faces?.length)) {
+    blockers.push("No support has faces assigned — the model would be unconstrained.");
+  }
+  const hasLoad = S.project.setup.loads.some(
+    (x) => ["gravity", "rotation"].includes(x.type) || x.faces?.length);
+  const hasPreload = (S.project.setup.bolts || []).some((x) => x.preload_N > 0);
+  if (a.type !== "modal" && !hasLoad && !hasPreload) {
+    blockers.push("No load defined — add a load, or a bolt preload.");
+  }
+
   secs.push(sec(null,
     el("div", { class: "btnrow" },
-      el("button", { class: "btn btn-accent", disabled: running || !solverOk,
+      el("button", { class: "btn btn-accent", disabled: running || blockers.length > 0,
         onclick: () => A.runAnalysis(a.id) }, running ? "Running…" : "Run analysis"),
-      done ? el("button", { class: "btn", onclick: () => A.openResults(a.id) }, "View results") : null),
-    !solverOk ? el("div", { class: "hint warn" },
-      "⚠ No code_aster solver detected — see README → Solver setup.") : null));
+      done ? el("button", { class: "btn", onclick: () => A.openResults(a.id) }, "View results") : null,
+      !S.config?.solver?.available
+        ? el("button", { class: "btn btn-small", onclick: () => A.recheckSolver() }, "Recheck solver")
+        : null),
+    ...blockers.map((t) => el("div", { class: "hint warn" }, "⚠ " + t))));
 
   if (done && S.results[a.id]) secs.push(...resultSections(S, A, a));
   secs.push(sec(null, delBtn("analysis", () => A.removeItem("analyses", id))));
