@@ -16,12 +16,16 @@ export class Viewer {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.localClippingEnabled = true;
+    // Manual clearing. render() clears colour by default, which inside the
+    // triad's scissored corner painted an opaque black rectangle behind it.
+    this.renderer.autoClear = false;
     this.scene = new THREE.Scene();
     this.applyTheme();
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10000);
     this.orbit = new Orbit(this.camera, canvas, () => this.requestRender());
 
-    this.scene.add(new THREE.HemisphereLight(0xcfd8e0, 0x2a3238, 0.9));
+    this._hemi = new THREE.HemisphereLight(0xcfd8e0, 0x4a5560, 0.9);
+    this.scene.add(this._hemi);
     const key = new THREE.DirectionalLight(0xffffff, 1.1);
     key.position.set(1, 0.6, 1.4);
     this.scene.add(key);
@@ -67,9 +71,17 @@ export class Viewer {
   /** Viewport ground follows the UI theme; light mode uses the pale
    *  background commercial pre/post-processors default to. */
   applyTheme() {
-    const dark = getComputedStyle(document.documentElement)
-      .getPropertyValue("--panel").trim().toLowerCase() !== "#ffffff";
-    this.scene.background = new THREE.Color(dark ? 0x0c1216 : 0xe8edf2);
+    // Read the resolved token rather than guessing, so the viewport ground
+    // always matches the chrome it sits inside.
+    const cs = getComputedStyle(document.documentElement);
+    const dark = document.documentElement.getAttribute("data-theme") === "dark"
+      || (!document.documentElement.getAttribute("data-theme")
+          && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    const bg = dark ? 0x11161a : 0xe7ebef;
+    this.scene.background = new THREE.Color(bg);
+    this.renderer.setClearColor(bg, 1);
+    // model surfaces need a touch more ambient on a light ground
+    if (this._hemi) this._hemi.intensity = dark ? 0.9 : 1.15;
     this.requestRender();
   }
 
@@ -88,6 +100,7 @@ export class Viewer {
     }
     if (this._needsRender) {
       this._needsRender = false;
+      this.renderer.clear();                       // full frame, once
       this.renderer.render(this.scene, this.camera);
       this.triad.render(this.renderer, this.camera, this.orbit.target);
     }

@@ -3,10 +3,12 @@ import * as THREE from "three";
 // Corner orientation triad. RGB = XYZ, the CAD convention.
 // Drawn as a second scene into a scissored corner viewport so it always sits
 // on top and never scales with the model.
+// Slightly desaturated so the triad reads on both light and dark grounds
+// without shouting louder than the result contours.
 const AXIS = [
-  { dir: [1, 0, 0], color: 0xe2483d, label: "X" },
-  { dir: [0, 1, 0], color: 0x46b95c, label: "Y" },
-  { dir: [0, 0, 1], color: 0x3d82e2, label: "Z" },
+  { dir: [1, 0, 0], color: 0xcc3b32, label: "X" },
+  { dir: [0, 1, 0], color: 0x2f9e4f, label: "Y" },
+  { dir: [0, 0, 1], color: 0x2f6fc4, label: "Z" },
 ];
 
 function labelSprite(text, color) {
@@ -28,7 +30,7 @@ function labelSprite(text, color) {
 }
 
 export class AxisTriad {
-  constructor(size = 92) {
+  constructor(size = 78) {
     this.size = size;
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1.7, 1.7, 1.7, -1.7, 0.01, 20);
@@ -56,7 +58,7 @@ export class AxisTriad {
     }
     const origin = new THREE.Mesh(
       new THREE.SphereGeometry(0.1, 12, 10),
-      new THREE.MeshBasicMaterial({ color: 0x9fb4c2, depthTest: false }));
+      new THREE.MeshBasicMaterial({ color: 0x8593a0, depthTest: false }));
     group.add(origin);
 
     this.scene.add(group);
@@ -81,7 +83,7 @@ export class AxisTriad {
     renderer.setViewport(w - s - pad, pad, s, s);
     renderer.setScissor(w - s - pad, pad, s, s);
     renderer.setScissorTest(true);
-    renderer.clearDepth();
+    renderer.clearDepth();          // depth only — the viewport shows through
     renderer.render(this.scene, this.camera);
     renderer.setScissorTest(false);
     renderer.setViewport(0, 0, w, h);

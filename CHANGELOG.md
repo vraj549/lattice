@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.9.1
+
+**Interface restyled against how production FEA tools actually look**, and one
+real rendering bug fixed.
+
+- **Fixed: the axis triad sat in an opaque black box.** three.js `render()`
+  clears colour by default; inside the triad's scissored corner that painted a
+  black rectangle. The renderer now clears manually once per frame and the
+  triad clears depth only, so it floats directly on the viewport.
+- The 3D viewport ground follows the theme properly (it was hard-coded dark),
+  with ambient light raised on the light ground so surfaces keep their shading.
+
+Styling, with the reasoning: production pre/post-processors are **dense**
+(22px tree rows, 12px base type — you want 40 items visible, not 20),
+**sharp** (2px radii; rounded pills read as consumer software), **quiet**
+(grey chrome, colour reserved for meaning — violet constraints, amber loads,
+green/amber/red status), **hairline-separated** rather than spaced apart, and
+**flat** — no shadows or gradients competing with the model.
+
+- Viewport controls are one grouped toolbar instead of buttons floating over
+  the model; readouts sit in bordered boxes rather than free-floating text.
+- Status chips are square-cornered swatch+text, not 20px pills.
+- Uppercase letterspaced labels are pulled back to section headers only.
+- Panel rows use right-aligned tabular monospace, the way a solver prints them.
+
 ## 0.9.0
 
 **Boundary conditions now belong to an analysis, not the model.**
