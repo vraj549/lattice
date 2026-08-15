@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.7.0
+
+- **Light mode is now the default**, with a toggle in the app bar that is
+  remembered. The 3D viewport follows the theme (pale ground in light, as
+  commercial pre/post-processors use).
+- **Probe markers**: a green ball and axis crosshair at each response point, so
+  probes are as visible as loads and supports.
+- **Frequency-response viewer**: a large log-log FRF plot with automatic peak
+  detection, on-plot annotation, and a peak table listing frequency,
+  amplitude, **Q** (from the half-power bandwidth) and the implied damping
+  zeta = 1/(2Q). Y axis switches between amplification, response per unit
+  force, and raw response.
+- **Sweep-resolution warning.** A peak is only resolved if several sweep points
+  land inside its half-power band (width ~ f/Q). 200 log steps over 20-2000 Hz
+  is 2.33 % per step against a 4 % band at zeta = 0.02 — only 1.7 points, which
+  silently under-reports Q and misses peak amplitude. The panel now computes
+  this and says how many steps are actually needed.
+- Harmonic setup states plainly that the sweep is force-driven, that a linear
+  analysis scales exactly with input (so 1 N reads directly as a transfer
+  function), and that shaker qualification specifies base acceleration, which
+  is not implemented yet.
+- Fixed: the FRF peak table was appended from a `requestAnimationFrame`
+  callback, which raced with the panel re-render that opening results triggers
+  — the table was silently dropped. Peaks are computed synchronously now; only
+  the canvas draw is deferred.
+
 ## 0.6.0
 
 - **Banded contours**, the commercial-post-processor look: results are

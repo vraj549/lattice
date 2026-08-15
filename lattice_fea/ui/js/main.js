@@ -237,6 +237,8 @@ const A = {
     A.loadField(aid);
   },
 
+  refreshPanel() { refresh(); },
+
   restyleContours() {
     viewer.setContourStyle();
     const R = S.activeResult;
@@ -480,6 +482,17 @@ async function showOverlay() {
 
 document.getElementById("btnProjects").addEventListener("click", showOverlay);
 
+document.getElementById("btnTheme").addEventListener("click", () => {
+  const root = document.documentElement;
+  const next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+  root.setAttribute("data-theme", next);
+  localStorage.setItem("lattice-theme", next);
+  viewer.applyTheme();
+  const R = S.activeResult;
+  if (R?.payload) renderLegend(R.payload.min, R.payload.max,
+    document.getElementById("legendCap").textContent);
+});
+
 document.getElementById("newForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const name = document.getElementById("npName").value.trim();
@@ -517,7 +530,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.6.0";
+const UI_BUILD = "0.7.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;
@@ -566,6 +579,9 @@ function updateSolverChip() {
 
 // ---------------- boot ----------------
 async function boot() {
+  const saved = localStorage.getItem("lattice-theme");
+  if (saved) document.documentElement.setAttribute("data-theme", saved);
+
   viewer = new Viewer(document.getElementById("scene"), {
     onHover: (h) => {
       document.getElementById("vpHover").textContent =

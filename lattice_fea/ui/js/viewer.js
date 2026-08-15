@@ -17,7 +17,7 @@ export class Viewer {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.localClippingEnabled = true;
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0c1216);
+    this.applyTheme();
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10000);
     this.orbit = new Orbit(this.camera, canvas, () => this.requestRender());
 
@@ -62,6 +62,15 @@ export class Viewer {
     new ResizeObserver(() => this.resize()).observe(canvas.parentElement);
     this.resize();
     this._loop();
+  }
+
+  /** Viewport ground follows the UI theme; light mode uses the pale
+   *  background commercial pre/post-processors default to. */
+  applyTheme() {
+    const dark = getComputedStyle(document.documentElement)
+      .getPropertyValue("--panel").trim().toLowerCase() !== "#ffffff";
+    this.scene.background = new THREE.Color(dark ? 0x0c1216 : 0xe8edf2);
+    this.requestRender();
   }
 
   // ---------------- render loop ----------------

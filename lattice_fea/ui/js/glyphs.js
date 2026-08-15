@@ -14,9 +14,11 @@ import * as THREE from "three";
  *   rotation          amber curved arrow about the spin axis
  *   remote force      amber arrow at the remote point + dashed spider legs
  *   bolt              steel-blue shank between the two face sets
+ *   probe             green ball + axis crosshair at the response point
  */
 
-const C_SUP = 0x8d7dec, C_LOAD = 0xe89344, C_BOLT = 0x6fa8cc;
+const C_SUP = 0x8d7dec, C_LOAD = 0xe89344, C_BOLT = 0x6fa8cc,
+      C_PROBE = 0x22b07d;
 
 const mat = (color, opacity = 1) => new THREE.MeshBasicMaterial({
   color, transparent: opacity < 1, opacity, depthTest: true });
@@ -243,6 +245,26 @@ export function buildGlyphs(setup, geometry, faceInfo, meshStats) {
         arrow(group, tip, dir, len, C_LOAD);
       }
     }
+  }
+
+  // ---- probes: crosshair marker at the response point ----
+  for (const p of setup.probes || []) {
+    const pt = new THREE.Vector3(p.x || 0, p.y || 0, p.z || 0);
+    const ball = new THREE.Mesh(
+      new THREE.SphereGeometry(s * 0.34, 14, 12), mat(C_PROBE));
+    ball.position.copy(pt);
+    group.add(ball);
+    // axis-aligned cross so the point is findable against any surface
+    const arm = s * 1.5;
+    const pts = [];
+    for (const d of [[arm, 0, 0], [0, arm, 0], [0, 0, arm]]) {
+      pts.push(pt.x - d[0], pt.y - d[1], pt.z - d[2],
+               pt.x + d[0], pt.y + d[1], pt.z + d[2]);
+    }
+    const cg = new THREE.BufferGeometry();
+    cg.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+    group.add(new THREE.LineSegments(cg, new THREE.LineBasicMaterial({
+      color: C_PROBE, transparent: true, opacity: 0.9 })));
   }
 
   // ---- bolts (shank between the two face-set centroids) ----

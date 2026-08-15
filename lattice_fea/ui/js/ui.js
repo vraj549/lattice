@@ -1,6 +1,6 @@
 // Tree + context-panel rendering. Pure DOM, no framework.
 import { fmtVal, contourStyle } from "./colormap.js";
-import { frfChart, seriesColor } from "./charts.js";
+import { frfChart, frfPlot, findPeaks, seriesColor } from "./charts.js";
 
 export function el(tag, attrs = {}, ...children) {
   const n = document.createElement(tag);
@@ -589,6 +589,31 @@ export function defaultAnalysis(type) {
                      damping: 0.02, field_freqs: [] } };
 }
 
+/** A peak is only resolved if several sweep points fall inside its
+ *  half-power band (width ~ f/Q). Too coarse a sweep silently UNDER-reports Q,
+ *  which would understate resonant response. */
+function resolutionWarning(S, peaks) {
+  const a = S.project.setup.analyses.find((x) => x.id === S.activeResult?.aid)
+         || S.project.setup.analyses.find((x) => x.type === "harmonic");
+  const c = a?.config;
+  if (!c || !peaks.length) return null;
+  const decades = Math.log10((c.f_max || 1) / Math.max(c.f_min || 1, 1e-9));
+  const perDecade = (c.n_steps || 1) / Math.max(decades, 1e-9);
+  const stepPct = c.spacing === "log"
+    ? (Math.pow(10, 1 / perDecade) - 1) * 100
+    : ((c.f_max - c.f_min) / (c.n_steps || 1)) / Math.max(peaks[0].f, 1e-9) * 100;
+  const zeta = c.damping || 0.02;
+  const bandPct = 100 / (2 * (1 / (2 * zeta)) ) * 2;   // half-power width = f/Q
+  const ptsInBand = bandPct / Math.max(stepPct, 1e-9);
+  if (ptsInBand >= 5) return null;
+  const need = Math.ceil((c.n_steps || 1) * (5 / Math.max(ptsInBand, 1e-9)));
+  return el("div", { class: "hint warn" },
+    `\u26a0 Only ~${ptsInBand.toFixed(1)} sweep points fall inside a ` +
+    `half-power band at \u03b6=${zeta}. Q is under-reported and peak ` +
+    `amplitude is missed. Use about ${need} steps (or sweep a narrow band ` +
+    `around each mode) to resolve resonances.`);
+}
+
 function panelAnalysis(S, A, put, id) {
   const a = S.project.setup.analyses.find((x) => x.id === id);
   if (!a) return put("Analysis", "");
@@ -618,7 +643,16 @@ function panelAnalysis(S, A, put, id) {
         { min: 0, max: 1, step: 0.005 }),
       el("div", { class: "hint" },
         "Modal superposition on a basis up to 1.6 × f max. Loads defined above " +
-        "are applied as the harmonic excitation; response is read at the probes.")));
+        "are applied as the harmonic excitation; response is read at the probes."),
+      el("div", { class: "hint" },
+        "This is a FORCE-driven sweep. The analysis is linear, so response " +
+        "scales exactly with input: use 1 N to read the result directly as a " +
+        "transfer function. Peak frequencies and Q do not depend on the " +
+        "magnitude you enter."),
+      el("div", { class: "hint warn" },
+        "⚠ Shaker qualification specifies BASE acceleration, not force. " +
+        "Base excitation is not implemented yet — for now this gives you f_n " +
+        "and Q, which is what a Miles'-equation random-vibration estimate needs.")));
     secs.push(sec("Field export",
       textInput("Frequencies (Hz, comma-separated — optional)",
         (c.field_freqs || []).join(", "),
@@ -712,18 +746,75 @@ function resultSections(S, A, a) {
 
   // FRF
   if (meta.frf?.length) {
-    const canvas = el("canvas", { class: "frf" });
     const probes = S.project.setup.probes;
-    const curves = meta.frf.map((f, i) => ({
-      label: `${probes[f.probe - 1]?.name || "P" + f.probe}·${f.comp}`,
-      freq: f.freq, module: f.module, color: seriesColor(i),
-    }));
-    secs.push(sec("Frequency response (displacement, mm)",
+    // Total applied force, so the response can be shown per unit input —
+    // amplification is what a sine sweep is actually read for.
+    const totalF = (S.project.setup.loads || []).reduce((acc, l) => {
+      if (!["force", "remote"].includes(l.type)) return acc;
+      return acc + Math.hypot(l.fx || 0, l.fy || 0, l.fz || 0);
+    }, 0);
+    const norm = S.frfNorm || "raw";
+    const curves = meta.frf.map((f, i) => {
+      let mod = f.module;
+      if (norm === "perN" && totalF > 0) mod = f.module.map((v) => v / totalF);
+      if (norm === "amp") {
+        // dynamic amplification: response ÷ the low-frequency (quasi-static)
+        // response of the same curve, which is the textbook definition
+        const base = f.module[0] || 1;
+        mod = f.module.map((v) => v / base);
+      }
+      return {
+        label: `${probes[f.probe - 1]?.name || "P" + f.probe}·${f.comp}`,
+        freq: f.freq, module: mod, color: seriesColor(i),
+      };
+    });
+
+    const canvas = el("canvas", { class: "frfbig" });
+    const unitTxt = norm === "amp" ? "amplification (x quasi-static)"
+                  : norm === "perN" ? "mm / N" : "mm";
+
+    // Peaks are computed synchronously from the data. Appending them later
+    // from a rAF callback raced with the panel re-render that openResults
+    // triggers, and the table was silently lost.
+    const peaks = [];
+    curves.forEach((c) => {
+      for (const pk of findPeaks(c.freq, c.module)) {
+        peaks.push({ ...pk, label: c.label, color: c.color });
+      }
+    });
+    peaks.sort((a, b) => a.f - b.f);
+
+    secs.push(sec(`Frequency response \u2014 ${unitTxt}`,
+      selInput("Y axis", norm, [
+        ["amp", "Amplification (\u00d7 quasi-static)"],
+        ["perN", "Response per unit force (mm/N)"],
+        ["raw", "Raw response (mm)"]],
+        (v) => { S.frfNorm = v; A.refreshPanel(); }),
       canvas,
-      el("div", { class: "hint" }, curves.map((c, i) =>
+      el("div", { class: "hint" }, curves.map((c) =>
         el("span", { style: `color:${c.color};margin-right:8px` }, c.label))),
+      totalF > 0 ? el("div", { class: "hint" },
+        `Applied force ${fmtVal(totalF)} N. A linear sweep scales exactly with ` +
+        `input, so amplification and peak frequencies do not depend on it.`) : null,
+      peaks.length ? el("div", {},
+        el("span", { class: "lbl", style: "display:block;margin:10px 0 4px" }, "Peaks"),
+        el("table", { class: "rtable" },
+          el("tr", {}, ["Hz", "Curve", "Amplitude", "Q", "\u03b6"].map((t) => el("th", {}, t))),
+          peaks.map((pk) => el("tr", {},
+            el("td", {}, fmtVal(pk.f)),
+            el("td", { style: `color:${pk.color}` }, pk.label),
+            el("td", {}, fmtVal(pk.amp)),
+            el("td", {}, pk.q ? pk.q.toFixed(1) : "\u2014"),
+            el("td", {}, pk.q ? (1 / (2 * pk.q)).toFixed(4) : "\u2014")))),
+        el("div", { class: "hint" },
+          "Q is the amplification at resonance from the half-power bandwidth; " +
+          "\u03b6 = 1/(2Q) should come back close to the damping you entered."),
+        resolutionWarning(S, peaks)) : null,
     ));
-    requestAnimationFrame(() => frfChart(canvas, curves));
+
+    // the canvas needs layout before it can size itself, so only the DRAW
+    // is deferred — nothing is appended to the DOM from here
+    requestAnimationFrame(() => { if (canvas.isConnected) frfPlot(canvas, curves); });
   }
 
   // fields
