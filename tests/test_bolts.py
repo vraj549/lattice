@@ -58,10 +58,13 @@ def meshed(model):
     bot_cyls = hole_cylinders(meta, s1)
     setup = default_setup()
     faces = sorted(meta["faces"], key=lambda f: -f["area"])
-    setup["supports"] = [{"id": "s1", "name": "fix", "type": "fixed",
-                          "faces": [faces[0]["tag"]]}]
-    setup["loads"] = [{"id": "l1", "name": "pull", "type": "force",
-                       "faces": [faces[1]["tag"]], "fx": 0, "fy": 0, "fz": 500}]
+    setup["analyses"] = [{
+        "id": "a1", "type": "static", "name": "Static", "config": {},
+        "supports": [{"id": "s1", "name": "fix", "type": "fixed",
+                      "faces": [faces[0]["tag"]]}],
+        "loads": [{"id": "l1", "name": "pull", "type": "force",
+                   "faces": [faces[1]["tag"]], "fx": 0, "fy": 0, "fz": 500}],
+    }]
     setup["bolts"] = [
         {"id": "b1", "name": "Bolt 1",
          "side_a_faces": [top_cyls[0]["tag"]], "side_b_faces": [bot_cyls[0]["tag"]],
@@ -93,8 +96,7 @@ def test_bolted_static_comm(meshed):
                            "rho_kgm3": 7850}]
     setup["assignments"] = {str(s["tag"]): "st" for s in meta["solids"]}
     comm, export = comm_writer.build_run(
-        {"id": "a1", "type": "static", "config": {}},
-        setup, meta, out["stats"], SolverConfig())
+        setup["analyses"][0], setup, meta, out["stats"], SolverConfig())
     for kw in ("MODELISATION='POU_D_T'", "LIAISON_RBE3", "SECTION='CERCLE'",
                "PRE_EPSI", "EFGE_ELNO", "CARA_ELEM=cara", "BN1A", "BN2B",
                "DDL_MAIT=('DX', 'DY', 'DZ', 'DRX', 'DRY', 'DRZ')"):
@@ -108,7 +110,7 @@ def test_bolted_static_comm(meshed):
 def test_bolted_modal_comm(meshed):
     _, out, setup, meta = meshed
     comm, _ = comm_writer.build_run(
-        {"id": "a2", "type": "modal", "config": {"n_modes": 8}},
+        {**setup["analyses"][0], "type": "modal", "config": {"n_modes": 8}, "loads": []},
         setup, meta, out["stats"], SolverConfig())
     # spiders must be in the assembled charges; preload must NOT appear
     assert "CHARGE=(fix, spider,)" in comm
@@ -122,8 +124,8 @@ def test_stale_mesh_guard(meshed):
         {"id": "b3", "name": "late bolt", "side_a_faces": [1], "side_b_faces": [2],
          "d_mm": 6, "E_GPa": 210, "preload_N": 0}]}
     with pytest.raises(ValueError, match="re-mesh"):
-        comm_writer.build_run({"id": "a3", "type": "static", "config": {}},
-                              setup2, meta, out["stats"], SolverConfig())
+        comm_writer.build_run(setup2["analyses"][0], setup2, meta,
+                              out["stats"], SolverConfig())
 
 
 def test_tie_comm(meshed):
@@ -134,8 +136,8 @@ def test_tie_comm(meshed):
                                  "master_solid": s1}]}
     # note: TIE group only lands in UNV after re-mesh; here we just check emission
     stats = {**out["stats"], "face_groups": out["stats"]["face_groups"] + ["TIE1"]}
-    comm, _ = comm_writer.build_run({"id": "a4", "type": "static", "config": {}},
-                                    setup2, meta, stats, SolverConfig())
+    comm, _ = comm_writer.build_run(setup2["analyses"][0], setup2, meta,
+                                    stats, SolverConfig())
     assert "LIAISON_MAIL" in comm
     assert f"GROUP_MA_MAIT=('V{s1}',)" in comm
     assert "TYPE_RACCORD='MASSIF'" in comm

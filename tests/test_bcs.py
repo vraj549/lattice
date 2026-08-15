@@ -34,7 +34,7 @@ def _base_setup(meta):
     setup["materials"] = [{"id": "al", "name": "Al", "E_GPa": 68.9, "nu": 0.33,
                            "rho_kgm3": 2700}]
     setup["assignments"] = {str(s["tag"]): "al" for s in meta["solids"]}
-    setup["supports"] = [
+    setup["_sup"] = [
         {"id": "s1", "name": "fix", "type": "fixed", "faces": [faces[0]["tag"]]},
         {"id": "s2", "name": "sym", "type": "frictionless", "faces": [faces[2]["tag"]]},
     ]
@@ -45,13 +45,17 @@ def _base_setup(meta):
 def meshed(model):
     brep, meta, d = model
     setup, faces = _base_setup(meta)
-    setup["loads"] = [
-        {"id": "l1", "name": "remote", "type": "remote", "faces": [faces[1]["tag"]],
-         "x": 200.0, "y": 50.0, "z": 6.5,
-         "fx": 0, "fy": 0, "fz": -500, "mx": 0, "my": 20000, "mz": 0},
-        {"id": "l2", "name": "spin", "type": "rotation",
-         "rpm": 3000, "axis": [0, 0, 1], "center": [0, 0, 0]},
-    ]
+    setup["analyses"] = [{
+        "id": "a1", "type": "static", "name": "Static", "config": {},
+        "supports": setup.pop("_sup"),
+        "loads": [
+            {"id": "l1", "name": "remote", "type": "remote", "faces": [faces[1]["tag"]],
+             "x": 200.0, "y": 50.0, "z": 6.5,
+             "fx": 0, "fy": 0, "fz": -500, "mx": 0, "my": 20000, "mz": 0},
+            {"id": "l2", "name": "spin", "type": "rotation",
+             "rpm": 3000, "axis": [0, 0, 1], "center": [0, 0, 0]},
+        ],
+    }]
     unv = str(d / "mesh.unv")
     out = meshing.mesh_project(brep, unv, meta, setup)
     return unv, out, setup, meta
@@ -62,20 +66,19 @@ def test_remote_stub_in_mesh(meshed):
     assert len(out["stats"]["remotes"]) == 1
     assert out["stats"]["remotes"][0]["node"] == [200.0, 50.0, 6.5]
     txt = open(unv, errors="ignore").read()
-    assert "RPT1" in txt
-    assert "LOA1" in txt
+    assert "RPT1_1" in txt
+    assert "LOA1_1" in txt
 
 
 def test_static_comm_new_bcs(meshed):
     _, out, setup, meta = meshed
-    comm, _ = comm_writer.build_run(
-        {"id": "a1", "type": "static", "config": {}},
-        setup, meta, out["stats"], SolverConfig())
+    comm, _ = comm_writer.build_run(setup["analyses"][0], setup, meta,
+                                    out["stats"], SolverConfig())
     # frictionless support
     assert "FACE_IMPO=(" in comm
     assert "DNOR=0.0" in comm
     # remote force + moment at the RBE3 master
-    assert "GROUP_NO_MAIT='RPN1'" in comm
+    assert "GROUP_NO_MAIT='RPN1_1'" in comm
     assert "FORCE_NODALE=(" in comm
     assert "FZ=-500.0" in comm and "MY=20000.0" in comm
     # rotation: 3000 rpm -> rad/s
@@ -83,31 +86,31 @@ def test_static_comm_new_bcs(meshed):
     assert f"VITESSE={omega!r}"[:16] in comm
     assert "AXE=(0.0, 1.0)" not in comm  # axis normalized as 3 components
     assert "MODELISATION='POU_D_T'" in comm  # stub beam modeled
-    assert "RPT1" in comm
+    assert "RPT1_1" in comm
 
 
 def test_harmonic_excludes_rotation(meshed):
     _, out, setup, meta = meshed
-    setup2 = {**setup, "probes": []}
     mesh_stats = {**out["stats"], "probes": [
         {"id": "p", "name": "p", "x": 0, "y": 0, "z": 0,
          "node_xyz": [0, 0, 0], "snap_dist": 0.001}]}
-    comm, _ = comm_writer.build_run(
-        {"id": "a2", "type": "harmonic",
-         "config": {"f_min": 20, "f_max": 500, "n_steps": 20, "damping": 0.02}},
-        setup2, meta, mesh_stats, SolverConfig())
+    a = {**setup["analyses"][0], "type": "harmonic",
+         "config": {"f_min": 20, "f_max": 500, "n_steps": 20, "damping": 0.02}}
+    setup2 = {**setup, "analyses": [a]}
+    comm, _ = comm_writer.build_run(a, setup2, meta, mesh_stats, SolverConfig())
     assert "ROTATION" not in comm, "rotation must not excite a harmonic sweep"
     assert "FORCE_NODALE" in comm, "remote load should excite the sweep"
 
 
 def test_remote_stale_mesh_guard(meshed):
     _, out, setup, meta = meshed
-    setup2 = {**setup, "loads": setup["loads"] + [
+    a0 = setup["analyses"][0]
+    a = {**a0, "loads": a0["loads"] + [
         {"id": "l3", "name": "late", "type": "remote", "faces": [1],
          "x": 0, "y": 0, "z": 0, "fx": 1}]}
+    setup2 = {**setup, "analyses": [a]}
     with pytest.raises(ValueError, match="re-mesh"):
-        comm_writer.build_run({"id": "a3", "type": "static", "config": {}},
-                              setup2, meta, out["stats"], SolverConfig())
+        comm_writer.build_run(a, setup2, meta, out["stats"], SolverConfig())
 
 
 def test_frictionless_only_support_ok(model):
@@ -115,13 +118,17 @@ def test_frictionless_only_support_ok(model):
     still emit; pure-frictionless without any fixed is allowed (user's call)."""
     brep, meta, d = model
     setup, faces = _base_setup(meta)
-    setup["supports"] = [{"id": "s1", "name": "sym", "type": "frictionless",
-                          "faces": [faces[0]["tag"]]}]
-    setup["loads"] = [{"id": "l1", "name": "p", "type": "pressure",
-                       "faces": [faces[1]["tag"]], "pressure": 1.0}]
+    setup.pop("_sup", None)
+    setup["analyses"] = [{
+        "id": "a4", "type": "static", "name": "Static", "config": {},
+        "supports": [{"id": "s1", "name": "sym", "type": "frictionless",
+                      "faces": [faces[0]["tag"]]}],
+        "loads": [{"id": "l1", "name": "p", "type": "pressure",
+                   "faces": [faces[1]["tag"]], "pressure": 1.0}],
+    }]
     unv = str(d / "mesh2.unv")
     out = meshing.mesh_project(brep, unv, meta, setup)
-    comm, _ = comm_writer.build_run({"id": "a4", "type": "static", "config": {}},
-                                    setup, meta, out["stats"], SolverConfig())
+    comm, _ = comm_writer.build_run(setup["analyses"][0], setup, meta,
+                                    out["stats"], SolverConfig())
     assert "DNOR=0.0" in comm
     assert "DDL_IMPO" not in comm

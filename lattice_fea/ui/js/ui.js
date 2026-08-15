@@ -32,11 +32,12 @@ export function renderTree(S, A) {
   const geo = S.project?.geometry;
   if (!geo) return;
   const setup = S.project.setup;
+  setup.bolts ||= []; setup.ties ||= []; setup.probes ||= []; setup.analyses ||= [];
   const sel = S.selection;
 
   const row = (kind, id, label, meta, opts = {}) => {
     const r = el("button", {
-      class: "row", role: "option",
+      class: `row${opts.depth ? " d" + opts.depth : ""}`, role: "option",
       "aria-selected": sel.kind === kind && String(sel.id) === String(id) ? "true" : "false",
       "aria-label": label,
       onclick: () => A.select(kind, id),
@@ -51,80 +52,107 @@ export function renderTree(S, A) {
   const grp = (label, addFn, ...rows) => {
     const hd = el("div", { class: "grp-hd" }, el("span", { class: "lbl" }, label));
     if (addFn) hd.append(el("button", { class: "grp-add", title: `Add ${label}`, onclick: addFn }, "+ add"));
-    return el("div", { class: "grp" }, hd, ...rows);
+    return el("div", { class: "grp" }, hd, ...rows.flat());
   };
 
-  // geometry
-  tree.append(grp(`Geometry`, null,
+  // ---- shared model data ----
+  tree.append(grp("Geometry", null,
     row("model", "root", S.project.name,
         `${geo.solids.length} solid${geo.solids.length > 1 ? "s" : ""}`),
-    ...geo.solids.map((s) => {
-      const mid = setup.assignments[String(s.tag)];
+    ...geo.solids.map((sd) => {
+      const mid = setup.assignments[String(sd.tag)];
       const mat = setup.materials.find((m) => m.id === mid);
-      return row("solid", s.tag, s.name || `Solid ${s.tag}`,
-                 mat ? mat.name : "no material", { warnMeta: !mat });
+      return row("solid", sd.tag, sd.name || `Solid ${sd.tag}`,
+                 mat ? mat.name : "no material", { warnMeta: !mat, depth: 1 });
     }),
     geo.interfaces.length
-      ? row("connections", "all", "Bonded interfaces", `${geo.interfaces.length}`)
+      ? row("connections", "all", "Bonded interfaces", `${geo.interfaces.length}`, { depth: 1 })
       : null,
   ));
 
-  tree.append(grp("Supports", () => A.addSupport(),
-    ...setup.supports.map((s, i) =>
-      row("support", s.id, s.name || `Support ${i + 1}`,
-          s.faces?.length ? `${s.faces.length} face${s.faces.length > 1 ? "s" : ""}` : "no faces",
-          { swatch: "var(--constraint)", warnMeta: !s.faces?.length })),
-  ));
-
-  tree.append(grp("Loads", () => A.addLoad(),
-    ...setup.loads.map((l, i) =>
-      row("load", l.id, l.name || `Load ${i + 1}`, loadMeta(l),
-          { swatch: "var(--accent)",
-            warnMeta: !["gravity", "rotation"].includes(l.type) && !l.faces?.length })),
-  ));
-
-  setup.bolts ||= [];
-  setup.ties ||= [];
-  tree.append(grp("Bolts", () => A.addBolt(),
+  tree.append(grp("Connections", () => A.addBolt(),
     ...setup.bolts.map((bl, i) =>
       row("bolt", bl.id, bl.name || `Bolt ${i + 1}`,
           bl.side_a_faces?.length && bl.side_b_faces?.length
-            ? `M${bl.d_mm ?? "?"} · ${fmtVal(bl.preload_N || 0)} N`
-            : "pick faces",
-          { swatch: "#7fb2d8",
+            ? `M${bl.d_mm ?? "?"} · ${fmtVal(bl.preload_N || 0)} N` : "pick faces",
+          { swatch: "#7fb2d8", depth: 1,
             warnMeta: !(bl.side_a_faces?.length && bl.side_b_faces?.length) })),
+    ...setup.ties.map((t, i) =>
+      row("tie", t.id, t.name || `Tie ${i + 1}`,
+          t.slave_faces?.length && t.master_solid ? `→ solid ${t.master_solid}` : "incomplete",
+          { swatch: "var(--ok)", depth: 1,
+            warnMeta: !(t.slave_faces?.length && t.master_solid) })),
+    geo.solids.length > 1
+      ? el("div", { class: "btnrow", style: "padding:2px 12px 0 14px" },
+          el("button", { class: "btn btn-small", onclick: () => A.addTie() }, "+ tie"))
+      : null,
   ));
 
-  if ((setup.ties || []).length || geo.solids.length > 1) {
-    tree.append(grp("Ties", () => A.addTie(),
-      ...(setup.ties || []).map((t, i) =>
-        row("tie", t.id, t.name || `Tie ${i + 1}`,
-            t.slave_faces?.length && t.master_solid
-              ? `→ solid ${t.master_solid}` : "incomplete",
-            { swatch: "var(--ok)", warnMeta: !(t.slave_faces?.length && t.master_solid) })),
-    ));
-  }
-
   tree.append(grp("Probes", () => A.addProbe(),
-    ...setup.probes.map((p, i) =>
-      row("probe", p.id, p.name || `Probe ${i + 1}`,
-          `${fmtVal(p.x)}, ${fmtVal(p.y)}, ${fmtVal(p.z)}`)),
+    ...setup.probes.map((pr, i) =>
+      row("probe", pr.id, pr.name || `Probe ${i + 1}`,
+          `${fmtVal(pr.x)}, ${fmtVal(pr.y)}, ${fmtVal(pr.z)}`,
+          { swatch: "#22b07d", depth: 1 })),
   ));
 
   const ms = S.meshData?.stats;
   tree.append(grp("Mesh", null,
     row("mesh", "mesh", ms ? `Tet${ms.order === 2 ? "10" : "4"} · ${fmtVal(ms.size_mm)} mm` : "Not meshed",
         ms ? `${ms.nodes.toLocaleString()} n` : "configure",
-        { dotClass: ms ? "ok" : "idle" })));
+        { dotClass: ms ? "ok" : "idle", depth: 1 })));
 
-  tree.append(grp("Analyses", () => A.addAnalysis(),
-    ...setup.analyses.map((a) => {
-      const st = S.runStatus[a.id];
-      const dot = st === "running" ? "run" : st === "done" ? "ok" : st === "failed" ? "bad" : "idle";
-      return row("analysis", a.id, a.name || a.type, a.type, { dotClass: dot });
-    }),
-  ));
+  // ---- analyses: each owns its own supports and loads ----
+  const branches = [];
+  for (const a of setup.analyses) {
+    a.supports ||= []; a.loads ||= [];
+    const st = S.runStatus[a.id];
+    const dot = st === "running" ? "run" : st === "done" ? "ok" : st === "failed" ? "bad" : "idle";
+    const open = S.openAnalyses?.[a.id] !== false;
+    branches.push(el("button", {
+      class: "row analysis-row", role: "option",
+      "aria-selected": sel.kind === "analysis" && sel.id === a.id ? "true" : "false",
+      "aria-label": a.name || a.type,
+      onclick: () => { (S.openAnalyses ||= {})[a.id] = !open; A.select("analysis", a.id); },
+    },
+      el("span", { class: `dot ${dot}` }),
+      el("span", { class: "caret" }, open ? "▾" : "▸"),
+      el("span", { class: "nm" }, a.name || a.type),
+      el("span", { class: "mt" }, a.type)));
+
+    if (!open) continue;
+    branches.push(el("div", { class: "grp-hd sub" },
+      el("span", { class: "lbl" }, "Supports"),
+      el("button", { class: "grp-add", onclick: (e) => { e.stopPropagation(); A.addSupport(a.id); } }, "+ add")));
+    for (const sup of a.supports) {
+      branches.push(row("support", sup.id, sup.name || "Support",
+        sup.faces?.length ? `${sup.faces.length} face${sup.faces.length > 1 ? "s" : ""}` : "no faces",
+        { swatch: "var(--constraint)", depth: 2, warnMeta: !sup.faces?.length }));
+    }
+    if (NEEDS_LOADS.includes(a.type)) {
+      branches.push(el("div", { class: "grp-hd sub" },
+        el("span", { class: "lbl" }, "Loads"),
+        el("button", { class: "grp-add", onclick: (e) => { e.stopPropagation(); A.addLoad(a.id); } }, "+ add")));
+      for (const l of a.loads) {
+        branches.push(row("load", l.id, l.name || "Load", loadMeta(l),
+          { swatch: "var(--accent)", depth: 2,
+            warnMeta: !["gravity", "rotation"].includes(l.type) && !l.faces?.length }));
+      }
+      if (!a.loads.length && a.type === "harmonic" && a.config?.excitation === "base") {
+        branches.push(el("div", { class: "hint", style: "padding:2px 12px 4px 30px" },
+          "driven by base acceleration"));
+      }
+    }
+    if (a.type === "random") {
+      branches.push(el("div", { class: "hint", style: "padding:2px 12px 4px 30px" },
+        `PSD spec · ${(a.config?.spec || []).length} breakpoints`));
+    }
+  }
+  tree.append(grp("Analyses", () => A.addAnalysis(), ...branches));
 }
+
+/** Analysis types that take applied loads. Modal has none by definition, and
+ *  random is driven entirely by its input spectrum. */
+export const NEEDS_LOADS = ["static", "harmonic"];
 
 function loadMeta(l) {
   if (l.type === "gravity") return "gravity";
@@ -712,24 +740,36 @@ function panelAnalysis(S, A, put, id) {
   }
   if (a.type === "random") {
     const spec = c.spec || [];
-    const specRow = (row, i) => el("div", { class: "frm-row2" },
-      numInput("Hz", row[0], (v) => A.mutate(() => { spec[i][0] = v || 0; })),
-      el("div", { style: "display:flex;gap:6px;align-items:end" },
-        numInput("g²/Hz", row[1], (v) => A.mutate(() => { spec[i][1] = v || 0; })),
-        el("button", { class: "btn btn-small btn-danger",
-          onclick: () => A.mutate(() => { spec.splice(i, 1); }) }, "✕")));
-    secs.push(sec("Input spectrum (PSD breakpoints)",
-      ...spec.map(specRow),
+    const specTable = el("table", { class: "rtable psd" },
+      el("tr", {},
+        el("th", {}, "Hz"), el("th", {}, "g²/Hz"), el("th", {}, "")),
+      spec.map((rowv, i) => el("tr", {},
+        el("td", {}, el("input", {
+          type: "number", step: "any", value: rowv[0],
+          oninput: (e) => { spec[i][0] = Number(e.target.value) || 0; A.saveOnly(); } })),
+        el("td", {}, el("input", {
+          type: "number", step: "any", value: rowv[1],
+          oninput: (e) => { spec[i][1] = Number(e.target.value) || 0; A.saveOnly(); } })),
+        el("td", {}, el("button", {
+          class: "btn btn-small btn-danger",
+          onclick: () => A.mutate(() => { spec.splice(i, 1); }) }, "✕")))));
+
+    secs.push(sec("Input spectrum",
+      specTable,
       el("div", { class: "btnrow" },
-        el("button", { class: "btn btn-small",
-          onclick: () => A.mutate(() => {
-            const last = spec[spec.length - 1] || [20, 0.01];
-            spec.push([last[0] * 2, last[1]]);
-          }) }, "+ breakpoint")),
+        el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
+          const last = spec[spec.length - 1] || [20, 0.01];
+          spec.push([Math.round(last[0] * 2), last[1]]);
+        }) }, "+ row"),
+        el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
+          c.spec = [[20, 0.01], [80, 0.04], [350, 0.04], [2000, 0.007]];
+        }) }, "Typical spec"),
+        el("button", { class: "btn btn-small", onclick: () => A.pasteSpec(c) }, "Paste…")),
       el("div", { class: "hint" },
-        "Log-log interpolated between breakpoints, zero outside — the standard " +
-        "qualification-spec format."),
+        "Log-log interpolated between rows, zero outside — the standard " +
+        "qualification-spec format. Rows sort themselves by frequency."),
       el("div", { class: "hint good" }, `Input overall: ${gramsOf(spec)} g RMS`)));
+
     secs.push(sec("Direction and damping",
       el("div", { class: "frm-row" },
         numInput("dir X", c.base_dir?.[0] ?? 0, (v) => A.mutate(() => { c.base_dir = [v || 0, c.base_dir?.[1] ?? 0, c.base_dir?.[2] ?? 1]; })),
@@ -768,14 +808,20 @@ function panelAnalysis(S, A, put, id) {
       blockers.push(`Solid "${s.name || s.tag}" has no material assigned.`);
     }
   }
-  if (!S.project.setup.supports.some((x) => x.faces?.length)) {
-    blockers.push("No support has faces assigned — the model would be unconstrained.");
+  // BCs are per-analysis, so these blockers are about THIS analysis only
+  if (!(a.supports || []).some((x) => x.faces?.length)) {
+    blockers.push("This analysis has no support with faces — it would be unconstrained.");
   }
-  const hasLoad = S.project.setup.loads.some(
+  const hasLoad = (a.loads || []).some(
     (x) => ["gravity", "rotation"].includes(x.type) || x.faces?.length);
   const hasPreload = (S.project.setup.bolts || []).some((x) => x.preload_N > 0);
-  if (a.type !== "modal" && !hasLoad && !hasPreload) {
-    blockers.push("No load defined — add a load, or a bolt preload.");
+  const baseDriven = a.type === "random"
+    || (a.type === "harmonic" && a.config?.excitation === "base");
+  if (NEEDS_LOADS.includes(a.type) && !baseDriven && !hasLoad && !hasPreload) {
+    blockers.push("This analysis has no load — add one, or a bolt preload.");
+  }
+  if (["harmonic", "random"].includes(a.type) && !(S.project.setup.probes || []).length) {
+    blockers.push("Add a probe — frequency response is extracted at probes.");
   }
 
   secs.push(sec(null,

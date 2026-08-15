@@ -16,6 +16,24 @@ from lattice_fea import comm_writer, geometry, meshing  # noqa: E402
 from lattice_fea.config import SolverConfig  # noqa: E402
 from lattice_fea.projects import default_setup  # noqa: E402
 
+
+def _an(setup, atype, config):
+    """Reuse the fixture's BCs for a new analysis of the given type, and
+    register it so its mesh-group indices line up.
+
+    The originals are stashed on first use: a modal analysis carries no loads,
+    so reading them back off the last-registered analysis would lose them.
+    """
+    if "_bcs" not in setup:
+        setup["_bcs"] = {"supports": setup["analyses"][0]["supports"],
+                         "loads": setup["analyses"][0]["loads"]}
+    bcs = setup["_bcs"]
+    a = {"id": f"x_{atype}", "type": atype, "name": atype, "config": config,
+         "supports": bcs["supports"],
+         "loads": [] if atype == "modal" else bcs["loads"]}
+    setup["analyses"] = [a]
+    return a
+
 EXAMPLES = os.path.join(os.path.dirname(__file__), "..", "examples")
 ASSEMBLY = os.path.join(EXAMPLES, "bracket_assembly.step")
 
@@ -53,11 +71,15 @@ def meshed(imported):
     setup = default_setup()
     # pick real faces for a support and a load: largest two faces of solid 1
     faces = sorted(meta["faces"], key=lambda f: -f["area"])
-    setup["supports"] = [{"id": "s1", "name": "fix", "type": "fixed",
-                          "faces": [faces[0]["tag"]]}]
-    setup["loads"] = [{"id": "l1", "name": "load", "type": "force",
-                       "faces": [faces[1]["tag"]], "fx": 0, "fy": 0, "fz": -1200}]
+    # BCs now belong to an analysis, not the model
     setup["probes"] = [{"id": "p1", "name": "tip", "x": 130.0, "y": 114.0, "z": 6.5}]
+    setup["analyses"] = [{
+        "id": "a1", "type": "static", "name": "Static", "config": {},
+        "supports": [{"id": "s1", "name": "fix", "type": "fixed",
+                      "faces": [faces[0]["tag"]]}],
+        "loads": [{"id": "l1", "name": "load", "type": "force",
+                   "faces": [faces[1]["tag"]], "fx": 0, "fy": 0, "fz": -1200}],
+    }]
     unv = str(d / "mesh.unv")
     out = meshing.mesh_project(brep, unv, meta, setup)
     return unv, out, setup, meta
@@ -71,7 +93,7 @@ def test_mesh_and_unv(meshed):
     assert s["islands"] == 1, "fragmented assembly must mesh as one connected body"
     assert s["probes"] and s["probes"][0]["snap_dist"] < 5.0
     txt = open(unv, errors="ignore").read()
-    for g in ("V1", "V2", "SUP1", "LOA1"):
+    for g in ("V1", "V2", "SUP1_1", "LOA1_1"):
         assert g in txt, f"group {g} missing from UNV"
     assert out["skin"]["vtx"]["b64"]
 
@@ -82,7 +104,7 @@ def test_comm_static(meshed):
                            "rho_kgm3": 2700}]
     setup["assignments"] = {str(s["tag"]): "al" for s in meta["solids"]}
     comm, export = comm_writer.build_run(
-        {"id": "a1", "type": "static", "config": {}},
+        _an(setup, "static", {}),
         setup, meta, out["stats"], SolverConfig())
     for kw in ("LIRE_MAILLAGE", "MECA_STATIQUE", "SIEQ_NOEU", "IMPR_RESU",
                "FORCE_FACE", "MUMPS", "REAC_NODA"):
@@ -100,16 +122,15 @@ def test_comm_modal_and_harmonic(meshed):
                            "rho_kgm3": 2700}]
     setup["assignments"] = {str(s["tag"]): "al" for s in meta["solids"]}
     comm, _ = comm_writer.build_run(
-        {"id": "a2", "type": "modal", "config": {"n_modes": 12}},
+        _an(setup, "modal", {"n_modes": 12}),
         setup, meta, out["stats"], SolverConfig())
     for kw in ("ASSEMBLAGE", "CALC_MODES", "SORENSEN", "NMAX_FREQ=12",
                "MASS_EFFE_UN_DX", "MASS_INER"):
         assert kw in comm
 
     comm, export = comm_writer.build_run(
-        {"id": "a3", "type": "harmonic",
-         "config": {"f_min": 20, "f_max": 2000, "n_steps": 50,
-                    "damping": 0.02, "field_freqs": [500.0]}},
+        _an(setup, "harmonic", {"f_min": 20, "f_max": 2000, "n_steps": 50,
+                                "damping": 0.02, "field_freqs": [500.0]}),
         setup, meta, out["stats"], SolverConfig())
     for kw in ("DYNA_VIBRA", "PROJ_BASE", "AMOR_REDUIT", "RECU_FONCTION",
                "ENV_SPHERE", "REST_GENE_PHYS", "PARTIE='REEL'"):
@@ -140,11 +161,11 @@ def test_comm_is_valid_python(meshed):
     setup["materials"] = [{"id": "al", "name": "Al", "E_GPa": 68.9, "nu": 0.33,
                            "rho_kgm3": 2700}]
     setup["assignments"] = {str(s["tag"]): "al" for s in meta["solids"]}
-    for a in [{"id": "s", "type": "static", "config": {}},
-              {"id": "m", "type": "modal", "config": {"n_modes": 6}},
-              {"id": "h", "type": "harmonic",
-               "config": {"f_min": 20, "f_max": 900, "n_steps": 20, "damping": 0.02}}]:
-        comm, _ = comm_writer.build_run(a, setup, meta, out["stats"], SolverConfig())
+    for atype, cfg in [("static", {}), ("modal", {"n_modes": 6}),
+                       ("harmonic", {"f_min": 20, "f_max": 900,
+                                     "n_steps": 20, "damping": 0.02})]:
+        comm, _ = comm_writer.build_run(_an(setup, atype, cfg), setup, meta,
+                                        out["stats"], SolverConfig())
         ast.parse(comm)                      # raises SyntaxError if malformed
         assert "NUME_ORDRE" not in comm, "MODE_MECA publishes NUME_MODE, not NUME_ORDRE"
 
@@ -155,8 +176,9 @@ def test_med_written_before_optional_tables(meshed):
     setup["materials"] = [{"id": "al", "name": "Al", "E_GPa": 68.9, "nu": 0.33,
                            "rho_kgm3": 2700}]
     setup["assignments"] = {str(s["tag"]): "al" for s in meta["solids"]}
-    comm, _ = comm_writer.build_run({"id": "m", "type": "modal", "config": {}},
-                                    setup, meta, out["stats"], SolverConfig())
+    comm, _ = comm_writer.build_run(
+        _an(setup, "modal", {}),
+        setup, meta, out["stats"], SolverConfig())
     assert comm.index("IMPR_RESU") < comm.index("RECU_TABLE")
     # and every table sits inside a guard
     assert comm.count("try:") >= 3

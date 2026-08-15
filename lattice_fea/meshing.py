@@ -135,13 +135,20 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
 
 
 def _collect_face_sets(setup: dict) -> dict:
+    """Face groups for the whole model.
+
+    The mesh is shared, but supports and loads now belong to individual
+    analyses, so group names are scoped by analysis index — otherwise the
+    second analysis's SUP1 would overwrite the first's.
+    """
     sets = {}
-    for i, s in enumerate(setup.get("supports", [])):
-        if s.get("faces"):
-            sets[f"SUP{i + 1}"] = [int(t) for t in s["faces"]]
-    for i, l in enumerate(setup.get("loads", [])):
-        if l.get("type") in ("force", "pressure", "remote") and l.get("faces"):
-            sets[f"LOA{i + 1}"] = [int(t) for t in l["faces"]]
+    for ai, a in enumerate(setup.get("analyses", []), start=1):
+        for i, s in enumerate(a.get("supports", [])):
+            if s.get("faces"):
+                sets[group_name("SUP", ai, i + 1)] = [int(t) for t in s["faces"]]
+        for i, l in enumerate(a.get("loads", [])):
+            if l.get("type") in ("force", "pressure", "remote") and l.get("faces"):
+                sets[group_name("LOA", ai, i + 1)] = [int(t) for t in l["faces"]]
     for i, b in enumerate(setup.get("bolts", [])):
         if b.get("side_a_faces"):
             sets[f"BFA{i + 1}"] = [int(t) for t in b["side_a_faces"]]
@@ -151,6 +158,11 @@ def _collect_face_sets(setup: dict) -> dict:
         if t.get("slave_faces"):
             sets[f"TIE{i + 1}"] = [int(x) for x in t["slave_faces"]]
     return sets
+
+
+def group_name(kind: str, analysis_index: int, item_index: int) -> str:
+    """Mesh group name for a per-analysis boundary condition, e.g. SUP1_2."""
+    return f"{kind}{analysis_index}_{item_index}"
 
 
 def _face_set_centroid(meta: dict, ftags) -> "np.ndarray|None":
@@ -226,11 +238,14 @@ def _add_remote_stubs(gmsh, setup: dict, meta: dict, progress) -> list:
     out = []
     diag = meta.get("diag", 100.0)
     stub = max(diag * 1e-3, 0.05)
-    for i, l in enumerate(setup.get("loads", [])):
-        if l.get("type") != "remote":
-            continue
+    entries = []
+    for ai, a in enumerate(setup.get("analyses", []), start=1):
+        for i, l in enumerate(a.get("loads", [])):
+            if l.get("type") == "remote":
+                entries.append((ai, i + 1, l))
+    for ai, i, l in entries:
         if not l.get("faces"):
-            raise ValueError(f"Remote load '{l.get('name', i + 1)}': pick faces first")
+            raise ValueError(f"Remote load '{l.get('name', i)}': pick faces first")
         pt = np.asarray([float(l.get("x", 0)), float(l.get("y", 0)), float(l.get("z", 0))])
         pb = pt + np.array([1.0, 1.0, 1.0]) / math.sqrt(3.0) * stub
         dtag = gmsh.model.addDiscreteEntity(1)
@@ -238,10 +253,12 @@ def _add_remote_stubs(gmsh, setup: dict, meta: dict, progress) -> list:
         e0 = gmsh.model.mesh.getMaxElementTag() + 1
         gmsh.model.mesh.addNodes(1, dtag, [n0, n0 + 1], [*pt.tolist(), *pb.tolist()])
         gmsh.model.mesh.addElementsByType(dtag, 1, [e0], [n0, n0 + 1])
-        gmsh.model.addPhysicalGroup(1, [dtag], name=f"RPT{i + 1}")
-        out.append({"load_index": i + 1, "id": l.get("id"),
+        tag_name = group_name("RPT", ai, i)
+        gmsh.model.addPhysicalGroup(1, [dtag], name=tag_name)
+        out.append({"analysis_index": ai, "load_index": i, "id": l.get("id"),
+                    "group": tag_name,
                     "node": [round(x, 6) for x in pt]})
-        progress(f"remote point {i + 1} at ({pt[0]:.1f}, {pt[1]:.1f}, {pt[2]:.1f})")
+        progress(f"remote point {tag_name} at ({pt[0]:.1f}, {pt[1]:.1f}, {pt[2]:.1f})")
     return out
 
 

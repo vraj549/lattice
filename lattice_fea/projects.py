@@ -71,7 +71,10 @@ class ProjectStore:
 
     def load(self, pid: str) -> dict:
         with open(self.path(pid, "project.json"), encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        if isinstance(data.get("setup"), dict):
+            data["setup"] = migrate_setup(data["setup"])
+        return data
 
     def save(self, pid: str, data: dict) -> None:
         self.write_json(pid, "project.json", data)
@@ -105,14 +108,43 @@ class ProjectStore:
 
 
 def default_setup() -> dict:
+    """Shared model data, plus a list of analyses that each own their own
+    supports and loads.
+
+    Boundary conditions belong to an analysis, not the model: a modal run
+    needs supports and no loads, a static run needs both, a random run needs
+    supports and a spectrum. Scoping them per analysis means each one asks
+    only for what it actually uses — the structure Ansys and SimScale use.
+
+    Shared (defined once, used by every analysis): geometry, materials,
+    bolts, ties, probes, mesh.
+    """
     return {
         "materials": [],        # [{id, name, E_GPa, nu, rho_kgm3, yield_MPa}]
         "assignments": {},      # {solidTag(str): materialId}
-        "supports": [],         # [{id, name, type:'fixed', faces:[int]}]
-        "loads": [],            # [{id, name, type:'force'|'pressure'|'gravity', faces, fx,fy,fz | pressure | g:[gx,gy,gz]}]
         "bolts": [],            # [{id, name, side_a_faces:[], side_b_faces:[], d_mm, E_GPa, preload_N}]
         "ties": [],             # [{id, name, slave_faces:[], master_solid:int}]
-        "mesh": {"size_mm": None, "curvature": 16, "order": 2, "local": []},
         "probes": [],           # [{id, name, x,y,z}]  (mm)
-        "analyses": [],         # see comm_writer for per-type config
+        "mesh": {"size_mm": None, "curvature": 16, "order": 2, "local": []},
+        "analyses": [],         # each: {id, type, name, config, supports[], loads[]}
     }
+
+
+def migrate_setup(setup: dict) -> dict:
+    """Move model-level supports/loads into each analysis (pre-0.9 projects).
+
+    Old projects applied one global set of BCs to every analysis. Copy them
+    into each analysis so nothing is lost, then drop the globals.
+    """
+    if "supports" not in setup and "loads" not in setup:
+        return setup
+    g_sup = setup.pop("supports", []) or []
+    g_load = setup.pop("loads", []) or []
+    for a in setup.get("analyses", []):
+        if not a.get("supports"):
+            a["supports"] = [dict(s) for s in g_sup]
+        if not a.get("loads") and a.get("type") != "modal":
+            a["loads"] = [dict(l) for l in g_load]
+        a.setdefault("supports", [])
+        a.setdefault("loads", [])
+    return setup

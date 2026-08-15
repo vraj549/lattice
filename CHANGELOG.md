@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.9.0
+
+**Boundary conditions now belong to an analysis, not the model.**
+
+Previously one global set of supports and loads applied to every analysis, so
+a modal run appeared to require a load and a random run appeared to require a
+force. Each analysis now owns its own supports and loads, and the tree shows
+them as branches — the structure Ansys and SimScale use:
+
+    Geometry / Connections / Probes / Mesh      (shared)
+    Analyses
+      Static structural
+        Supports, Loads
+      Modal
+        Supports                                 (no Loads section at all)
+      Random vibration
+        Supports, PSD spectrum
+
+- Only the sections an analysis actually uses are shown, and run blockers are
+  reported per analysis ("This analysis has no support with faces").
+- Existing projects migrate automatically: global BCs are copied into every
+  analysis, with loads omitted from modal.
+- Mesh face groups are scoped by analysis (`SUP1_1`, `LOA2_1`, …) since the
+  mesh is shared but the BCs are not; otherwise the second analysis's groups
+  would overwrite the first's.
+- The viewport shows the BC symbols of the selected analysis only.
+- **PSD input is now a real table** with Hz / g²/Hz cells, per-row delete,
+  add-row, a "Typical spec" preset, and a **Paste…** that accepts rows copied
+  from a spec document (tab, comma or space separated). Input overall g RMS
+  updates as you type.
+
 ## 0.8.0
 
 **Base excitation and random vibration.**

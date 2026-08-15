@@ -36,18 +36,39 @@ const A = {
   mutate(fn) { fn(); scheduleSave(); refresh(); },
 
   // ---- setup items ----
-  addSupport() {
-    const s = { id: uid(), name: `Support ${S.project.setup.supports.length + 1}`,
-                type: "fixed", faces: [] };
-    S.project.setup.supports.push(s);
+  // Supports and loads belong to a specific analysis.
+  findAnalysisOf(kind, id) {
+    for (const a of S.project.setup.analyses || []) {
+      const list = kind === "support" ? (a.supports || []) : (a.loads || []);
+      const item = list.find((x) => x.id === id);
+      if (item) return { analysis: a, item };
+    }
+    return { analysis: null, item: null };
+  },
+  currentAnalysis() {
+    const setup = S.project.setup;
+    const { kind, id } = S.selection;
+    if (kind === "analysis") return setup.analyses.find((a) => a.id === id);
+    if (kind === "support" || kind === "load") return A.findAnalysisOf(kind, id).analysis;
+    return setup.analyses[0];
+  },
+  addSupport(aid) {
+    const a = (S.project.setup.analyses || []).find((x) => x.id === aid) || A.currentAnalysis();
+    if (!a) { logLine("Add an analysis first — supports belong to one.", "warnln"); return; }
+    a.supports ||= [];
+    const s = { id: uid(), name: `Support ${a.supports.length + 1}`, type: "fixed", faces: [] };
+    a.supports.push(s);
     S.selection = { kind: "support", id: s.id };
     A.mutate(() => {});
     A.pickFaces(s, "faces");
   },
-  addLoad() {
-    const l = { id: uid(), name: `Load ${S.project.setup.loads.length + 1}`,
+  addLoad(aid) {
+    const a = (S.project.setup.analyses || []).find((x) => x.id === aid) || A.currentAnalysis();
+    if (!a) { logLine("Add an analysis first — loads belong to one.", "warnln"); return; }
+    a.loads ||= [];
+    const l = { id: uid(), name: `Load ${a.loads.length + 1}`,
                 type: "force", faces: [], fx: 0, fy: 0, fz: -100 };
-    S.project.setup.loads.push(l);
+    a.loads.push(l);
     S.selection = { kind: "load", id: l.id };
     A.mutate(() => {});
     A.pickFaces(l, "faces");
@@ -80,14 +101,27 @@ const A = {
     const type = prompt("Analysis type: static, modal, harmonic, or random", "static");
     if (!["static", "modal", "harmonic", "random"].includes(type)) return;
     const a = defaultAnalysis(type);
+    a.supports = []; a.loads = [];
     S.project.setup.analyses.push(a);
     S.selection = { kind: "analysis", id: a.id };
+    (S.openAnalyses ||= {})[a.id] = true;
     A.mutate(() => {});
+    A.addSupport(a.id);          // every analysis needs at least one support
   },
   removeItem(listName, id) {
-    const list = S.project.setup[listName];
-    const i = list.findIndex((x) => x.id === id);
-    if (i >= 0) list.splice(i, 1);
+    if (listName === "supports" || listName === "loads") {
+      const kind = listName === "supports" ? "support" : "load";
+      const { analysis } = A.findAnalysisOf(kind, id);
+      if (analysis) {
+        const list = analysis[listName];
+        const i = list.findIndex((x) => x.id === id);
+        if (i >= 0) list.splice(i, 1);
+      }
+    } else {
+      const list = S.project.setup[listName] || [];
+      const i = list.findIndex((x) => x.id === id);
+      if (i >= 0) list.splice(i, 1);
+    }
     S.selection = { kind: "model", id: "root" };
     A.mutate(() => {});
   },
@@ -238,6 +272,24 @@ const A = {
   },
 
   refreshPanel() { refresh(); },
+
+  // typing in the PSD grid must not re-render the panel on every keystroke
+  saveOnly() { scheduleSave(); },
+
+  pasteSpec(cfg) {
+    const txt = prompt(
+      "Paste PSD rows — one 'Hz  g^2/Hz' pair per line (tab, comma or space separated):");
+    if (!txt) return;
+    const rows = [];
+    for (const line of txt.split(/[\r\n]+/)) {
+      const nums = line.trim().split(/[\s,;\t]+/).map(Number).filter((v) => !isNaN(v));
+      if (nums.length >= 2 && nums[0] > 0) rows.push([nums[0], nums[1]]);
+    }
+    if (!rows.length) { logLine("No usable rows found in pasted text.", "warnln"); return; }
+    rows.sort((a, b) => a[0] - b[0]);
+    A.mutate(() => { cfg.spec = rows; });
+    logLine(`PSD spec: ${rows.length} breakpoints loaded.`);
+  },
 
   async loadRandom(aid) {
     if (S.randomPending?.[aid]) return;
@@ -421,10 +473,13 @@ function updateStat() {
 function faceStates() {
   const map = new Map();
   if (!S.project) return map;
-  for (const sup of S.project.setup.supports) {
+  // only the analysis in context — showing every analysis's BCs at once was
+  // the thing that made a shared list confusing in the first place
+  const a = A.currentAnalysis();
+  for (const sup of a?.supports || []) {
     for (const f of sup.faces || []) map.set(Number(f), "support");
   }
-  for (const l of S.project.setup.loads) {
+  for (const l of a?.loads || []) {
     for (const f of l.faces || []) map.set(Number(f), "load");
   }
   for (const bl of S.project.setup.bolts || []) {
@@ -441,7 +496,8 @@ function refresh() {
   renderTree(S, A);
   renderPanel(S, A);
   viewer.setFaceStates(faceStates());
-  viewer.setGlyphs(S.project.setup, S.project.geometry);
+  viewer.setGlyphs({ ...S.project.setup, ...(A.currentAnalysis() || { supports: [], loads: [] }) },
+                   S.project.geometry);
 }
 
 // ---------------- project bootstrap ----------------
@@ -542,7 +598,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.8.0";
+const UI_BUILD = "0.9.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;
