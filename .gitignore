@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# virtualenvs — these hold platform-specific binaries (a macOS .venv is
+# useless on Windows and vice versa). Everyone creates their own.
+.venv/
+venv/
+env/
+
+# per-user project data: uploaded STEP files, meshes, solver runs
+workspace/
+
+.pytest_cache/
+.DS_Store
+dist/
+build/
+*.swp
