@@ -662,6 +662,21 @@ document.getElementById("newForm").addEventListener("submit", async (e) => {
 
 // ---------------- viewport controls ----------------
 document.getElementById("btnFit").addEventListener("click", () => viewer.fit());
+
+const btnResMesh = document.getElementById("btnResMesh");
+btnResMesh.addEventListener("click", () => {
+  const on = btnResMesh.getAttribute("aria-pressed") !== "true";
+  btnResMesh.setAttribute("aria-pressed", String(on));
+  viewer.setResultMesh(on);
+});
+
+const btnProbe = document.getElementById("btnProbe");
+btnProbe.addEventListener("click", () => {
+  const on = btnProbe.getAttribute("aria-pressed") !== "true";
+  btnProbe.setAttribute("aria-pressed", String(on));
+  viewer.probeMode = on;
+  if (!on) document.getElementById("nodeProbe").hidden = true;
+});
 const clipAxis = document.getElementById("clipAxis");
 const clipPos = document.getElementById("clipPos");
 clipAxis.addEventListener("change", () => {
@@ -676,7 +691,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.9.4";
+const UI_BUILD = "0.10.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;
@@ -745,6 +760,20 @@ async function boot() {
     onHover: (h) => {
       document.getElementById("vpHover").textContent =
         h ? `face ${h.tag} · ${fmtVal(h.area)} mm²` : "";
+    },
+    onProbe: (p) => {
+      const box = document.getElementById("nodeProbe");
+      if (!p) { box.hidden = true; return; }
+      const R = S.activeResult;
+      const meta = R ? S.results[R.aid] : null;
+      const f = meta?.fields.find((x) => x.name === R.field);
+      const unit = f?.kind === "DEPL" ? "mm" : "MPa";
+      box.innerHTML =
+        `<b>${fmtVal(p.value)} ${unit}</b>` +
+        `<span>${p.xyz.map((v) => fmtVal(v)).join(", ")}</span>`;
+      box.style.left = `${p.screen[0]}px`;
+      box.style.top = `${p.screen[1]}px`;
+      box.hidden = false;
     },
     onPickChange: () => {},
     onPickPoint: (pt) => {

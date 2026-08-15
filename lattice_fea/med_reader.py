@@ -201,8 +201,13 @@ class MedFile:
     def skin(self):
         """Boundary faces of the tet mesh.
 
-        Returns (tri, used_nodes, remap) with tri already sub-triangulated to
-        3-node display triangles indexing the *compact* vertex array.
+        Returns (tri, used_nodes, remap, edges).
+
+        `tri` is sub-triangulated for shading; `edges` are the ELEMENT FACE
+        outlines. Those differ: drawing the sub-triangulation as a wireframe
+        shows internal splits that are not element boundaries, which is not
+        what a mesh overlay should show. For tet10 the outline follows the
+        mid-side nodes (c1-m1-c2-m2-c3-m3) so curved edges stay curved.
         """
         t = self.tets
         if self.tet_npery == 10:
@@ -223,10 +228,23 @@ class MedFile:
         else:
             tri = boundary
 
-        used = np.unique(tri.ravel())
+        if self.tet_npery == 10:
+            c1, c2, c3, m1, m2, m3 = (boundary[:, k] for k in range(6))
+            ring = [c1, m1, c2, m2, c3, m3]
+        else:
+            ring = [boundary[:, 0], boundary[:, 1], boundary[:, 2]]
+        seg = []
+        for k in range(len(ring)):
+            seg.append(np.stack([ring[k], ring[(k + 1) % len(ring)]], 1))
+        edges = np.concatenate(seg)
+        # one line per shared edge, not two
+        edges = np.unique(np.sort(edges, axis=1), axis=0)
+
+        used = np.unique(np.concatenate([tri.ravel(), edges.ravel()]))
         remap = np.full(len(self.nodes), -1, dtype=np.int64)
         remap[used] = np.arange(len(used))
-        return remap[tri].astype(np.uint32), used, remap
+        return (remap[tri].astype(np.uint32), used, remap,
+                remap[edges].astype(np.uint32))
 
     def close(self):
         self.f.close()

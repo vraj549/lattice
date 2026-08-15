@@ -94,7 +94,7 @@ def field_payload(run_dir: str, field: str, step_key: str, comp: str,
     """Skin mesh + scalar values (+ displacement vectors when available)."""
     med = MedFile(os.path.join(run_dir, "result.med"), expect_bbox, expect_volume)
     try:
-        tri, used, _ = med.skin()
+        tri, used, _, edges = med.skin()
         vtx = med.nodes[used].astype(np.float32)
 
         fields = {f["name"]: f for f in med.list_fields()}
@@ -131,6 +131,7 @@ def field_payload(run_dir: str, field: str, step_key: str, comp: str,
 
         out = {
             "vtx": _b64(vtx.ravel()), "tri": _b64(tri.ravel()),
+            "edges": _b64(edges.ravel()),
             "values": _b64(scal), "min": float(scal.min()), "max": float(scal.max()),
         }
         if disp is not None:

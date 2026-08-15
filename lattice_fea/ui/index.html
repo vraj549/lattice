@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lattice — FEA workbench</title>
-<link rel="stylesheet" href="/ui/app.css?v=0.9.4">
+<link rel="stylesheet" href="/ui/app.css?v=0.10.0">
 <script type="importmap">
 { "imports": { "three": "/ui/vendor/three.module.js" } }
 </script>
@@ -58,7 +58,12 @@
         </select>
         <input type="range" class="vrange" id="clipPos" min="0" max="1000" value="500"
                aria-label="Section position" style="display:none">
+        <button class="vbtn" id="btnResMesh" aria-pressed="true"
+                title="Show the element mesh over the contours">Mesh</button>
+        <button class="vbtn" id="btnProbe" aria-pressed="false"
+                title="Hover to read the value at the nearest node">Probe</button>
       </div>
+      <div class="nodeprobe" id="nodeProbe" hidden></div>
 
       <div class="pickbar" id="pickBar" hidden>
         <span id="pickMsg">Pick faces</span>
@@ -129,6 +134,6 @@
   </div>
 </div>
 
-<script type="module" src="/ui/js/main.js?v=0.9.4"></script>
+<script type="module" src="/ui/js/main.js?v=0.10.0"></script>
 </body>
 </html>

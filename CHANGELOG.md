@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.10.0
+
+- **Mesh overlaid on the result contours**, the way commercial post-processors
+  show them. The wireframe is built from **element face outlines**, not the
+  display sub-triangulation — drawing the sub-triangles would show internal
+  splits that are not element boundaries. For Tet10 the outline follows the
+  mid-side nodes, so curved edges stay curved. Toggle with **Mesh** in the
+  viewport toolbar; it deforms in step with the contours, including during
+  mode animation.
+- **Probe**: hover the result and it snaps to the nearest node, showing the
+  value and that node's coordinates in a label pinned to the node.
+  Picking runs against a hidden twin geometry carrying the **deformed**
+  positions — the shader deforms on the GPU, which a raycast cannot see, so
+  probing undeformed geometry would report the wrong node whenever a
+  deformation scale was applied.
+- Coordinates in the probe are the node's original position on the part, not
+  its deformed location, since that is what you would measure on the drawing.
+
 ## 0.9.4
 
 - **Solver resources shown next to the solver status**: threads and memory the

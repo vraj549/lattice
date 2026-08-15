@@ -52,6 +52,8 @@ export class Viewer {
     this.clip = { axis: null, frac: 0.5, planes: [] };
     this.cmapTex = makeTexture(THREE);
     this.anim = null;             // {freq} for mode animation
+    this.showResultMesh = true;   // element wireframe over contours
+    this.probeMode = false;
     this._needsRender = true;
 
     this.ray = new THREE.Raycaster();
@@ -94,7 +96,9 @@ export class Viewer {
       const t = performance.now() / 1000;
       const mat = this._resultMaterial;
       if (mat) {
-        mat.uniforms.uDef.value = this._defScale * Math.sin(2 * Math.PI * 1.2 * t);
+        const d = this._defScale * Math.sin(2 * Math.PI * 1.2 * t);
+        mat.uniforms.uDef.value = d;
+        if (this._edgeLines) this._edgeLines.material.uniforms.uDef.value = d;
         this._needsRender = true;
       }
     }
@@ -255,6 +259,10 @@ export class Viewer {
   }
 
   _onMove(e) {
+    if (this.probeMode && this.resultGroup.visible) {
+      this.cb.onProbe?.(this.probeAt(e));
+      return;
+    }
     if (this.mode === "view" || this.geoGroup.visible === false) return;
     const hit = this._castFace(e);
     const tag = hit ? hit.object.userData.tag : null;
@@ -365,11 +373,53 @@ export class Viewer {
       side: THREE.DoubleSide,
       clipping: true,
       clippingPlanes: this.clip.planes,
+      polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
     });
     const mesh = new THREE.Mesh(g, mat);
     this.resultGroup.add(mesh);
     this._resultMaterial = mat;
     this._defScale = defScale;
+    this._resultData = { vtx, disp, scal, tri, payload };
+
+    // Element-face wireframe over the contours, deformed by the same amount.
+    // Uses the element outlines from the solver, not the display
+    // sub-triangulation, so it shows real element boundaries.
+    if (payload.edges) {
+      const eg = new THREE.BufferGeometry();
+      eg.setAttribute("position", new THREE.BufferAttribute(vtx, 3));
+      eg.setAttribute("aDisp", new THREE.BufferAttribute(disp, 3));
+      eg.setIndex(new THREE.BufferAttribute(decode(payload.edges), 1));
+      const emat = new THREE.ShaderMaterial({
+        uniforms: { uDef: { value: defScale }, uCol: { value: new THREE.Color(0x1b2228) } },
+        vertexShader: `
+          attribute vec3 aDisp; uniform float uDef;
+          void main() {
+            vec3 p = position + aDisp * uDef;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+          }`,
+        fragmentShader: `
+          uniform vec3 uCol;
+          void main() { gl_FragColor = vec4(uCol, 0.30); }`,
+        transparent: true, depthWrite: false,
+        clipping: true, clippingPlanes: this.clip.planes,
+      });
+      this._edgeLines = new THREE.LineSegments(eg, emat);
+      this._edgeLines.visible = this.showResultMesh;
+      this.resultGroup.add(this._edgeLines);
+    } else {
+      this._edgeLines = null;
+    }
+
+    // Invisible twin carrying DEFORMED positions, so hover picking hits what
+    // is actually drawn. The shader deforms on the GPU; a raycast cannot see
+    // that, and against undeformed geometry the readout would be offset.
+    const pg = new THREE.BufferGeometry();
+    pg.setAttribute("position", new THREE.BufferAttribute(vtx.slice(), 3));
+    pg.setIndex(new THREE.BufferAttribute(tri, 1));
+    this._pickMesh = new THREE.Mesh(pg, new THREE.MeshBasicMaterial({ visible: false }));
+    this._pickMesh.frustumCulled = false;
+    this.resultGroup.add(this._pickMesh);
+    this._syncPickGeometry();
 
     this.geoGroup.visible = false;
     this.glyphGroup.visible = false;
@@ -380,20 +430,65 @@ export class Viewer {
     this.requestRender();
   }
 
-  /** Apply palette / band changes to the live contour. */
-  setContourStyle() {
-    this.cmapTex = makeTexture(THREE);
-    if (this._resultMaterial) {
-      this._resultMaterial.uniforms.tMap.value = this.cmapTex;
-      this._resultMaterial.uniforms.uBands.value = contourStyle.bands;
-      this.requestRender();
+  /** Push the current deformed positions into the pick geometry. */
+  _syncPickGeometry() {
+    if (!this._pickMesh || !this._resultData) return;
+    const { vtx, disp } = this._resultData;
+    const pos = this._pickMesh.geometry.getAttribute("position");
+    const k = this._defScale || 0;
+    for (let i = 0; i < vtx.length; i++) pos.array[i] = vtx[i] + disp[i] * k;
+    pos.needsUpdate = true;
+    this._pickMesh.geometry.computeBoundingSphere();
+  }
+
+  setResultMesh(on) {
+    this.showResultMesh = on;
+    if (this._edgeLines) this._edgeLines.visible = on;
+    this.requestRender();
+  }
+
+  /** Nearest node to the cursor, with its value — the Ansys "probe" readout. */
+  probeAt(e) {
+    if (!this._pickMesh || !this._resultData) return null;
+    const r = this.canvas.getBoundingClientRect();
+    this.pointer.set(((e.clientX - r.left) / r.width) * 2 - 1,
+                     -((e.clientY - r.top) / r.height) * 2 + 1);
+    this.ray.setFromCamera(this.pointer, this.camera);
+    const hit = this.ray.intersectObject(this._pickMesh, false)[0];
+    if (!hit || !hit.face) return null;
+
+    const pos = this._pickMesh.geometry.getAttribute("position");
+    const { vtx, scal } = this._resultData;
+    let best = -1, bd = Infinity;
+    for (const idx of [hit.face.a, hit.face.b, hit.face.c]) {
+      const dx = pos.array[idx * 3] - hit.point.x;
+      const dy = pos.array[idx * 3 + 1] - hit.point.y;
+      const dz = pos.array[idx * 3 + 2] - hit.point.z;
+      const d = dx * dx + dy * dy + dz * dz;
+      if (d < bd) { bd = d; best = idx; }
     }
+    if (best < 0) return null;
+    return {
+      value: scal[best],
+      // report the ORIGINAL coordinates: where the node is on the part
+      xyz: [vtx[best * 3], vtx[best * 3 + 1], vtx[best * 3 + 2]],
+      screen: this._project(pos.array[best * 3], pos.array[best * 3 + 1],
+                            pos.array[best * 3 + 2]),
+    };
+  }
+
+  _project(x, y, z) {
+    const v = new THREE.Vector3(x, y, z).project(this.camera);
+    const r = this.canvas.getBoundingClientRect();
+    return [(v.x + 1) / 2 * r.width, (1 - v.y) / 2 * r.height];
   }
 
   setDeform(scale) {
     this._defScale = scale;
     if (this._resultMaterial && !this.anim) {
       this._resultMaterial.uniforms.uDef.value = scale;
+      if (this._edgeLines) this._edgeLines.material.uniforms.uDef.value = scale;
+      this._syncPickGeometry();
       this.requestRender();
     }
   }

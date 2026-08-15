@@ -398,3 +398,16 @@ dl { margin: 0; }
   font-family: var(--mono); font-size: 11px; white-space: pre; overflow-x: auto;
   color: var(--text);
 }
+
+/* node probe readout: pinned to the snapped node, like a picked-value label */
+.nodeprobe {
+  position: absolute; z-index: 4; pointer-events: none;
+  transform: translate(10px, -50%);
+  background: var(--panel); border: 1px solid var(--line-2);
+  border-left: 3px solid var(--accent); border-radius: var(--r);
+  padding: 3px 7px; font-family: var(--mono); font-size: 10.5px;
+  font-variant-numeric: tabular-nums; line-height: 1.4; white-space: nowrap;
+}
+.nodeprobe[hidden] { display: none; }
+.nodeprobe b { display: block; font-size: 12px; color: var(--text); }
+.nodeprobe span { color: var(--dim); }
