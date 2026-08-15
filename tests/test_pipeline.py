@@ -160,3 +160,38 @@ def test_med_written_before_optional_tables(meshed):
     assert comm.index("IMPR_RESU") < comm.index("RECU_TABLE")
     # and every table sits inside a guard
     assert comm.count("try:") >= 3
+
+
+def test_med_layout_fallback_without_hint(tmp_path):
+    """The coordinate-interlace fallback must agree with the bbox-validated
+    answer. gmsh's MED writer stores coordinates component-major; an earlier
+    heuristic guessed interleaved and silently scrambled every node."""
+    import gmsh
+    import numpy as np
+    from lattice_fea.med_reader import MedFile
+
+    med = str(tmp_path / "m.med")
+    try:
+        gmsh.initialize(interruptible=False)
+    except TypeError:
+        gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+    gmsh.clear()
+    gmsh.model.add("box")
+    # deliberately unequal extents, the case the heuristic must resolve
+    gmsh.model.occ.addBox(0, 0, 0, 90, 50, 16)
+    gmsh.model.occ.synchronize()
+    gmsh.option.setNumber("Mesh.MeshSizeMax", 20)
+    gmsh.model.mesh.generate(3)
+    gmsh.write(med)
+    gmsh.clear()
+    gmsh.finalize()
+
+    hinted = MedFile(med, [0, 0, 0, 90, 50, 16])
+    blind = MedFile(med)
+    try:
+        assert blind.interleaved == hinted.interleaved, "fallback disagrees with hint"
+        assert np.allclose(blind.nodes.max(0), [90, 50, 16], atol=1e-6)
+    finally:
+        hinted.close()
+        blind.close()

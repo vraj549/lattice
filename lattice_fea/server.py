@@ -198,11 +198,15 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             f.write(export)
         shutil.copyfile(store.path(pid, "mesh", "mesh.unv"),
                         os.path.join(run_dir, "mesh.unv"))
-        # stale results from a previous run must not survive
-        for stale in ("result.med", "meta.json"):
-            p = os.path.join(run_dir, stale)
-            if os.path.isfile(p):
-                os.remove(p)
+        # Every artifact of a previous run must go. Leaving even one behind
+        # lets a FAILED re-run present the previous run's numbers as if they
+        # were current — results parsing only checks whether files exist.
+        for f in os.listdir(run_dir):
+            if f.endswith((".med", ".csv", ".json")) or f in ("tables.txt", "log.txt"):
+                try:
+                    os.remove(os.path.join(run_dir, f))
+                except OSError:
+                    pass
 
         geo = proj["geometry"]
 

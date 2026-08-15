@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.6.0
+
+- **Banded contours**, the commercial-post-processor look: results are
+  quantised into discrete colour levels with hard boundaries instead of a
+  smooth gradient. Selectable 5 / 9 / 13 / 18 / 27 bands or smooth; 9 is the
+  default, matching Ansys. The legend draws matching solid blocks with the
+  value at every band boundary.
+- **Rainbow palette** (blue → cyan → green → yellow → red), the classic
+  structural-FEA scale, now the default. Turbo remains available.
+- Banding is done in the shader by snapping to band centres, so changing bands
+  or palette restyles the live result without refetching the field.
+
+- **Fixed: a silent result-scrambling bug in the MED reader.** gmsh's MED
+  writer stores node coordinates component-major, and the reader's fallback
+  heuristic guessed interleaved — producing a nonsense 90x90x90 bounding box
+  and scrambling every value across nodes. The bounding-box check masked it for
+  normal projects; anything falling back would have shown plausible-looking
+  but wrong contours. The fallback now scores candidate layouts by how
+  distinguishable their coordinate columns are, and agrees with the
+  bbox-validated answer. Regression test added.
+- **Fixed: a failed re-run could present the previous run's results.** Only
+  `result.med` and `meta.json` were cleared before solving, so stale CSV tables
+  survived, satisfied the "did we get anything?" check, and were reported as
+  current. All run artifacts are now cleared first.
+- Fixed: the demo solver wrote fields in the wrong interlace and computed them
+  from gmsh's node order rather than the file's, both of which scrambled the
+  demo contours. Measured edge-to-edge field variation dropped from 0.19 of
+  full range to 0.008.
+
 ## 0.5.1
 
 First real **modal** run: code_aster extracted all 10 modes correctly

@@ -1,7 +1,7 @@
 import { api } from "./api.js";
 import { Viewer } from "./viewer.js";
 import { renderTree, renderPanel, defaultAnalysis, el } from "./ui.js";
-import { renderLegend, fmtVal } from "./colormap.js";
+import { renderLegend, fmtVal, contourStyle } from "./colormap.js";
 
 const uid = () => Math.random().toString(36).slice(2, 8);
 
@@ -235,6 +235,17 @@ const A = {
     A.setResultField(aid, { stepIdx });
     S.animating = true;
     A.loadField(aid);
+  },
+
+  restyleContours() {
+    viewer.setContourStyle();
+    const R = S.activeResult;
+    if (R?.payload) {
+      const f = S.results[R.aid]?.fields.find((x) => x.name === R.field);
+      const unit = f?.kind === "DEPL" ? "mm" : "MPa";
+      renderLegend(R.payload.min, R.payload.max, `${R.comp || f?.label || ""} · ${unit}`);
+    }
+    refresh();
   },
 
   setDeform(mult) {
@@ -506,7 +517,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.5.1";
+const UI_BUILD = "0.6.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;

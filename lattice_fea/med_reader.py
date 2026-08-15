@@ -107,8 +107,31 @@ class MedFile:
                 if (np.allclose(xyz.min(0), lo, atol=tol)
                         and np.allclose(xyz.max(0), hi, atol=tol)):
                     return key
-        # fallback heuristic: real coordinates vary smoothly along the file in
-        # planar layout; measure total variation of the first coordinate column
+
+        # No hint (or it didn't match). Reading planar data as interleaved
+        # mixes x, y and z into every column, so all three columns end up with
+        # near-identical value distributions — whereas a real model almost
+        # always has different extents per axis. Score each candidate by how
+        # distinguishable its columns are; the scrambled reading scores ~0.
+        #
+        # This matters: gmsh's MED writer stores coordinates PLANAR, and the
+        # previous heuristic chose interleaved for it, which silently
+        # scrambled every node position.
+        def distinctness(xyz):
+            spans = xyz.max(0) - xyz.min(0)
+            if not np.all(np.isfinite(spans)) or spans.max() <= 0:
+                return -1.0
+            means = xyz.mean(0)
+            ref = max(spans.max(), 1e-30)
+            return float(np.std(spans / ref) + np.std(means / ref))
+
+        scores = {k: distinctness(v) for k, v in cand.items()}
+        best = max(scores, key=scores.get)
+        if scores[best] > 1e-6:
+            return best
+        # Genuinely ambiguous (e.g. a perfect cube): fall back to the layout
+        # whose coordinates vary least between consecutive entries, which is
+        # how contiguous per-component storage reads.
         tv = {k: np.abs(np.diff(v[:, 0])).sum() for k, v in cand.items()}
         return min(tv, key=tv.get)
 

@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { Orbit } from "./orbit.js";
 import { decode } from "./b64.js";
-import { makeTexture } from "./colormap.js";
+import { makeTexture, contourStyle } from "./colormap.js";
 import { AxisTriad } from "./axes.js";
 import { buildGlyphs } from "./glyphs.js";
 
@@ -313,6 +313,7 @@ export class Viewer {
       uniforms: {
         uDef: { value: defScale },
         uMin: { value: payload.min }, uMax: { value: payload.max },
+        uBands: { value: contourStyle.bands },
         tMap: { value: this.cmapTex },
       },
       vertexShader: `
@@ -326,10 +327,15 @@ export class Viewer {
           gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
         }`,
       fragmentShader: `
-        uniform sampler2D tMap; uniform float uMin, uMax;
+        uniform sampler2D tMap; uniform float uMin, uMax, uBands;
         varying float vS; varying vec3 vN;
         void main() {
           float t = clamp((vS - uMin) / max(uMax - uMin, 1e-30), 0.0, 1.0);
+          // uBands > 0: snap to the centre of a discrete band, which is what
+          // gives commercial post-processors their hard contour boundaries.
+          if (uBands > 0.5) {
+            t = (floor(min(t * uBands, uBands - 1.0)) + 0.5) / uBands;
+          }
           vec3 c = texture2D(tMap, vec2(t, 0.5)).rgb;
           float l = 0.72 + 0.28 * abs(normalize(vN).z);
           gl_FragColor = vec4(c * l, 1.0);
@@ -350,6 +356,16 @@ export class Viewer {
     this.anim = animate ? {} : null;
     if (!animate) mat.uniforms.uDef.value = defScale;
     this.requestRender();
+  }
+
+  /** Apply palette / band changes to the live contour. */
+  setContourStyle() {
+    this.cmapTex = makeTexture(THREE);
+    if (this._resultMaterial) {
+      this._resultMaterial.uniforms.tMap.value = this.cmapTex;
+      this._resultMaterial.uniforms.uBands.value = contourStyle.bands;
+      this.requestRender();
+    }
   }
 
   setDeform(scale) {

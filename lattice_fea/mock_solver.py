@@ -52,7 +52,14 @@ def analysis_kind(comm: str) -> str:
 
 
 def write_mesh_med(unv: str, med: str):
-    """Convert the UNV to MED using gmsh's own MED writer."""
+    """Convert the UNV to MED using gmsh's own MED writer, then read the node
+    coordinates back *out of the MED*.
+
+    gmsh's in-memory node order (sorted by tag) is not MED's storage order, so
+    computing a field from gmsh's arrays lands values on the wrong nodes. Since
+    the fields are appended to this same file, they must be indexed the way the
+    file stores nodes — so read them from the file.
+    """
     import gmsh
     try:
         gmsh.initialize(interruptible=False)
@@ -63,11 +70,17 @@ def write_mesh_med(unv: str, med: str):
     gmsh.open(unv)
     gmsh.option.setNumber("Mesh.SaveAll", 1)
     gmsh.write(med)
-    node_tags, coords, _ = gmsh.model.mesh.getNodes()
-    order = np.argsort(node_tags)
-    xyz = np.asarray(coords).reshape(-1, 3)[order]
     gmsh.clear()
     gmsh.finalize()
+
+    try:                          # invoked as a plain script, not a module
+        from .med_reader import MedFile
+    except ImportError:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from lattice_fea.med_reader import MedFile
+    m = MedFile(med)              # same reader the app uses: same node order
+    xyz = np.array(m.nodes, dtype=np.float64)
+    m.close()
     return xyz
 
 
@@ -76,8 +89,14 @@ def mesh_name(f):
 
 
 def add_nodal_field(f, name: str, comps, values, steps):
-    """values: (nstep, nnode, ncomp). Written planar (component-major) to
-    deliberately exercise the reader's layout auto-detection."""
+    """values: (nstep, nnode, ncomp).
+
+    Written component-major (MED_NO_INTERLACE) to match how gmsh's MED writer
+    stores this file's coordinates. The reader infers interlace once, from the
+    coordinates, and applies it to fields; real code_aster writes both, so they
+    always agree. Any mismatch here scrambles values across nodes and shows up
+    as a spiky deformed shape.
+    """
     cha = f.require_group("CHA")
     g = cha.create_group(name)
     g.attrs["NCO"] = np.int32(len(comps))
@@ -94,8 +113,8 @@ def add_nodal_field(f, name: str, comps, values, steps):
         prof = noe.create_group("MED_NO_PROFILE_INTERNAL")
         prof.attrs["NBR"] = np.int32(values.shape[1])
         prof.attrs["NGA"] = np.int32(1)
-        planar = np.ascontiguousarray(values[i].T).ravel()   # component-major
-        prof.create_dataset("CO", data=planar.astype(np.float64))
+        flat = np.ascontiguousarray(values[i].T).ravel()     # component-major
+        prof.create_dataset("CO", data=flat.astype(np.float64))
 
 
 def synth_fields(xyz: np.ndarray, kind: str, nmodes: int, freqs):

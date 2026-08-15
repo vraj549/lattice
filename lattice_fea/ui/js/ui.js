@@ -1,5 +1,5 @@
 // Tree + context-panel rendering. Pure DOM, no framework.
-import { fmtVal } from "./colormap.js";
+import { fmtVal, contourStyle } from "./colormap.js";
 import { frfChart, seriesColor } from "./charts.js";
 
 export function el(tag, attrs = {}, ...children) {
@@ -744,6 +744,14 @@ function resultSections(S, A, a) {
           (v) => A.setResultField(a.id, { stepIdx: Number(v) }))
       : null;
     secs.push(sec("Contours", fsel, csel, ssel,
+      el("div", { class: "frm-row2" },
+        selInput("Bands", String(contourStyle.bands),
+          [["9", "9 (default)"], ["5", "5"], ["13", "13"], ["18", "18"],
+           ["27", "27"], ["0", "Smooth"]],
+          (v) => { contourStyle.bands = Number(v); A.restyleContours(); }),
+        selInput("Palette", contourStyle.palette,
+          [["rainbow", "Rainbow"], ["turbo", "Turbo"]],
+          (v) => { contourStyle.palette = v; A.restyleContours(); })),
       el("label", { class: "frm" }, "Deformation scale ×",
         el("input", { type: "range", min: 0, max: 3, step: 0.01,
           value: cur ? Math.log10((cur.defMult || 1) * 10) : 1,
