@@ -49,8 +49,12 @@ class SolverConfig:
     def available(self) -> bool:
         return self.mode in ("native", "wsl", "docker")
 
+    def is_demo(self) -> bool:
+        return "mock_solver" in self.cmd
+
     def as_dict(self) -> dict:
         return {
+            "demo": self.is_demo(),
             "mode": self.mode, "cmd": self.cmd, "wsl_distro": self.wsl_distro,
             "docker_image": self.docker_image, "memory_mb": self.memory_mb,
             "time_limit_s": self.time_limit_s, "ncpus": self.ncpus,

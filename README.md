@@ -36,12 +36,32 @@ pip install -e .
 python -m lattice_fea        # opens http://127.0.0.1:8765
 ```
 
-Without a solver installed, Lattice runs in **demo mode**: import, setup, and meshing
-all work — only *Run analysis* is disabled. Check your environment any time with:
+Without a solver installed, import, setup, and meshing all work — only *Run
+analysis* is disabled. Check your environment any time with:
 
 ```bash
 python -m lattice_fea doctor
 ```
+
+`doctor` lists every project and states exactly what is blocking a run
+("not meshed", "no solver", "solids without material", or "nothing — should be
+clickable").
+
+### Trying the interface without a solver
+
+```bash
+python -m lattice_fea --demo-solver
+```
+
+Runs with a stand-in that fabricates plausible results so the whole workflow —
+solve, contours, mode animation, FRF curves, bolt tables — can be exercised
+with no code_aster present. **Results are invented, not computed**; the UI says
+so in a banner you cannot miss. Useful for demos, for UI development, and for
+telling "the tool is broken" apart from "my solver isn't set up".
+
+> **After a `git pull`, restart the server.** The Python process holds the code
+> in memory, so pulling alone changes nothing. The UI shows a red banner when
+> its build and the server's version disagree.
 
 ## Solver setup (code_aster)
 
@@ -84,11 +104,22 @@ conda install -c conda-forge code-aster     # linux-64
 ### Any platform — docker
 
 ```bash
-docker pull codeastersolver/codeaster-seq:latest
+docker pull simvia/code_aster:17.4.22
+export LATTICE_ASTER_MODE=docker
+export LATTICE_DOCKER_IMAGE=simvia/code_aster:17.4.22
 ```
 
-Lattice uses the image automatically when present (amd64; slow under emulation on
-Apple Silicon).
+`simvia/code_aster` tracks current code_aster (v17/v18) and ships `run_aster`.
+Note `codeastersolver/codeaster-seq` is **not** usable: it was last built in
+2019, ships the legacy `as_run` launcher, and contains only dependencies — no
+solver binary.
+
+> **Apple Silicon: verified not to work.** These images are amd64-only, and
+> under Docker's Rosetta emulation the v17 binaries die with `Illegal
+> instruction` — the containers require AVX, which Rosetta-for-Linux does not
+> provide. Forcing QEMU instead prevented the Docker daemon from starting.
+> On an M-series Mac use `--demo-solver` for the interface and run real solves
+> on x86 (WSL2 or Linux).
 
 ### `lattice.toml` (optional, next to where you launch)
 

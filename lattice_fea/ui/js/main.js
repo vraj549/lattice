@@ -490,7 +490,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.3.3";
+const UI_BUILD = "0.4.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;
@@ -510,7 +510,18 @@ function updateSolverChip() {
   const chipText = document.getElementById("solverChipText");
   const sv = S.config?.solver;
   if (!sv) return;
-  if (sv.available) {
+  if (sv.demo) {
+    chip.querySelector(".dot").className = "dot run";
+    chipText.textContent = "DEMO SOLVER — results are fake";
+    if (!document.querySelector(".demobar")) {
+      const bar = document.createElement("div");
+      bar.className = "skewbar demobar";
+      bar.textContent =
+        "Demo solver: results below are fabricated to exercise the interface, " +
+        "not computed. Never use them for engineering decisions.";
+      document.getElementById("app").prepend(bar);
+    }
+  } else if (sv.available) {
     chip.querySelector(".dot").className = "dot ok";
     chipText.textContent = `code_aster · ${sv.mode}${sv.wsl_distro ? " · " + sv.wsl_distro : ""}`;
   } else {

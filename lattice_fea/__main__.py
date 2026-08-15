@@ -14,7 +14,19 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--workspace", default="workspace")
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--demo-solver", action="store_true",
+                    help="run with a stand-in solver that fabricates results — "
+                         "exercises the whole UI without code_aster installed. "
+                         "NOT physics; never use for engineering decisions.")
     args = ap.parse_args()
+
+    if args.demo_solver:
+        import os as _os
+        import sys as _sys
+        mock = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "mock_solver.py")
+        _os.environ["LATTICE_ASTER_MODE"] = "native"
+        _os.environ["LATTICE_ASTER_CMD"] = f"{_sys.executable} {mock}"
+        print("[lattice] *** DEMO SOLVER — results are fabricated, not computed ***")
 
     if args.command == "doctor":
         doctor(args.workspace)

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.0
+
+- **`--demo-solver`**: a bundled stand-in solver that fabricates results so the
+  entire workflow can be exercised without code_aster. It writes a real MED
+  file (mesh section produced by gmsh's MED writer) plus genuine-format
+  code_aster CSV tables, so the whole downstream pipeline runs for real. The UI
+  shows an unmissable banner — results are invented, never for engineering use.
+- This validated the highest-risk component end to end: **the MED reader
+  correctly parsed a file written by a real MED writer**, auto-detecting the
+  coordinate layout (skin bounding box matched the model exactly), parsing T10
+  connectivity, extracting boundary faces, and packaging contours. Static and
+  modal both render.
+- Docker findings, recorded in the README so nobody repeats them:
+  `codeastersolver/codeaster-seq` is a 2019 image with the legacy `as_run` and
+  **no solver binary**; `simvia/code_aster:17.4.22` is the right image but its
+  amd64 binaries hit `Illegal instruction` under Rosetta on Apple Silicon
+  (they need AVX), and forcing QEMU stops the Docker daemon from starting.
+
 ## 0.3.3
 
 Diagnostics, after two rounds of "the button is still grey" that were both
