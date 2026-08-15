@@ -608,6 +608,23 @@ function panelMesh(S, A, put) {
       el("button", { class: "btn btn-accent", onclick: () => A.runMesh() }, "Generate mesh"))),
   ];
   if (stats) {
+    const have = new Set(stats.face_groups || []);
+    const stale = [];
+    (setup.analyses || []).forEach((a, ai0) => {
+      const ai = ai0 + 1;
+      (a.supports || []).forEach((x, i) => {
+        if (x.faces?.length && have.size && !have.has(`SUP${ai}_${i + 1}`)) stale.push(a.name || a.type);
+      });
+      (a.loads || []).forEach((x, i) => {
+        if (["force", "pressure", "remote"].includes(x.type) && x.faces?.length
+            && have.size && !have.has(`LOA${ai}_${i + 1}`)) stale.push(a.name || a.type);
+      });
+    });
+    if (stale.length) {
+      secs.push(sec(null, el("div", { class: "hint bad" },
+        `⚠ Mesh is out of date for: ${[...new Set(stale)].join(", ")}. ` +
+        "Boundary conditions changed since it was generated — re-mesh before solving.")));
+    }
     secs.push(sec("Current mesh", dl([
       ["Nodes", stats.nodes.toLocaleString()],
       ["Elements", stats.elements.toLocaleString()],
@@ -828,6 +845,25 @@ function panelAnalysis(S, A, put, id) {
   }
   if (!S.meshData?.stats) {
     blockers.push("The model is not meshed yet — open Mesh and press Generate mesh.");
+  } else {
+    // Same check the backend makes: every group this analysis will reference
+    // must already exist in the mesh, or the solver aborts minutes in.
+    const have = new Set(S.meshData.stats.face_groups || []);
+    if (have.size) {
+      const ai = 1 + S.project.setup.analyses.findIndex((x) => x.id === a.id);
+      const need = [];
+      (a.supports || []).forEach((x, i) => { if (x.faces?.length) need.push(`SUP${ai}_${i + 1}`); });
+      (a.loads || []).forEach((x, i) => {
+        if (["force", "pressure", "remote"].includes(x.type) && x.faces?.length) {
+          need.push(`LOA${ai}_${i + 1}`);
+        }
+      });
+      const missing = need.filter((g) => !have.has(g));
+      if (missing.length) {
+        blockers.push(`The mesh is out of date for this analysis (missing ${missing.join(", ")}). ` +
+                      "Re-mesh before running.");
+      }
+    }
   }
   for (const s of S.project.geometry.solids) {
     if (!S.project.setup.assignments[String(s.tag)]) {

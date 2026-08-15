@@ -672,6 +672,35 @@ WRITERS = {"static": write_static, "modal": write_modal,
            "harmonic": write_harmonic, "random": write_random}
 
 
+def required_face_groups(analysis: dict, ai: int) -> list:
+    """Mesh groups this analysis's .comm will reference."""
+    need = [group_name("SUP", ai, i + 1)
+            for i, s in enumerate(analysis.get("supports", [])) if s.get("faces")]
+    need += [group_name("LOA", ai, i + 1)
+             for i, l in enumerate(analysis.get("loads", []))
+             if l.get("type") in ("force", "pressure", "remote") and l.get("faces")]
+    return need
+
+
+def check_mesh_current(analysis: dict, ai: int, mesh_stats: dict) -> None:
+    """Refuse to build a deck that references groups the mesh does not contain.
+
+    The mesh records exactly which groups it wrote. If a support was added
+    after meshing — or the naming scheme changed between versions — the solver
+    would run for minutes and then abort with a group-not-found error deep in
+    the log. Catch it here instead, for free.
+    """
+    have = set(mesh_stats.get("face_groups") or [])
+    if not have:
+        return                                  # meshed before groups were recorded
+    missing = [g for g in required_face_groups(analysis, ai) if g not in have]
+    if missing:
+        raise ValueError(
+            f"The mesh does not contain {', '.join(missing)} — it is older than "
+            "the current boundary conditions. Re-mesh, then run again. "
+            f"(mesh has: {', '.join(sorted(have)) or 'no face groups'})")
+
+
 def build_run(analysis: dict, setup: dict, meta: dict, mesh_stats: dict,
               solver_cfg) -> "tuple[str, str]":
     """Returns (comm_text, export_text)."""
@@ -682,6 +711,7 @@ def build_run(analysis: dict, setup: dict, meta: dict, mesh_stats: dict,
         raise ValueError("At most 6 probes are supported (logical unit budget).")
     ai = 1 + next((i for i, a in enumerate(setup.get("analyses", []))
                    if a.get("id") == analysis.get("id")), 0)
+    check_mesh_current(analysis, ai, mesh_stats)
     b = WRITERS[atype](setup, meta, mesh_stats, analysis.get("config", {}), analysis, ai)
 
     exp = [

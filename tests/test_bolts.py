@@ -123,7 +123,7 @@ def test_stale_mesh_guard(meshed):
     setup2 = {**setup, "bolts": setup["bolts"] + [
         {"id": "b3", "name": "late bolt", "side_a_faces": [1], "side_b_faces": [2],
          "d_mm": 6, "E_GPa": 210, "preload_N": 0}]}
-    with pytest.raises(ValueError, match="re-mesh"):
+    with pytest.raises(ValueError, match="(?i)re-mesh"):
         comm_writer.build_run(setup2["analyses"][0], setup2, meta,
                               out["stats"], SolverConfig())
 

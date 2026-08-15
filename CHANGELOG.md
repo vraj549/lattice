@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.3
+
+- **Fixed: a mesh generated before 0.9.0 makes every solve fail.** Scoping
+  boundary conditions per analysis renamed the mesh groups (`SUP1` →
+  `SUP1_1`), but nothing checked that the mesh on disk used the same scheme.
+  The deck referenced groups the mesh did not contain and code_aster aborted
+  with `le GROUP_MA SUP1_1 ne fait pas partie du maillage` — after the run had
+  already started.
+- Lattice now verifies **every group a deck will reference exists in the
+  mesh** before writing the deck, and refuses with the missing names and a
+  "re-mesh" instruction. This is a general guard: it also catches a support or
+  load added after meshing, which previously failed the same way.
+- The same check runs in the UI, so it appears as a run blocker on the analysis
+  and a warning on the Mesh panel — before you click Run, not minutes into a
+  solve.
+
+**If you have an existing project: re-mesh it once.** Geometry, materials,
+connections and analysis setup are all preserved; only the mesh needs
+regenerating.
+
 ## 0.9.2
 
 - **Fixed: the property panel went blank for supports and loads.** When BCs

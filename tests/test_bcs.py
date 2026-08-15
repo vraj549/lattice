@@ -109,7 +109,7 @@ def test_remote_stale_mesh_guard(meshed):
         {"id": "l3", "name": "late", "type": "remote", "faces": [1],
          "x": 0, "y": 0, "z": 0, "fx": 1}]}
     setup2 = {**setup, "analyses": [a]}
-    with pytest.raises(ValueError, match="re-mesh"):
+    with pytest.raises(ValueError, match="(?i)re-mesh"):
         comm_writer.build_run(a, setup2, meta, out["stats"], SolverConfig())
 
 

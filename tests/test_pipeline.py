@@ -217,3 +217,20 @@ def test_med_layout_fallback_without_hint(tmp_path):
     finally:
         hinted.close()
         blind.close()
+
+
+def test_stale_mesh_group_names_are_caught(meshed):
+    """A mesh built before the BCs changed (or under an older group-naming
+    scheme) must be rejected up front, not by the solver minutes later."""
+    _, out, setup, meta = meshed
+    setup["materials"] = [{"id": "al", "name": "Al", "E_GPa": 68.9, "nu": 0.33,
+                           "rho_kgm3": 2700}]
+    setup["assignments"] = {str(s["tag"]): "al" for s in meta["solids"]}
+    a = _an(setup, "static", {})
+    # simulate the pre-0.9 mesh: groups named SUP1 / LOA1, not SUP1_1 / LOA1_1
+    old = {**out["stats"], "face_groups": ["SUP1", "LOA1"]}
+    with pytest.raises(ValueError, match="Re-mesh"):
+        comm_writer.build_run(a, setup, meta, old, SolverConfig())
+    # and the current mesh still builds fine
+    comm, _ = comm_writer.build_run(a, setup, meta, out["stats"], SolverConfig())
+    assert "SUP1_1" in comm
