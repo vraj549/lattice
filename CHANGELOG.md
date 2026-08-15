@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.4
+
+- **Solver resources shown next to the solver status**: threads and memory the
+  solver is actually allowed, against what the machine has —
+  `8/10 cores · 5.9 / 16.0 GB`. In WSL mode the ceiling reported is the RAM
+  **inside the WSL VM**, queried from the distro, because WSL2 takes about half
+  the host by default and that, not Windows, is what limits a solve.
+- An **ⓘ button** opens a Solver resources dialog: current allocation, the
+  environment variables and `lattice.toml` keys to change it, and the
+  `.wslconfig` block to give WSL more RAM — with a warning when the solver
+  limit is within 15 % of the ceiling, which is the setup where a run gets
+  killed rather than failing cleanly.
+- Host cores and RAM are probed without adding a dependency (GlobalMemoryStatusEx
+  on Windows, sysctl on macOS, /proc/meminfo on Linux).
+
 ## 0.9.3
 
 - **Fixed: a mesh generated before 0.9.0 makes every solve fail.** Scoping

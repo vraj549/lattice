@@ -34,6 +34,56 @@ def _run(cmd, timeout=15) -> "tuple[int, str]":
         return 999, str(e)
 
 
+def host_ram_mb() -> "int|None":
+    """Total physical RAM, without adding a dependency."""
+    try:
+        if platform.system() == "Windows":
+            import ctypes
+
+            class MS(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong),
+                            ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            st = MS()
+            st.dwLength = ctypes.sizeof(MS)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st))
+            return int(st.ullTotalPhys / 1048576)
+        if platform.system() == "Darwin":
+            rc, out = _run(["sysctl", "-n", "hw.memsize"])
+            return int(int(out.strip()) / 1048576) if rc == 0 else None
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(int(line.split()[1]) / 1024)
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def wsl_ram_mb(distro: str) -> "int|None":
+    """RAM available *inside* the WSL VM — the real ceiling for a WSL solve.
+    WSL2 defaults to half the host's RAM, so this is usually the binding
+    number rather than the machine's total."""
+    if not distro:
+        return None
+    rc, out = _run(["wsl.exe", "-d", distro, "--", "cat", "/proc/meminfo"], timeout=20)
+    if rc != 0:
+        return None
+    for line in out.replace("\x00", "").splitlines():
+        if line.startswith("MemTotal:"):
+            try:
+                return int(int(line.split()[1]) / 1024)
+            except Exception:  # noqa: BLE001
+                return None
+    return None
+
+
 @dataclass
 class SolverConfig:
     mode: str = "none"              # native | wsl | docker | none
@@ -45,6 +95,9 @@ class SolverConfig:
     ncpus: int = max(1, (os.cpu_count() or 4) - 2)
     detail: str = ""
     notes: list = field(default_factory=list)
+    host_cores: int = field(default_factory=lambda: os.cpu_count() or 0)
+    host_ram_mb: int = 0
+    vm_ram_mb: int = 0          # WSL VM total, when running through WSL
 
     def available(self) -> bool:
         return self.mode in ("native", "wsl", "docker")
@@ -59,6 +112,8 @@ class SolverConfig:
             "docker_image": self.docker_image, "memory_mb": self.memory_mb,
             "time_limit_s": self.time_limit_s, "ncpus": self.ncpus,
             "available": self.available(), "detail": self.detail, "notes": self.notes,
+            "host_cores": self.host_cores, "host_ram_mb": self.host_ram_mb,
+            "vm_ram_mb": self.vm_ram_mb,
         }
 
 
@@ -92,6 +147,13 @@ def _wsl_has_cmd(distro: str, cmd: str) -> bool:
     return rc == 0
 
 
+def _probe_resources(cfg: "SolverConfig") -> "SolverConfig":
+    cfg.host_ram_mb = host_ram_mb() or 0
+    if cfg.mode == "wsl":
+        cfg.vm_ram_mb = wsl_ram_mb(cfg.wsl_distro) or 0
+    return cfg
+
+
 def detect(workspace: str = ".") -> SolverConfig:
     cfg = SolverConfig()
     file_cfg = _load_toml([os.path.join(workspace, "lattice.toml"), "lattice.toml"])
@@ -113,13 +175,13 @@ def detect(workspace: str = ".") -> SolverConfig:
     explicitly_set = cfg.mode != "none" or "LATTICE_ASTER_MODE" in env or "mode" in file_cfg
     if explicitly_set and cfg.mode != "none":
         cfg.detail = f"configured: {cfg.mode}"
-        return cfg
+        return _probe_resources(cfg)
 
     # --- auto-detect ---
     if shutil.which(cfg.cmd.split()[0]):
         cfg.mode = "native"
         cfg.detail = f"found `{cfg.cmd}` on PATH"
-        return cfg
+        return _probe_resources(cfg)
 
     if platform.system() == "Windows" or shutil.which("wsl.exe"):
         distros = _wsl_distros()
@@ -128,7 +190,7 @@ def detect(workspace: str = ".") -> SolverConfig:
             if d and _wsl_has_cmd(d, cfg.cmd):
                 cfg.mode, cfg.wsl_distro = "wsl", d
                 cfg.detail = f"found `{cfg.cmd}` in WSL distro `{d}`"
-                return cfg
+                return _probe_resources(cfg)
         if distros:
             cfg.notes.append(
                 f"WSL distros found ({', '.join(distros)}) but none expose `{cfg.cmd}`. "
@@ -139,14 +201,14 @@ def detect(workspace: str = ".") -> SolverConfig:
         if rc == 0:
             cfg.mode = "docker"
             cfg.detail = f"docker image `{cfg.docker_image}` present"
-            return cfg
+            return _probe_resources(cfg)
         cfg.notes.append(
             f"Docker is installed but image `{cfg.docker_image}` is not pulled. "
             f"Run: docker pull {cfg.docker_image}  (then restart Lattice)")
 
     cfg.mode = "none"
     cfg.detail = "no code_aster found — running in geometry/mesh-only demo mode"
-    return cfg
+    return _probe_resources(cfg)
 
 
 def win_to_wsl_path(p: str) -> str:

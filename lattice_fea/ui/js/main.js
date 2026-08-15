@@ -550,6 +550,84 @@ async function showOverlay() {
 
 document.getElementById("btnProjects").addEventListener("click", showOverlay);
 
+document.getElementById("btnResources").addEventListener("click", () => showResources());
+
+function showResources() {
+  const sv = S.config?.solver || {};
+  const gb = (mb) => (mb ? (mb / 1024).toFixed(1) + " GB" : "unknown");
+  const wsl = sv.mode === "wsl";
+  const ceiling = wsl && sv.vm_ram_mb ? sv.vm_ram_mb : sv.host_ram_mb;
+  const tight = ceiling && sv.memory_mb > ceiling * 0.85;
+
+  const rows = [
+    ["Solver mode", sv.mode + (sv.wsl_distro ? ` · ${sv.wsl_distro}` : "")],
+    ["Threads given to the solver", `${sv.ncpus} of ${sv.host_cores || "?"} cores`],
+    ["Memory limit for the solver", gb(sv.memory_mb)],
+    [wsl ? "RAM inside the WSL VM" : "RAM on this machine", gb(ceiling)],
+    ["Time limit per run", `${Math.round((sv.time_limit_s || 0) / 60)} min`],
+  ];
+
+  const body = el("div", {},
+    el("h1", { class: "modal-title" }, "Solver resources"),
+    el("p", { class: "modal-sub" },
+      "What code_aster is allowed to use, and how to change it."),
+    el("table", { class: "rtable" },
+      rows.map(([k, v]) => el("tr", {}, el("td", {}, k), el("td", {}, v)))),
+    tight ? el("div", { class: "hint warn" },
+      `⚠ The solver limit (${gb(sv.memory_mb)}) is close to the ${wsl ? "WSL VM's" : "machine's"} `
+      + `${gb(ceiling)}. If a run is killed rather than failing cleanly, this is why.`) : null,
+
+    el("div", { class: "sec" },
+      el("span", { class: "lbl" }, "Change threads and memory"),
+      el("p", { class: "hint" },
+        "Set these before starting Lattice, then restart it:"),
+      el("pre", { class: "codeblock" },
+        "set LATTICE_NCPUS=12\nset LATTICE_MEMORY_MB=10000\npython -m lattice_fea"),
+      el("p", { class: "hint" },
+        "Or put them in lattice.toml next to where you launch, so they stick:"),
+      el("pre", { class: "codeblock" },
+        "[solver]\nncpus = 12\nmemory_mb = 10000\ntime_limit_s = 14400")),
+
+    wsl ? el("div", { class: "sec" },
+      el("span", { class: "lbl" }, "Give WSL more RAM (the real ceiling)"),
+      el("p", { class: "hint" },
+        "WSL2 takes about half the machine's RAM by default, so it — not Windows — "
+        + "is usually what limits a solve. Create or edit "),
+      el("pre", { class: "codeblock" },
+        "%UserProfile%\\.wslconfig\n\n[wsl2]\nmemory=12GB\nprocessors=12"),
+      el("p", { class: "hint" },
+        "Then run wsl --shutdown and start Lattice again. Leave a few GB for "
+        + "Windows itself; the solver memory limit above should stay below this number.")) : null,
+
+    el("div", { class: "sec" },
+      el("span", { class: "lbl" }, "How much do I need?"),
+      el("p", { class: "hint" },
+        "The Mesh panel estimates factorization memory for the current mesh. "
+        + "Modal needs noticeably more than static — it holds the factorization, "
+        + "the mass matrix and every extracted mode at once. More threads speed up "
+        + "MUMPS but do not reduce memory.")),
+
+    el("div", { class: "btnrow" },
+      el("button", { class: "btn", onclick: () => A.recheckSolver() }, "Recheck solver"),
+      el("button", { class: "btn btn-accent", onclick: () => closeDialog() }, "Close")));
+
+  openDialog(body);
+}
+
+function openDialog(node) {
+  closeDialog();
+  const ov = el("div", { class: "overlay", id: "dialog",
+                         onclick: (e) => { if (e.target.id === "dialog") closeDialog(); } },
+    el("div", { class: "modal" }, node));
+  document.body.append(ov);
+  document.addEventListener("keydown", escClose);
+}
+function closeDialog() {
+  document.getElementById("dialog")?.remove();
+  document.removeEventListener("keydown", escClose);
+}
+function escClose(e) { if (e.key === "Escape") closeDialog(); }
+
 document.getElementById("btnTheme").addEventListener("click", () => {
   const root = document.documentElement;
   const next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
@@ -598,7 +676,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.9.3";
+const UI_BUILD = "0.9.4";
 
 function checkVersionSkew() {
   const server = S.config?.version;
@@ -618,6 +696,19 @@ function updateSolverChip() {
   const chipText = document.getElementById("solverChipText");
   const sv = S.config?.solver;
   if (!sv) return;
+  // cores + memory the solver is actually allowed, next to its status
+  const res = document.getElementById("solverRes");
+  if (res) {
+    if (sv.available) {
+      const gb = (mb) => (mb / 1024).toFixed(1);
+      const ceiling = sv.mode === "wsl" && sv.vm_ram_mb ? sv.vm_ram_mb : sv.host_ram_mb;
+      res.textContent = `${sv.ncpus}/${sv.host_cores || "?"} cores · `
+        + `${gb(sv.memory_mb)}${ceiling ? " / " + gb(ceiling) : ""} GB`;
+      res.hidden = false;
+    } else {
+      res.hidden = true;
+    }
+  }
   if (sv.demo) {
     chip.querySelector(".dot").className = "dot run";
     chipText.textContent = "DEMO SOLVER — results are fake";
