@@ -486,6 +486,25 @@ clipPos.addEventListener("input", () => {
   viewer.setClip(clipAxis.value || null, Number(clipPos.value) / 1000);
 });
 
+// The UI and the Python process are versioned together. If the server was
+// started before a `git pull`, it is still running the old code in memory —
+// restarting it is the fix, and this makes that state visible instead of
+// looking like a mysteriously dead button.
+const UI_BUILD = "0.3.3";
+
+function checkVersionSkew() {
+  const server = S.config?.version;
+  const brand = document.querySelector(".brand b");
+  if (brand) brand.title = `UI ${UI_BUILD} · server ${server}`;
+  if (!server || server === UI_BUILD) return;
+  const bar = document.createElement("div");
+  bar.className = "skewbar";
+  bar.textContent =
+    `Version mismatch — browser UI ${UI_BUILD}, server ${server}. ` +
+    `Restart the Lattice server (Ctrl+C, then re-run it), then hard-refresh this page.`;
+  document.getElementById("app").prepend(bar);
+}
+
 function updateSolverChip() {
   const chip = document.getElementById("solverChip");
   const chipText = document.getElementById("solverChipText");
@@ -531,6 +550,7 @@ async function boot() {
   S.library = await api.get("/api/materials");
 
   updateSolverChip();
+  checkVersionSkew();
   await showOverlay();
 }
 

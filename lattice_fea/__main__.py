@@ -26,7 +26,10 @@ def main() -> None:
 
     app = create_app(args.workspace)
     url = f"http://{args.host}:{args.port}"
-    print(f"[lattice] serving on {url}")
+    from . import __version__
+    print(f"[lattice] v{__version__} serving on {url}")
+    print("[lattice] this process holds the code in memory — after a `git pull`,")
+    print("[lattice] stop it (Ctrl+C) and start it again, then hard-refresh the page.")
     if not args.no_browser:
         threading.Thread(target=lambda: (time.sleep(1.2), webbrowser.open(url)),
                          daemon=True).start()
@@ -56,6 +59,43 @@ def doctor(workspace: str) -> None:
     print(f"  detail        {cfg.detail}")
     for n in cfg.notes:
         print(f"  note          {n}")
+
+    # what the UI would use to decide whether a run is possible
+    import json as _json
+    import os as _os
+    proj_root = _os.path.join(workspace, "projects")
+    if _os.path.isdir(proj_root):
+        print("\n  projects in this workspace:")
+        for pid in sorted(_os.listdir(proj_root)):
+            pj = _os.path.join(proj_root, pid, "project.json")
+            if not _os.path.isfile(pj):
+                continue
+            try:
+                with open(pj) as f:
+                    p = _json.load(f)
+            except Exception:  # noqa: BLE001
+                continue
+            s = p.get("setup", {})
+            geo = p.get("geometry") or {}
+            meshed = _os.path.isfile(_os.path.join(proj_root, pid, "mesh", "stats.json"))
+            missing = [str(x["tag"]) for x in geo.get("solids", [])
+                       if not s.get("assignments", {}).get(str(x["tag"]))]
+            blockers = []
+            if not meshed:
+                blockers.append("not meshed")
+            if missing:
+                blockers.append(f"solids without material: {', '.join(missing)}")
+            if not any(x.get("faces") for x in s.get("supports", [])):
+                blockers.append("no support with faces")
+            if not cfg.available():
+                blockers.append("no solver")
+            print(f"    {p.get('name', pid)}  [{pid}]")
+            print(f"      analyses={len(s.get('analyses', []))} "
+                  f"loads={len(s.get('loads', []))} bolts={len(s.get('bolts', []))} "
+                  f"meshed={'yes' if meshed else 'no'}")
+            print(f"      run blocked by: {'; '.join(blockers) if blockers else 'nothing — should be clickable'}")
+        print("\n  To start clean, delete the workspace directory:")
+        print(f"    {_os.path.abspath(workspace)}")
     if not cfg.available():
         print("\n  Lattice will run in geometry/mesh-only demo mode until a solver is set up.")
         print("  See README → 'Solver setup' for the WSL2 / docker / native options.")

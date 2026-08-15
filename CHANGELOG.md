@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.3
+
+Diagnostics, after two rounds of "the button is still grey" that were both
+environment staleness rather than logic:
+
+- **Version-skew banner.** The UI knows its own build and compares it to the
+  server's. A running Python process holds the old code in memory, so a
+  `git pull` alone changes nothing — the page now says so in red instead of
+  presenting a mysteriously dead button. Hovering the wordmark shows both
+  versions.
+- **`lattice doctor` now reports live project state**: per project it lists
+  analyses/loads/bolts, whether it is meshed, and *exactly what is blocking a
+  run* — or "nothing — should be clickable". Also prints the workspace path to
+  delete for a clean slate.
+- Startup banner prints the version and the restart-after-pull reminder.
+
 ## 0.3.2
 
 - **Fixed: the 0.3.1 button fix could not reach the browser.** `index.html`
