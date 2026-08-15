@@ -180,6 +180,27 @@ export function renderPanel(S, A) {
     panel.append(...secs.filter(Boolean));
   };
 
+  // A throw in one panel used to blank the entire sidebar with no message —
+  // that is how a stale reference after the per-analysis refactor presented.
+  try {
+    return renderPanelBody(S, A, put, kind, id);
+  } catch (e) {
+    console.error("panel render failed:", e);
+    title.textContent = "Panel error";
+    meta.textContent = "";
+    panel.append(
+      el("div", { class: "sec" },
+        el("div", { class: "hint bad" }, `⚠ ${e.message}`),
+        el("div", { class: "hint" },
+          "This is a bug in Lattice, not your model. The rest of the app still " +
+          "works — the browser console has the stack trace."),
+        el("div", { class: "btnrow" },
+          el("button", { class: "btn", onclick: () => A.select("model", "root") },
+            "Back to model"))));
+  }
+}
+
+function renderPanelBody(S, A, put, kind, id) {
   switch (kind) {
     case "solid": return panelSolid(S, A, put, id);
     case "connections": return panelConnections(S, A, put);
@@ -259,7 +280,12 @@ function validation(S) {
   for (const s of geo.solids) {
     if (!setup.assignments[String(s.tag)]) w.push(`Solid "${s.name || s.tag}" has no material.`);
   }
-  if (!setup.supports.some((s) => s.faces?.length)) w.push("No support with faces assigned.");
+  for (const a of setup.analyses || []) {
+    if (!(a.supports || []).some((x) => x.faces?.length)) {
+      w.push(`"${a.name || a.type}" has no support with faces.`);
+    }
+  }
+  if (!(setup.analyses || []).length) w.push("No analyses yet — add one to define supports and loads.");
   if (!w.length) return null;
   return sec("Checks", ...w.map((t) => el("div", { class: "hint warn" }, "⚠ " + t)));
 }
@@ -330,9 +356,9 @@ function panelConnections(S, A, put) {
 // ---------- supports / loads / probes ----------
 
 function panelSupport(S, A, put, id) {
-  const s = S.project.setup.supports.find((x) => x.id === id);
+  const { analysis, item: s } = A.findAnalysisOf("support", id);
   if (!s) return put("Support", "");
-  put(s.name || "Support", "fixed",
+  put(s.name || "Support", analysis ? (analysis.name || analysis.type) : "",
     sec("Definition",
       textInput("Name", s.name, (v) => A.mutate(() => { s.name = v; })),
       selInput("Type", s.type, [
@@ -354,7 +380,7 @@ function panelSupport(S, A, put, id) {
 }
 
 function panelLoad(S, A, put, id) {
-  const l = S.project.setup.loads.find((x) => x.id === id);
+  const { analysis, item: l } = A.findAnalysisOf("load", id);
   if (!l) return put("Load", "");
   const secs = [
     sec("Definition",
@@ -436,7 +462,7 @@ function panelLoad(S, A, put, id) {
         numInput("dir Z", l.g?.[2] ?? -1, (v) => A.mutate(() => { l.g = [l.g?.[0] ?? 0, l.g?.[1] ?? 0, v ?? -1]; })))));
   }
   secs.push(sec(null, delBtn("load", () => A.removeItem("loads", id))));
-  put(l.name || "Load", l.type, ...secs);
+  put(l.name || "Load", analysis ? (analysis.name || analysis.type) : l.type, ...secs);
 }
 
 export const BOLT_SIZES = [
@@ -877,7 +903,7 @@ function resultSections(S, A, a) {
     const probes = S.project.setup.probes;
     // Total applied force, so the response can be shown per unit input —
     // amplification is what a sine sweep is actually read for.
-    const totalF = (S.project.setup.loads || []).reduce((acc, l) => {
+    const totalF = (a.loads || []).reduce((acc, l) => {
       if (!["force", "remote"].includes(l.type)) return acc;
       return acc + Math.hypot(l.fx || 0, l.fy || 0, l.fz || 0);
     }, 0);

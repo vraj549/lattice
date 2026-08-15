@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.2
+
+- **Fixed: the property panel went blank for supports and loads.** When BCs
+  moved onto analyses in 0.9.0, the tree, the actions and the run-blocker check
+  were all updated but the *panel* functions still read `setup.supports` and
+  `setup.loads`. Those no longer exist, so selecting or adding a support or
+  load threw and the whole right pane rendered empty. The model panel's
+  validation had the same stale reference.
+- Support and load panels now show which analysis they belong to.
+- **A panel that throws can no longer blank the sidebar.** Panel rendering is
+  wrapped: a failure shows the error, says it is a Lattice bug rather than a
+  model problem, and offers a way back — instead of silently presenting an
+  empty pane with no indication anything went wrong.
+
 ## 0.9.1
 
 **Interface restyled against how production FEA tools actually look**, and one
