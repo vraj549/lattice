@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import threading
 import time
 import webbrowser
@@ -32,9 +33,30 @@ def main() -> None:
         doctor(args.workspace)
         return
 
+    import signal
+
     import uvicorn
 
     from .server import create_app
+    from .solver import kill_all_children
+
+    # Ctrl+C must always work. First press: reap children, then let uvicorn
+    # shut down. Second press: leave immediately, whatever a child is doing.
+    # (A wsl.exe or docker child can otherwise keep the console hostage.)
+    _interrupts = {"n": 0}
+
+    def _on_sigint(signum, frame):
+        _interrupts["n"] += 1
+        if _interrupts["n"] == 1:
+            n = kill_all_children()
+            print(f"\n[lattice] stopping… ({n} running job(s) terminated)")
+            print("[lattice] press Ctrl+C again to force-quit")
+            raise KeyboardInterrupt
+        os._exit(1)
+
+    signal.signal(signal.SIGINT, _on_sigint)
+    if hasattr(signal, "SIGBREAK"):        # Windows Ctrl+Break
+        signal.signal(signal.SIGBREAK, _on_sigint)
 
     app = create_app(args.workspace)
     url = f"http://{args.host}:{args.port}"
@@ -45,7 +67,13 @@ def main() -> None:
     if not args.no_browser:
         threading.Thread(target=lambda: (time.sleep(1.2), webbrowser.open(url)),
                          daemon=True).start()
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        kill_all_children()
+        print("[lattice] stopped.")
 
 
 def doctor(workspace: str) -> None:

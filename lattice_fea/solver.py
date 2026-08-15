@@ -4,12 +4,64 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import sys
 import threading
 import time
 import traceback
 import uuid
 
 from .config import SolverConfig, win_to_wsl_path
+
+# Every live child (gmsh worker, solver). Tracked so shutdown can reap them:
+# on Windows a wsl.exe child sharing the console process group receives the
+# same Ctrl+C and can leave the server unkillable.
+LIVE_PROCS: "set[subprocess.Popen]" = set()
+_PROC_LOCK = threading.Lock()
+
+
+def popen_isolated(argv, **kw) -> subprocess.Popen:
+    """Spawn a child that does NOT share the parent's Ctrl+C.
+
+    Windows: CREATE_NEW_PROCESS_GROUP keeps the console Ctrl+C from reaching
+    it. POSIX: start_new_session does the same for SIGINT.
+    """
+    if sys.platform == "win32":
+        kw["creationflags"] = kw.get("creationflags", 0) | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kw["start_new_session"] = True
+    proc = subprocess.Popen(argv, **kw)
+    with _PROC_LOCK:
+        LIVE_PROCS.add(proc)
+    return proc
+
+
+def reap(proc: subprocess.Popen) -> None:
+    with _PROC_LOCK:
+        LIVE_PROCS.discard(proc)
+
+
+def kill_all_children(timeout: float = 3.0) -> int:
+    """Terminate every tracked child. Returns how many were still running."""
+    with _PROC_LOCK:
+        procs = list(LIVE_PROCS)
+    n = 0
+    for p in procs:
+        if p.poll() is None:
+            n += 1
+            try:
+                p.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+    deadline = time.time() + timeout
+    for p in procs:
+        try:
+            p.wait(timeout=max(0.0, deadline - time.time()))
+        except Exception:  # noqa: BLE001
+            try:
+                p.kill()
+            except Exception:  # noqa: BLE001
+                pass
+    return n
 
 
 class Job:
@@ -99,14 +151,17 @@ def run_solver(cfg: SolverConfig, jobdir: str, job: Job) -> int:
     logfile = os.path.join(jobdir, "log.txt")
     cwd = jobdir if cfg.mode == "native" else None
     with open(logfile, "w") as lf:
-        proc = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True,
-                                errors="replace", bufsize=1)
+        proc = popen_isolated(argv, cwd=cwd, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True,
+                              errors="replace", bufsize=1)
         job._proc = proc
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            lf.write(line)
-            job.append(line)
-        rc = proc.wait()
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                lf.write(line)
+                job.append(line)
+            rc = proc.wait()
+        finally:
+            reap(proc)
     job.append(f"[exit code {rc}]")
     return rc

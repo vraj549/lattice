@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.1
+
+- **Fixed: Ctrl+C could not stop the server on Windows.** Child processes
+  (`wsl.exe`, `docker`, the gmsh worker) were spawned into the parent's console
+  process group, so a console Ctrl+C hit them too and a child that mishandles
+  it left the server unkillable. Children are now spawned isolated
+  (`CREATE_NEW_PROCESS_GROUP` on Windows, `start_new_session` on POSIX).
+- Shutdown is now guaranteed: the first Ctrl+C terminates every tracked child
+  and shuts down cleanly; a **second Ctrl+C force-quits immediately**
+  regardless of what any child is doing. `Ctrl+Break` works too on Windows.
+- Every child process is tracked and reaped on exit, so no orphaned gmsh or
+  solver processes survive the server.
+
 ## 0.4.0
 
 - **`--demo-solver`**: a bundled stand-in solver that fabricates results so the

@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__, comm_writer, config, results
 from .materials import LIBRARY
 from .projects import ProjectStore
-from .solver import JobManager, run_solver
+from .solver import JobManager, popen_isolated, reap, run_solver
 
 UI_DIR = os.path.join(os.path.dirname(__file__), "ui")
 
@@ -28,14 +28,17 @@ def run_gmsh_worker(job, args: dict) -> None:
         json.dump(args, f)
         argfile = f.name
     try:
-        proc = subprocess.Popen([sys.executable, "-m", "lattice_fea.gmsh_worker", argfile],
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, errors="replace", bufsize=1)
+        proc = popen_isolated([sys.executable, "-m", "lattice_fea.gmsh_worker", argfile],
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, errors="replace", bufsize=1)
         job._proc = proc
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            job.append(line)
-        rc = proc.wait()
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                job.append(line)
+            rc = proc.wait()
+        finally:
+            reap(proc)
         if rc != 0:
             raise RuntimeError(f"geometry worker failed (exit {rc}) — see log")
     finally:

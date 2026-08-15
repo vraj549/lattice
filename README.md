@@ -63,6 +63,16 @@ telling "the tool is broken" apart from "my solver isn't set up".
 > in memory, so pulling alone changes nothing. The UI shows a red banner when
 > its build and the server's version disagree.
 
+### Stopping it
+
+`Ctrl+C` once shuts down and kills any running mesh/solve. **A second `Ctrl+C`
+force-quits** regardless of what a child process is doing. On Windows
+`Ctrl+Break` also works, and if the console is wedged entirely:
+
+```
+taskkill /F /IM python.exe
+```
+
 ## Solver setup (code_aster)
 
 Lattice looks for `run_aster` in this order: native `PATH` → WSL2 distros → docker
