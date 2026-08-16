@@ -1,6 +1,7 @@
 // Tree + context-panel rendering. Pure DOM, no framework.
 import { fmtVal, contourStyle } from "./colormap.js";
 import { frfChart, frfPlot, findPeaks, seriesColor } from "./charts.js";
+import { defaultReferenceFace, describeFace, candidateTargets } from "./pattern.js";
 
 export function el(tag, attrs = {}, ...children) {
   const n = document.createElement(tag);
@@ -129,6 +130,52 @@ export function staleForAnalyses(S) {
   return out;
 }
 
+/**
+ * Everything about the current mesh that no longer matches the model.
+ *
+ * Boundary conditions become mesh groups, and bolts and probes become actual
+ * elements and nodes, so all three are baked in at mesh time. Patterning a
+ * bolt across a flange is the fastest way to get five joints that exist in
+ * the tree and in none of the matrices — the load path would silently not be
+ * there, which is worse than a failed run.
+ */
+export function meshIssues(S) {
+  const stats = S.meshData?.stats;
+  if (!stats) return [];
+  const out = [];
+  for (const s of staleForAnalyses(S)) {
+    out.push({ scope: "all",
+      text: `boundary conditions changed for “${s.analysis.name || s.analysis.type}” ` +
+            `(missing ${s.missing.join(", ")})` });
+  }
+
+  const setup = S.project?.setup || {};
+  const meshed = new Set((stats.bolts || []).map((b) => b.id));
+  const live = (setup.bolts || []).filter(
+    (b) => b.side_a_faces?.length && b.side_b_faces?.length);
+  const added = live.filter((b) => !meshed.has(b.id)).length;
+  const gone = [...meshed].filter((id) => !live.some((b) => b.id === id)).length;
+  if (added) {
+    out.push({ scope: "all",
+      text: `${added} bolt${added === 1 ? "" : "s"} added since meshing — ` +
+            `${added === 1 ? "its beam is" : "their beams are"} not in the model yet` });
+  }
+  if (gone) {
+    out.push({ scope: "all",
+      text: `${gone} bolt${gone === 1 ? "" : "s"} removed since meshing — ` +
+            "the mesh still carries the old beams" });
+  }
+
+  const meshProbes = new Set((stats.probes || []).map((p) => p.id));
+  const newProbes = (setup.probes || []).filter((p) => !meshProbes.has(p.id)).length;
+  if (newProbes) {
+    out.push({ scope: "vibration",
+      text: `${newProbes} probe${newProbes === 1 ? "" : "s"} added since meshing — ` +
+            "response cannot be extracted there until you re-mesh" });
+  }
+  return out;
+}
+
 /** Mesh group names this analysis will reference — must match meshing.py. */
 export function requiredGroups(a, ai) {
   const need = [];
@@ -231,6 +278,15 @@ function selInput(label, value, options, onchange) {
       return o;
     }));
   return el("label", { class: "frm" }, label, s);
+}
+
+/** Copy an item, keeping its definition. For anything face-based the copy
+ *  starts on the same faces — re-pick them, or use the bolt Pattern tool when
+ *  the same joint repeats across a hole pattern. */
+function dupRow(A, listName, id, label) {
+  return el("div", { class: "btnrow" },
+    el("button", { class: "btn btn-small", onclick: () => A.duplicateItem(listName, id) },
+      `Duplicate ${label}`));
 }
 
 function delBtn(label, fn) {
@@ -368,7 +424,8 @@ function panelSupport(S, A, put, id) {
       ) : null,
       s.type === "disp" ? el("div", { class: "hint" }, "Leave a field empty to keep that DOF free.") : null),
     sec("Faces", pickBtn(S, A, s)),
-    sec(null, delBtn("support", () => A.removeItem("supports", id))));
+    sec(null, dupRow(A, "supports", id, "support"),
+        delBtn("support", () => A.removeItem("supports", id))));
 }
 
 function panelLoad(S, A, put, id) {
@@ -453,7 +510,8 @@ function panelLoad(S, A, put, id) {
         numInput("dir Y", l.g?.[1] ?? 0, (v) => A.mutate(() => { l.g = [l.g?.[0] ?? 0, v || 0, l.g?.[2] ?? -1]; })),
         numInput("dir Z", l.g?.[2] ?? -1, (v) => A.mutate(() => { l.g = [l.g?.[0] ?? 0, l.g?.[1] ?? 0, v ?? -1]; })))));
   }
-  secs.push(sec(null, delBtn("load", () => A.removeItem("loads", id))));
+  secs.push(sec(null, dupRow(A, "loads", id, "load"),
+                     delBtn("load", () => A.removeItem("loads", id))));
   put(l.name || "Load", analysis ? (analysis.name || analysis.type) : l.type, ...secs);
 }
 
@@ -515,10 +573,46 @@ function panelBolt(S, A, put, id) {
           onclick: () => A.mutate(() => { bl.preload_N = suggested; }) },
           `Suggest ${suggested.toLocaleString()} N (65 % yield, class 8.8)`)) : null,
       numInput("Bolt modulus E (GPa)", bl.E_GPa ?? 210, (v) => A.mutate(() => { bl.E_GPa = v ?? 210; }))),
+    boltPatternSection(S, A, bl),
     sec(null, el("div", { class: "hint" },
       "Preload acts in static analyses (axial pre-strain). Modal/harmonic use the " +
       "bolt stiffness but not the preload — linear analyses have no stress stiffening.")),
-    sec(null, delBtn("bolt", () => A.removeItem("bolts", id))));
+    sec(null,
+      el("div", { class: "btnrow" },
+        el("button", { class: "btn btn-small", onclick: () => A.duplicateItem("bolts", id) },
+          "Duplicate")),
+      delBtn("bolt", () => A.removeItem("bolts", id))));
+}
+
+/** Copy this joint onto other holes. */
+function boltPatternSection(S, A, bl) {
+  const geo = S.project.geometry;
+  const ready = bl.side_a_faces?.length || bl.side_b_faces?.length;
+  if (!ready) {
+    return sec("Pattern", el("div", { class: "hint" },
+      "Pick this bolt's faces first, then you can copy it onto every other " +
+      "hole in one pass."));
+  }
+  const refTag = bl.ref_faces?.[0] ?? defaultReferenceFace(geo, bl);
+  const nTargets = candidateTargets(geo, S.project.setup.bolts, refTag).length;
+
+  return sec("Pattern",
+    dl([["Reference face", refTag ? describeFace(geo, refTag) : "—"]]),
+    el("div", { class: "btnrow" },
+      el("button", { class: "btn btn-accent", disabled: !refTag,
+        onclick: () => A.patternBolt(bl.id) }, "Copy to other holes…"),
+      el("button", { class: "btn btn-small", onclick: () => A.pickFaces(bl, "ref_faces") },
+        "Change reference")),
+    el("div", { class: "hint" },
+      "Pick each target hole in the viewport — one new bolt per face. Every " +
+      "other face of this bolt is carried across by the same offset, so the " +
+      "nut-side hole and any bearing faces come with it. Size, preload and " +
+      "modulus are copied."),
+    el("div", { class: "hint" },
+      nTargets
+        ? `${nTargets} unused hole${nTargets === 1 ? "" : "s"} of a similar diameter ` +
+          `${nTargets === 1 ? "is" : "are"} available as targets.`
+        : "Every matching hole already has a bolt."));
 }
 
 function nearestBolt(holeD) {
@@ -545,7 +639,8 @@ function panelTie(S, A, put, id) {
       selInput("Glued onto", String(t.master_solid ?? ""),
         [["", "— choose —"], ...geo.solids.map((s) => [String(s.tag), s.name || `Solid ${s.tag}`])],
         (v) => A.mutate(() => { t.master_solid = v ? Number(v) : null; }))),
-    sec(null, delBtn("tie", () => A.removeItem("ties", id))));
+    sec(null, dupRow(A, "ties", id, "tie"),
+        delBtn("tie", () => A.removeItem("ties", id))));
 }
 
 function panelProbe(S, A, put, id) {
@@ -562,7 +657,8 @@ function panelProbe(S, A, put, id) {
         el("button", { class: "btn btn-accent", onclick: () => A.pickPoint(p) }, "Pick point on surface")),
       el("div", { class: "hint" },
         "Snapped to the nearest mesh node at solve time. Harmonic FRFs are extracted here.")),
-    sec(null, delBtn("probe", () => A.removeItem("probes", id))));
+    sec(null, dupRow(A, "probes", id, "probe"),
+        delBtn("probe", () => A.removeItem("probes", id))));
 }
 
 // ---------- mesh ----------
@@ -602,12 +698,14 @@ function panelMesh(S, A, put) {
   if (stats) {
     // one implementation of "is the mesh current", shared with the tree badge
     // and the run blockers, so the three can never contradict each other
-    const stale = staleForAnalyses(S);
-    if (stale.length) {
-      secs.push(sec(null, el("div", { class: "hint bad" },
-        `⚠ Mesh is out of date for: ` +
-        `${[...new Set(stale.map((s) => s.analysis.name || s.analysis.type))].join(", ")}. ` +
-        "Boundary conditions changed since it was generated — re-mesh before solving.")));
+    const issues = meshIssues(S);
+    if (issues.length) {
+      secs.push(sec(null,
+        el("div", { class: "hint bad" }, "⚠ This mesh no longer matches the model:"),
+        ...issues.map((i) => el("div", { class: "hint bad" }, `· ${i.text}`)),
+        el("div", { class: "btnrow" },
+          el("button", { class: "btn btn-accent", onclick: () => A.runMesh() },
+            "Re-mesh now"))));
     }
     secs.push(sec("Current mesh", dl([
       ["Nodes", stats.nodes.toLocaleString()],
@@ -846,16 +944,12 @@ function runBlockers(S, a) {
   if (!S.meshData?.stats) {
     blockers.push("The model is not meshed yet — open Mesh and press Generate mesh.");
   } else {
-    // Same check the backend makes: every group this analysis will reference
-    // must already exist in the mesh, or the solver aborts minutes in.
-    const have = new Set(S.meshData.stats.face_groups || []);
-    if (have.size) {
-      const ai = 1 + S.project.setup.analyses.findIndex((x) => x.id === a.id);
-      const missing = requiredGroups(a, ai).filter((g) => !have.has(g));
-      if (missing.length) {
-        blockers.push(`The mesh is out of date for this analysis (missing ${missing.join(", ")}). ` +
-                      "Re-mesh before running.");
-      }
+    // Same check the backend makes, plus the elements that are built at mesh
+    // time (bolt beams, probe nodes) — the solver would otherwise abort
+    // minutes in, or worse, run without a joint that is in the tree.
+    const vib = ["harmonic", "random"].includes(a.type);
+    for (const i of meshIssues(S)) {
+      if (i.scope === "all" || vib) blockers.push(`Re-mesh needed — ${i.text}.`);
     }
   }
   for (const s of S.project.geometry.solids) {

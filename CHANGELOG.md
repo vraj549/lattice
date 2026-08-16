@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.13.0
+
+### Copy a bolted joint onto every other hole
+
+Build one bolt, then **Copy to other holes…** in its Pattern section: pick each
+target hole in the viewport and Lattice creates a joint there from the same
+template — size, preload, modulus, and *both* face sets.
+
+The far side is the part that matters. A bolt is a hole cylinder on one part
+and a mating cylinder or bearing face on the other, so the copy carries every
+face of the template across by the rigid transform that takes the reference
+face onto the target — including a rotation when the target hole runs on a
+different axis. Where a pure offset misses (plates of different thickness), it
+falls back to the cylinder sharing the target's axis on the other part, which
+is what actually defines the other side of a joint.
+
+Nothing is created from a guess:
+
+- A hole that already carries a bolt is skipped and reported.
+- If two candidate faces straddle the position the mate should occupy, the
+  target is refused rather than bolted to whichever was marginally nearer.
+- If the template has two sides and only one can be identified, the copy is
+  refused — a beam anchored at one end would mesh, solve, and be wrong.
+- Every skipped or incomplete target is named in the job log.
+
+The reference face defaults to the template's hole cylinder and can be changed
+with **Change reference**, and the panel says how many unused holes of a
+matching diameter remain on that part.
+
+Also: **Duplicate** on supports, loads, bolts, ties and probes, copying the
+definition in place as `name (2)`.
+
+### The mesh knows when bolts change
+
+Bolt beams and probe nodes are built at mesh time, so adding a joint leaves it
+present in the tree and absent from the matrices. The Mesh row now carries a
+warning mark listing exactly what has diverged — bolts added or removed,
+probes added, boundary conditions changed — the Mesh panel offers **Re-mesh
+now**, and affected analyses will not run until it is regenerated.
+
+### Fixed
+
+- Panes no longer stay narrow after a window is widened. Clamping wrote its
+  result back as the requested width, which made it a one-way ratchet: shrink
+  the window once and the layout never recovered. The width you asked for is
+  now kept separately from the width that currently fits.
+
 ## 0.12.0
 
 The simulation tree rebuilt as one real hierarchy, the way Ansys Mechanical and

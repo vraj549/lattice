@@ -2,6 +2,8 @@ import { api } from "./api.js";
 import { Viewer } from "./viewer.js";
 import { renderPanel, defaultAnalysis, solutionItems, el } from "./ui.js";
 import { renderTree, installTreeKeys } from "./tree.js";
+import { mapBoltToTarget, defaultReferenceFace, describeFace,
+         claimedFaces } from "./pattern.js";
 import { renderLegend, fmtVal, contourStyle } from "./colormap.js";
 
 const uid = () => Math.random().toString(36).slice(2, 8);
@@ -150,6 +152,42 @@ const A = {
     A.mutate(() => {});
     A.addSupport(a.id);          // every analysis needs at least one support
   },
+  /** Copy an item in place, keeping every setting. */
+  duplicateItem(listName, id) {
+    const { list, index } = A.locateItem(listName, id);
+    if (!list || index < 0) return;
+    const copy = structuredClone(list[index]);
+    copy.id = uid();
+    copy.name = nextCopyName(list, list[index].name || listName);
+    list.splice(index + 1, 0, copy);
+    S.selection = { kind: SINGULAR[listName] || listName, id: copy.id };
+    A.mutate(() => {});
+    logLine(`Duplicated “${list[index].name || listName}” → “${copy.name}”.`);
+  },
+
+  locateItem(listName, id) {
+    if (listName === "supports" || listName === "loads") {
+      const { analysis } = A.findAnalysisOf(SINGULAR[listName], id);
+      const list = analysis?.[listName];
+      return { list, index: list ? list.findIndex((x) => x.id === id) : -1 };
+    }
+    const list = S.project.setup[listName] || [];
+    return { list, index: list.findIndex((x) => x.id === id) };
+  },
+
+  /** Copy a bolt onto other holes: pick targets, one new bolt per face. */
+  patternBolt(bid) {
+    const bl = S.project.setup.bolts.find((x) => x.id === bid);
+    if (!bl) return;
+    const geo = S.project.geometry;
+    const ref = bl.ref_faces?.[0] ?? defaultReferenceFace(geo, bl);
+    if (!ref) { logLine("This bolt has no reference face to measure from.", "warnln"); return; }
+    pickCtx = { patternBolt: bl, ref };
+    setView("geometry");
+    viewer.startPickFaces([]);
+    showPickBar(`Pick target holes for “${bl.name || "bolt"}” — reference: ${describeFace(geo, ref)}`);
+  },
+
   removeItem(listName, id) {
     if (listName === "supports" || listName === "loads") {
       const kind = listName === "supports" ? "support" : "load";
@@ -548,7 +586,9 @@ function showPickBar(msg) {
 function hidePickBar() { document.getElementById("pickBar").hidden = true; }
 
 document.getElementById("pickDone").addEventListener("click", () => {
-  if (pickCtx?.item) {
+  if (pickCtx?.patternBolt) {
+    applyBoltPattern(pickCtx.patternBolt, pickCtx.ref, viewer.endPick());
+  } else if (pickCtx?.item) {
     pickCtx.item[pickCtx.key] = viewer.endPick();
     scheduleSave();
   } else viewer.endPick();
@@ -556,6 +596,66 @@ document.getElementById("pickDone").addEventListener("click", () => {
   hidePickBar();
   refresh();
 });
+
+/**
+ * Turn each picked face into a copy of the template bolt.
+ *
+ * Every outcome is reported. A hole that already has a bolt is skipped, and a
+ * target whose mating face could not be identified still produces a bolt —
+ * flagged, and left in the tree with "pick faces" on it — because silently
+ * creating a one-sided joint would be a load path that does not exist.
+ */
+function applyBoltPattern(template, ref, targets) {
+  const geo = S.project.geometry;
+  const claimed = claimedFaces(S.project.setup.bolts);
+  let made = 0;
+  const skipped = [];
+  const partial = [];
+
+  for (const t of targets) {
+    const tag = Number(t);
+    if (claimed.has(tag)) { skipped.push(`${describeFace(geo, tag)} already has a bolt`); continue; }
+    const m = mapBoltToTarget(geo, template, ref, tag);
+    if (!m.ok) { skipped.push(`${describeFace(geo, tag)}: ${m.warnings.join("; ")}`); continue; }
+
+    const bolt = {
+      ...structuredClone(template),
+      id: uid(),
+      name: nextCopyName(S.project.setup.bolts, template.name || "Bolt"),
+      side_a_faces: m.side_a_faces,
+      side_b_faces: m.side_b_faces,
+      ref_faces: [],
+    };
+    S.project.setup.bolts.push(bolt);
+    for (const f of [...m.side_a_faces, ...m.side_b_faces]) claimed.add(f);
+    made++;
+    if (m.warnings.length) partial.push(`${bolt.name}: ${m.warnings.join("; ")}`);
+  }
+
+  if (made) {
+    logLine(`Pattern: created ${made} bolt${made === 1 ? "" : "s"} from ` +
+            `“${template.name || "bolt"}” at ${fmtVal(template.preload_N || 0)} N.`);
+  }
+  for (const s of skipped) logLine(`  skipped — ${s}`, "warnln");
+  for (const p of partial) logLine(`  incomplete — ${p}`, "warnln");
+  if (!made) logLine("Pattern: nothing created.", "warnln");
+  if (made) logLine("  Re-mesh before running: bolt beams are built at mesh time.", "warnln");
+  scheduleSave();
+}
+
+/** "Bolt @25" -> "Bolt @25 (2)", avoiding names already in the list. */
+function nextCopyName(list, base) {
+  const stem = String(base).replace(/\s*\(\d+\)$/, "");
+  const taken = new Set(list.map((x) => x.name));
+  for (let i = 2; i < 999; i++) {
+    const name = `${stem} (${i})`;
+    if (!taken.has(name)) return name;
+  }
+  return `${stem} copy`;
+}
+
+const SINGULAR = { bolts: "bolt", ties: "tie", probes: "probe",
+                   supports: "support", loads: "load" };
 document.getElementById("pickCancel").addEventListener("click", () => {
   viewer.endPick();
   pickCtx = null;
@@ -781,26 +881,33 @@ async function showOverlay() {
 // ---------------- resizable panes ----------------
 const PANE = { minL: 150, maxL: 560, minR: 200, maxR: 680, minViewport: 300 };
 
+// What the user asked for, kept separate from what currently fits. Clamping
+// straight onto the live width was a one-way ratchet: shrink the window once
+// and the panes stayed narrow forever, because the clamped value became the
+// new intent.
+const paneWant = { L: 264, R: 300 };
+
 function paneWidths() {
   const body = document.getElementById("body");
   const cs = getComputedStyle(body);
   return {
     body,
     total: body.clientWidth || window.innerWidth,
-    L: parseFloat(cs.getPropertyValue("--wL")) || 264,
-    R: parseFloat(cs.getPropertyValue("--wR")) || 300,
+    L: parseFloat(cs.getPropertyValue("--wL")) || paneWant.L,
+    R: parseFloat(cs.getPropertyValue("--wR")) || paneWant.R,
   };
 }
 
-/** Keep the 3D view usable no matter what widths were saved.
+/** Apply the wanted widths, reduced only as far as this window requires.
  *
  *  Pane sizes persist across sessions, so a layout set up on a wide monitor
  *  would otherwise reopen on a laptop with the viewport crushed to nothing —
  *  and the splitters pushed off-screen, leaving no way to undo it. */
 function clampPanes() {
-  const { body, total, L, R } = paneWidths();
-  let l = Math.min(Math.max(L, PANE.minL), PANE.maxL);
-  let r = Math.min(Math.max(R, PANE.minR), PANE.maxR);
+  const body = document.getElementById("body");
+  const total = body.clientWidth || window.innerWidth;
+  let l = Math.min(Math.max(paneWant.L, PANE.minL), PANE.maxL);
+  let r = Math.min(Math.max(paneWant.R, PANE.minR), PANE.maxR);
   const spare = total - PANE.minViewport - 8;   // 8px for the two splitters
   if (l + r > spare) {
     const scale = Math.max(spare, PANE.minL + PANE.minR) / (l + r);
@@ -812,19 +919,18 @@ function clampPanes() {
 }
 
 function savePanes() {
-  const body = document.getElementById("body");
   localStorage.setItem("lattice-panes", JSON.stringify({
-    wL: body.style.getPropertyValue("--wL"),
-    wR: body.style.getPropertyValue("--wR"),
+    wL: paneWant.L, wR: paneWant.R,
     logH: document.getElementById("logDrawer").style.height,
   }));
 }
 
 function initSplitters() {
   const body = document.getElementById("body");
-  const saved = JSON.parse(localStorage.getItem("lattice-panes") || "{}");
-  if (saved.wL) body.style.setProperty("--wL", saved.wL);
-  if (saved.wR) body.style.setProperty("--wR", saved.wR);
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem("lattice-panes") || "{}"); } catch { /* ignore */ }
+  if (saved.wL) paneWant.L = parseFloat(saved.wL) || paneWant.L;
+  if (saved.wR) paneWant.R = parseFloat(saved.wR) || paneWant.R;
   if (saved.logH) document.getElementById("logDrawer").style.height = saved.logH;
   clampPanes();
   window.addEventListener("resize", () => { clampPanes(); viewer?.resize(); });
@@ -854,7 +960,8 @@ function initSplitters() {
     const max = Math.min(PANE.maxL, total - R - PANE.minViewport - 8);
     const w = Math.min(Math.max(e.clientX - body.getBoundingClientRect().left, PANE.minL),
                        Math.max(max, PANE.minL));
-    body.style.setProperty("--wL", w + "px");
+    paneWant.L = w;
+    clampPanes();
     viewer.resize();
   });
   drag(document.getElementById("splitR"), (e) => {
@@ -862,7 +969,8 @@ function initSplitters() {
     const max = Math.min(PANE.maxR, total - L - PANE.minViewport - 8);
     const w = Math.min(Math.max(body.getBoundingClientRect().right - e.clientX, PANE.minR),
                        Math.max(max, PANE.minR));
-    body.style.setProperty("--wR", w + "px");
+    paneWant.R = w;
+    clampPanes();
     viewer.resize();
   });
   // The separators are focusable, so they have to be operable from the
@@ -880,14 +988,8 @@ function initSplitters() {
       savePanes();
     });
   };
-  keys("splitL", (d) => {
-    const { L } = paneWidths();
-    body.style.setProperty("--wL", (d === null ? 264 : L + d) + "px");
-  });
-  keys("splitR", (d) => {
-    const { R } = paneWidths();
-    body.style.setProperty("--wR", (d === null ? 300 : R - d) + "px");
-  });
+  keys("splitL", (d) => { paneWant.L = d === null ? 264 : paneWant.L + d; });
+  keys("splitR", (d) => { paneWant.R = d === null ? 300 : paneWant.R - d; });
   keys("splitLog", (d) => {
     const log = document.getElementById("logDrawer");
     const h = log.getBoundingClientRect().height;
@@ -1046,7 +1148,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.12.0";
+const UI_BUILD = "0.13.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;

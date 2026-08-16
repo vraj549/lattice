@@ -10,7 +10,7 @@
 // no way to collapse a finished study out of the way, and "Solution" was a
 // label rather than a thing you could open.
 
-import { el, needsLoads, analysisStatus, solutionItems, staleForAnalyses,
+import { el, needsLoads, analysisStatus, solutionItems, meshIssues,
          loadMeta, excitationMeta } from "./ui.js";
 import { icon, RESULT_ICONS } from "./icons.js";
 import { fmtVal } from "./colormap.js";
@@ -63,15 +63,15 @@ function buildModel(S, A) {
   }));
 
   const ms = S.meshData?.stats;
-  const meshStale = ms ? staleForAnalyses(S).length > 0 : false;
+  const issues = ms ? meshIssues(S) : [];
   const mesh = {
     key: "mesh", kind: "mesh", id: "mesh", icon: "mesh",
     label: "Mesh",
     meta: ms ? `${ms.nodes.toLocaleString()} n` : "not meshed",
     warn: !ms,
-    badge: meshStale ? { text: "!", cls: "stale",
-      title: "Boundary conditions changed since this mesh was generated — "
-           + "re-mesh before running." } : null,
+    badge: issues.length ? { text: "!", cls: "stale",
+      title: "This mesh no longer matches the model:\n"
+           + issues.map((i) => "· " + i.text).join("\n") } : null,
     title: ms ? `Tet${ms.order === 2 ? "10" : "4"} · ${fmtVal(ms.size_mm)} mm target`
               : "Not meshed yet",
   };

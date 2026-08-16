@@ -218,6 +218,20 @@ connections and Nastran spider models:
    (preload + working load), resultant shear, and bending from `EFGE_ELNO` —
    the inputs a VDI 2230-style margin calc needs.
 
+**Patterning.** Build one joint, then use **Copy to other holes…** in its
+Pattern section: pick each target hole and Lattice creates a bolt there with
+the same size, preload and modulus, and with *both* face sets mapped across by
+the transform that takes the reference face onto the target — so the nut-side
+hole comes with it, including when the target runs on a different axis. Where a
+pure offset would miss (plates of unequal thickness) it falls back to the
+cylinder sharing the target's axis on the other part.
+
+It refuses rather than guesses: a hole that already has a bolt is skipped, an
+ambiguous mate is reported instead of picked, and a copy that can only find one
+side of the joint is not created at all. Everything skipped is named in the job
+log. Bolt beams are built at mesh time, so re-mesh after patterning — the Mesh
+row will tell you.
+
 Physics honesty: the joint interface itself is *bonded* (fragment or ties), so
 gapping/separation under load is not modeled — that needs nonlinear contact.
 Preload does not stiffen modal/harmonic results (linear analyses have no
