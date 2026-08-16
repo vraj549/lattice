@@ -122,7 +122,8 @@ def default_setup() -> dict:
     return {
         "materials": [],        # [{id, name, E_GPa, nu, rho_kgm3, yield_MPa}]
         "assignments": {},      # {solidTag(str): materialId}
-        "bolts": [],            # [{id, name, side_a_faces:[], side_b_faces:[], d_mm, E_GPa, preload_N}]
+        "bolts": [],            # [{id, name, side_a_faces:[], side_b_faces:[],
+                                #   size, d_mm, as_mm2, grade, yield_MPa, E_GPa, preload_N}]
         "ties": [],             # [{id, name, slave_faces:[], master_solid:int}]
         "probes": [],           # [{id, name, x,y,z}]  (mm)
         "mesh": {"size_mm": None, "curvature": 16, "order": 2, "local": []},

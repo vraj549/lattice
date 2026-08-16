@@ -11,7 +11,7 @@
 // label rather than a thing you could open.
 
 import { el, needsLoads, analysisStatus, solutionItems, meshIssues,
-         loadMeta, excitationMeta } from "./ui.js";
+         loadMeta, excitationMeta, boltSizeOf } from "./ui.js";
 import { icon, RESULT_ICONS } from "./icons.js";
 import { fmtVal } from "./colormap.js";
 
@@ -45,7 +45,7 @@ function buildModel(S, A) {
       key: `bo:${bl.id}`, kind: "bolt", id: bl.id, icon: "bolt", iconClass: "c-bolt",
       label: bl.name || `Bolt ${i + 1}`,
       meta: bl.side_a_faces?.length && bl.side_b_faces?.length
-        ? `M${bl.d_mm ?? "?"} · ${fmtVal(bl.preload_N || 0)} N` : "pick faces",
+        ? `${boltSizeOf(bl)?.id ?? "?"} · ${fmtVal(bl.preload_N || 0)} N` : "pick faces",
       warn: !(bl.side_a_faces?.length && bl.side_b_faces?.length),
     })),
     ...setup.ties.map((t, i) => ({

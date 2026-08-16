@@ -289,6 +289,22 @@ function dupRow(A, listName, id, label) {
       `Duplicate ${label}`));
 }
 
+/** A select with <optgroup>s — needed once the size list spans two thread
+ *  series and a flat list stopped being scannable. */
+function selGroups(label, value, groups, onchange) {
+  const s = el("select", { onchange: (e) => onchange(e.target.value) });
+  for (const [gLabel, options] of groups) {
+    const host = gLabel ? el("optgroup", { label: gLabel }) : s;
+    for (const [v, t] of options) {
+      const o = el("option", { value: v }, t);
+      if (String(v) === String(value)) o.selected = true;
+      host.append(o);
+    }
+    if (gLabel) s.append(host);
+  }
+  return el("label", { class: "frm" }, label, s);
+}
+
 function delBtn(label, fn) {
   return el("div", { class: "btnrow" },
     el("button", { class: "btn btn-small btn-danger", onclick: fn }, `Delete ${label}`));
@@ -515,13 +531,81 @@ function panelLoad(S, A, put, id) {
   put(l.name || "Load", analysis ? (analysis.name || analysis.type) : l.type, ...secs);
 }
 
+/**
+ * Fastener sizes.
+ *
+ * `As` is the TENSILE STRESS AREA, and it is what the model uses — for the
+ * beam section as well as for the preload suggestion. A bolt carries axial
+ * load through its thread root, not its major diameter, and on the small
+ * sizes the difference is not a detail: an M1.6 modelled on its ⌀1.6 shank is
+ * 58 % stiffer than the real screw.
+ *
+ * Metric: ISO 262 coarse pitch, stress areas per ISO 898-1.
+ * Unified: ASME B1.1; areas converted from in² at 645.16 mm²/in².
+ */
 export const BOLT_SIZES = [
-  ["M3", 3], ["M4", 4], ["M5", 5], ["M6", 6], ["M8", 8], ["M10", 10],
-  ["M12", 12], ["M14", 14], ["M16", 16], ["M20", 20], ["M24", 24],
+  { id: "M1.6", label: "M1.6 × 0.35", d: 1.6, As: 1.27, series: "metric" },
+  { id: "M2", label: "M2 × 0.4", d: 2.0, As: 2.07, series: "metric" },
+  { id: "M2.5", label: "M2.5 × 0.45", d: 2.5, As: 3.39, series: "metric" },
+  { id: "M3", label: "M3 × 0.5", d: 3.0, As: 5.03, series: "metric" },
+  { id: "M4", label: "M4 × 0.7", d: 4.0, As: 8.78, series: "metric" },
+  { id: "M5", label: "M5 × 0.8", d: 5.0, As: 14.2, series: "metric" },
+  { id: "M6", label: "M6 × 1.0", d: 6.0, As: 20.1, series: "metric" },
+  { id: "M8", label: "M8 × 1.25", d: 8.0, As: 36.6, series: "metric" },
+  { id: "M10", label: "M10 × 1.5", d: 10.0, As: 58.0, series: "metric" },
+  { id: "M12", label: "M12 × 1.75", d: 12.0, As: 84.3, series: "metric" },
+  { id: "M14", label: "M14 × 2.0", d: 14.0, As: 115, series: "metric" },
+  { id: "M16", label: "M16 × 2.0", d: 16.0, As: 157, series: "metric" },
+  { id: "M20", label: "M20 × 2.5", d: 20.0, As: 245, series: "metric" },
+  { id: "M24", label: "M24 × 3.0", d: 24.0, As: 353, series: "metric" },
+  { id: "0-80", label: "#0-80 UNF", d: 1.524, As: 1.161, series: "unified" },
+  { id: "2-56", label: "#2-56 UNC", d: 2.184, As: 2.387, series: "unified" },
+  { id: "4-40", label: "#4-40 UNC", d: 2.845, As: 3.897, series: "unified" },
+  { id: "6-32", label: "#6-32 UNC", d: 3.505, As: 5.865, series: "unified" },
 ];
-// tensile stress areas (mm²) for preload suggestion, keyed by d
-const AS = { 3: 5.03, 4: 8.78, 5: 14.2, 6: 20.1, 8: 36.6, 10: 58.0,
-             12: 84.3, 14: 115, 16: 157, 20: 245, 24: 353 };
+
+/**
+ * Yield / 0.2 % proof stress by grade, for the preload suggestion.
+ *
+ * Metric classes are ISO 898-1. The unified entries are the two things these
+ * small screws are actually made of; the value stays editable because the
+ * published minimum depends on which revision of the spec your supplier
+ * certifies to.
+ */
+export const BOLT_GRADES = [
+  { id: "8.8", label: "Class 8.8", yield_MPa: 640, series: "metric" },
+  { id: "10.9", label: "Class 10.9", yield_MPa: 940, series: "metric" },
+  { id: "12.9", label: "Class 12.9", yield_MPa: 1100, series: "metric" },
+  { id: "A574", label: "ASTM A574 alloy socket head", yield_MPa: 1055, series: "unified" },
+  { id: "SS", label: "Stainless A2-70 / 18-8", yield_MPa: 450, series: "any" },
+];
+
+export const boltSize = (id) => BOLT_SIZES.find((s) => s.id === id) || null;
+
+/** The size a saved bolt refers to, tolerating projects that predate the
+ *  id-keyed table and only stored a diameter. */
+export function boltSizeOf(bl) {
+  if (bl.size) return boltSize(bl.size);
+  if (bl.d_mm == null) return null;
+  return BOLT_SIZES.find((s) => s.series === "metric"
+                             && Math.abs(s.d - bl.d_mm) < 1e-6) || null;
+}
+
+/** Yield stress to size the preload against. */
+export function boltYield(bl) {
+  if (bl.yield_MPa > 0) return bl.yield_MPa;
+  const g = BOLT_GRADES.find((x) => x.id === bl.grade);
+  if (g) return g.yield_MPa;
+  return boltSizeOf(bl)?.series === "unified" ? 1055 : 640;
+}
+
+/** Stress area actually used by the solver, for display and for the deck. */
+export function boltArea(bl) {
+  if (bl.as_mm2 > 0) return bl.as_mm2;
+  const s = boltSizeOf(bl);
+  if (s) return s.As;
+  return bl.d_mm ? Math.PI * (bl.d_mm / 2) ** 2 : null;
+}
 
 function cylInfo(S, ftags) {
   const faces = new Map(S.project.geometry.faces.map((f) => [f.tag, f]));
@@ -546,7 +630,12 @@ function panelBolt(S, A, put, id) {
         n ? `${label} (${n})` : label)),
   );
 
-  const suggested = AS[bl.d_mm] ? Math.round(0.65 * AS[bl.d_mm] * 640) : null;
+  const size = boltSizeOf(bl);
+  const area = boltArea(bl);
+  const sy = boltYield(bl);
+  const suggested = area ? Math.round(0.65 * area * sy) : null;
+  const gradeOpts = BOLT_GRADES.filter(
+    (g) => g.series === "any" || !size || g.series === size.series);
 
   put(bl.name || "Bolt", "beam + spider",
     sec("Definition",
@@ -562,16 +651,37 @@ function panelBolt(S, A, put, id) {
       holeD ? el("div", { class: "hint good" },
         `Cylinder detected: ⌀${fmtVal(holeD)} mm hole`) : null),
     sec("Bolt",
-      selInput("Nominal size", String(bl.d_mm ?? ""),
-        [["", "— choose —"], ...BOLT_SIZES.map(([n, d]) => [String(d), n])],
-        (v) => A.mutate(() => { bl.d_mm = v ? Number(v) : null; })),
-      holeD && !bl.d_mm ? el("div", { class: "hint" },
-        `Hole ⌀${fmtVal(holeD)} suggests ${nearestBolt(holeD)}`) : null,
+      selGroups("Nominal size", bl.size ?? size?.id ?? "",
+        [["", [["", "— choose —"]]],
+         ["Metric (ISO coarse)", BOLT_SIZES.filter((s) => s.series === "metric")
+           .map((s) => [s.id, s.label])],
+         ["Unified (inch)", BOLT_SIZES.filter((s) => s.series === "unified")
+           .map((s) => [s.id, s.label])]],
+        (v) => A.mutate(() => { applyBoltSize(bl, v); })),
+      holeD && !size ? el("div", { class: "hint" },
+        `Hole ⌀${fmtVal(holeD)} suggests ${nearestBolt(holeD)?.label || "—"}`) : null,
+      size ? dl([
+        ["Major ⌀", `${size.d.toFixed(size.series === "unified" ? 3 : 2)} mm`],
+        ["Stress area Aₛ", `${area.toFixed(2)} mm²`],
+        ["Modelled as", `⌀${(2 * Math.sqrt(area / Math.PI)).toFixed(2)} mm beam`],
+      ]) : null,
+      selInput("Grade", bl.grade ?? gradeOpts[0]?.id ?? "",
+        gradeOpts.map((g) => [g.id, `${g.label} — ${g.yield_MPa} MPa`]),
+        (v) => A.mutate(() => {
+          bl.grade = v;
+          bl.yield_MPa = BOLT_GRADES.find((g) => g.id === v)?.yield_MPa ?? bl.yield_MPa;
+        })),
+      numInput("Yield / proof stress (MPa)", sy,
+        (v) => A.mutate(() => { bl.yield_MPa = v || null; })),
       numInput("Preload (N)", bl.preload_N, (v) => A.mutate(() => { bl.preload_N = v; })),
       suggested ? el("div", { class: "btnrow" },
         el("button", { class: "btn btn-small",
           onclick: () => A.mutate(() => { bl.preload_N = suggested; }) },
-          `Suggest ${suggested.toLocaleString()} N (65 % yield, class 8.8)`)) : null,
+          `Suggest ${suggested.toLocaleString()} N`)) : null,
+      suggested ? el("div", { class: "hint" },
+        `65 % of yield on Aₛ = ${area.toFixed(2)} mm² × ${sy} MPa. Check it ` +
+        `against your fastener spec and the clamped material's bearing limit — ` +
+        `on small screws the plate usually gives up before the screw does.`) : null,
       numInput("Bolt modulus E (GPa)", bl.E_GPa ?? 210, (v) => A.mutate(() => { bl.E_GPa = v ?? 210; }))),
     boltPatternSection(S, A, bl),
     sec(null, el("div", { class: "hint" },
@@ -615,10 +725,31 @@ function boltPatternSection(S, A, bl) {
         : "Every matching hole already has a bolt."));
 }
 
+/** Write a size onto a bolt: the id drives everything, the rest is carried
+ *  along so the solver and older readers still see a diameter. */
+function applyBoltSize(bl, id) {
+  const s = boltSize(id);
+  bl.size = id || null;
+  bl.d_mm = s ? s.d : null;
+  bl.as_mm2 = s ? s.As : null;
+  if (s) {
+    // a metric class on a #4-40, or A574 on an M6, is meaningless
+    const g = BOLT_GRADES.find((x) => x.id === bl.grade);
+    if (!g || (g.series !== "any" && g.series !== s.series)) {
+      const def = BOLT_GRADES.find((x) => x.series === s.series);
+      bl.grade = def?.id ?? null;
+      bl.yield_MPa = def?.yield_MPa ?? null;
+    }
+  }
+}
+
+/** Largest size that still clears the hole, across both series. */
 function nearestBolt(holeD) {
-  let best = BOLT_SIZES[0];
-  for (const b of BOLT_SIZES) if (b[1] <= holeD - 0.3) best = b;
-  return best[0];
+  let best = null;
+  for (const s of BOLT_SIZES) {
+    if (s.d <= holeD - 0.15 && (!best || s.d > best.d)) best = s;
+  }
+  return best;
 }
 
 function panelTie(S, A, put, id) {

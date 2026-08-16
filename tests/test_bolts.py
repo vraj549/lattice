@@ -102,9 +102,47 @@ def test_bolted_static_comm(meshed):
                "DDL_MAIT=('DX', 'DY', 'DZ', 'DRX', 'DRY', 'DRZ')"):
         assert kw in comm, f"missing {kw}"
     assert "bolt_forces.csv" in export
-    # preload strain: EPX = -F/(E*A) for M6: A = pi*9, E = 210000
-    eps = -8000.0 / (210000.0 * math.pi * 9.0)
+    # preload strain uses the same area as the beam section — see below
+    eps = -8000.0 / (210000.0 * comm_writer.bolt_area(setup["bolts"][0]))
     assert f"EPX={eps!r}"[:14] in comm
+
+
+def test_bolt_section_uses_tensile_stress_area(meshed):
+    """The beam section and the preload strain must be sized on the SAME area.
+
+    Preload is applied as eps = -F/(E*A) so the beam force comes out at exactly
+    -F. If the section were sized on the major diameter while the strain used
+    the stress area (or the reverse), every bolt force in the model would be
+    off by the ratio — silently, and worst on the small screws where that
+    ratio is largest.
+    """
+    _, out, setup, meta = meshed
+    setup["materials"] = [{"id": "st", "name": "Steel", "E_GPa": 210, "nu": 0.3,
+                           "rho_kgm3": 7850}]
+    setup["assignments"] = {str(s["tag"]): "st" for s in meta["solids"]}
+    # an M1.6: nominal circle is 2.01 mm^2, the real stress area is 1.27
+    setup["bolts"][0].update({"size": "M1.6", "d_mm": 1.6, "as_mm2": 1.27,
+                              "preload_N": 400.0})
+    A = comm_writer.bolt_area(setup["bolts"][0])
+    assert A == 1.27
+    assert A < math.pi * 0.8 ** 2      # and it is not the major-diameter circle
+
+    comm, _ = comm_writer.build_run(
+        setup["analyses"][0], setup, meta, out["stats"], SolverConfig())
+
+    r = math.sqrt(A / math.pi)
+    assert f"CARA='R', VALE={r!r}" in comm, "beam radius is not from the stress area"
+    eps = -400.0 / (210000.0 * A)
+    assert f"EPX={eps!r}" in comm
+
+    # the round trip: E * A_section * eps must return the preload exactly
+    assert abs(210000.0 * (math.pi * r ** 2) * eps + 400.0) < 1e-9
+
+
+def test_bolt_area_falls_back_to_diameter(meshed):
+    """Projects saved before sizes carried a stress area still solve."""
+    assert comm_writer.bolt_area({"d_mm": 6.0}) == math.pi * 9.0
+    assert comm_writer.bolt_area({}) == math.pi * 16.0     # default M8
 
 
 def test_bolted_modal_comm(meshed):

@@ -23,6 +23,8 @@ No single table may ever discard a completed solve again.
 """
 from __future__ import annotations
 
+import math
+
 from .materials import to_solver_units
 from .meshing import group_name
 
@@ -142,7 +144,7 @@ def _prelude(b: CommBuild, setup: dict, meta: dict, mesh_stats: dict,
     if beam_groups:
         b.w("cara = AFFE_CARA_ELEM(MODELE=model, POUTRE=(")
         for br in bolts:
-            r = float(br["cfg"].get("d_mm", 8.0)) / 2.0
+            r = math.sqrt(bolt_area(br["cfg"]) / math.pi)
             b.w(f"    _F(GROUP_MA=('BOLT{br['index']}',), SECTION='CERCLE', "
                 f"CARA='R', VALE={_fmt(r)}),")
         for rr in remotes:
@@ -228,7 +230,6 @@ def _cara_arg(b: CommBuild) -> str:
 def _preload_charge(b: CommBuild) -> "str|None":
     """PRE_EPSI axial pre-strain per preloaded bolt: EPX = -F / (E*A) puts the
     shank in ~F of tension against a stiff joint."""
-    import math
     items = []
     for br in getattr(b, "bolts", []):
         cfg = br["cfg"]
@@ -236,7 +237,7 @@ def _preload_charge(b: CommBuild) -> "str|None":
         if F <= 0:
             continue
         E = float(cfg.get("E_GPa", 210.0)) * 1000.0
-        A = math.pi * (float(cfg.get("d_mm", 8.0)) / 2.0) ** 2
+        A = bolt_area(cfg)
         items.append((br["index"], -F / (E * A)))
     if not items:
         return None
@@ -315,7 +316,6 @@ def _loads(b: CommBuild, analysis: dict, ai: int, meta: dict, var: str = "loadc"
     """Emit one AFFE_CHAR_MECA holding every load. Returns var name or None.
     harmonic=True skips body loads that make no sense as a harmonic
     excitation (rotation)."""
-    import math
     force_items, pres_items, nodal_items, grav, rot = [], [], [], None, None
     areas = {f["tag"]: f["area"] for f in meta.get("faces", [])}
     for i, l in enumerate(analysis.get("loads", [])):
@@ -537,7 +537,6 @@ def write_harmonic(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
     The modal basis is sized automatically: band [0, 1.6 * f_max] so
     truncation above the sweep is acceptable for displacement FRFs.
     """
-    import math
 
     f0 = float(cfg.get("f_min", 20.0))
     f1 = float(cfg.get("f_max", 2000.0))
@@ -670,6 +669,27 @@ def write_random(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
 
 WRITERS = {"static": write_static, "modal": write_modal,
            "harmonic": write_harmonic, "random": write_random}
+
+
+def bolt_area(cfg: dict) -> float:
+    """Cross-section of a bolt shank, in mm^2.
+
+    The TENSILE STRESS AREA, not the circle on the major diameter: a bolt
+    carries axial load through its thread, and on the small sizes the gap is
+    not a rounding detail — an M1.6 modelled on its nominal 1.6 mm shank comes
+    out 58 % stiffer than the real screw, which changes how the joint shares
+    load with the parts around it.
+
+    Both the beam section and the preload pre-strain must use this same
+    number. Preload is applied as eps = -F / (E * A) so that the resulting
+    beam force is exactly -F; if the section were sized on a different area,
+    every bolt force in the model would be scaled by the ratio of the two.
+    """
+    a = cfg.get("as_mm2")
+    if a:
+        return float(a)
+    d = float(cfg.get("d_mm") or 8.0)
+    return math.pi * (d / 2.0) ** 2
 
 
 def required_face_groups(analysis: dict, ai: int) -> list:

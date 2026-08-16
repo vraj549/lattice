@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.14.0
+
+### Small fasteners
+
+Sizes now run from **M1.6** and **#0-80** up, in two series:
+
+- Metric ISO coarse: M1.6, M2, M2.5, M3, M4, M5, M6, M8, M10, M12, M14, M16,
+  M20, M24 — stress areas per ISO 898-1.
+- Unified inch: **#0-80 UNF, #2-56 UNC, #4-40 UNC, #6-32 UNC** — stress areas
+  per ASME B1.1, converted at 645.16 mm²/in².
+
+A **grade** goes with the size, because a preload suggestion is meaningless
+without one: ISO classes 8.8 / 10.9 / 12.9 for metric, ASTM A574 alloy socket
+head or A2-70 / 18-8 stainless for the inch sizes, and the yield stress stays
+editable so you can enter whatever your supplier actually certifies. Changing
+between series swaps the grade to a valid one rather than leaving a class 8.8
+on a #4-40. The suggestion is 65 % of yield on the stress area, and now says so
+along with the numbers it used.
+
+### Bolts are modelled on their stress area, not their shank
+
+The beam section was sized on the nominal major diameter. A bolt carries axial
+load through its thread, and on these small sizes that is not a rounding
+detail — an M1.6 modelled on a ⌀1.6 shank is **58 % stiffer** than the real
+screw, which changes how the joint shares load with the parts around it. The
+section is now the equivalent circle of the tensile stress area (M6: ⌀5.06
+rather than ⌀6.00), shown in the panel as "Modelled as".
+
+Preload was, and remains, exact either way — it is applied as a pre-strain
+ε = −F/(E·A) so the beam force comes back as −F for whatever A is used. That
+only holds while the section and the strain use the *same* area, so they now
+share one function, with a test that asserts the round trip.
+
+Projects saved before this fall back to the major diameter, so they solve
+unchanged; re-picking the size adopts the stress area.
+
 ## 0.13.0
 
 ### Copy a bolted joint onto every other hole

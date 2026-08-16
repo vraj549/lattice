@@ -210,10 +210,18 @@ connections and Nastran spider models:
 
 1. **Bolts → + add**, then pick the hole cylinder (or bearing face) on each
    side. Cylindrical faces are auto-detected — the panel shows the hole ⌀ and
-   suggests a nominal size (M3–M24).
-2. Set the **preload**; the *Suggest* button proposes 65 % of class-8.8 yield
-   on the tensile stress area. Preload is applied as an axial pre-strain
-   (`PRE_EPSI`, ε = −F/EA) in static runs.
+   suggests a nominal size. Sizes run **M1.6–M24** (ISO coarse) and
+   **#0-80, #2-56, #4-40, #6-32** (unified inch).
+2. Pick a **grade** — ISO class 8.8 / 10.9 / 12.9, ASTM A574 alloy socket head,
+   or A2-70 / 18-8 stainless — or type a yield stress directly. Set the
+   **preload**; *Suggest* proposes 65 % of yield on the tensile stress area.
+   Preload is applied as an axial pre-strain (`PRE_EPSI`, ε = −F/EA) in static
+   runs, which returns the beam force as exactly −F.
+
+The beam is sized on the **tensile stress area**, not the major diameter — a
+bolt carries axial load through its thread, and an M1.6 modelled on its ⌀1.6
+shank comes out 58 % stiffer than the real screw. The panel shows the
+equivalent diameter it uses.
 3. After solving, the **Bolt forces** table lists per-bolt axial force
    (preload + working load), resultant shear, and bending from `EFGE_ELNO` —
    the inputs a VDI 2230-style margin calc needs.
