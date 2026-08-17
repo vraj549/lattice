@@ -33,8 +33,17 @@ class ProjectStore:
 
     # ---- paths ----
     def dir(self, pid: str) -> str:
+        """Project directory, refusing anything that escapes the workspace.
+
+        A prefix test is not enough: with root /ws/projects, the id
+        "../projects-x" resolves to /ws/projects-x, which passes startswith.
+        Compare against root + separator, and reject separators in the id
+        outright — ids are generated here and never contain one.
+        """
+        if not pid or os.sep in pid or "/" in pid or pid in (".", ".."):
+            raise ValueError("bad project id")
         d = os.path.abspath(os.path.join(self.root, pid))
-        if not d.startswith(self.root):
+        if d != self.root and not d.startswith(self.root + os.sep):
             raise ValueError("bad project id")
         return d
 
@@ -83,11 +92,16 @@ class ProjectStore:
     def write_json(self, pid: str, rel: str, data) -> None:
         p = self.path(pid, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        with _LOCK:
-            tmp = p + ".tmp"
+        # unique temp name: two concurrent writers sharing one ".tmp" would
+        # interleave and the loser would publish a truncated file
+        tmp = f"{p}.{uuid.uuid4().hex[:8]}.tmp"
+        try:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f)
             os.replace(tmp, p)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
 
     def read_json(self, pid: str, rel: str):
         with open(self.path(pid, rel), encoding="utf-8") as f:
@@ -96,8 +110,14 @@ class ProjectStore:
     def write_json_gz(self, pid: str, rel: str, data) -> None:
         p = self.path(pid, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        with gzip.open(p, "wt", encoding="utf-8") as f:
-            json.dump(data, f)
+        tmp = f"{p}.{uuid.uuid4().hex[:8]}.tmp"
+        try:
+            with gzip.open(tmp, "wt", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp, p)          # atomic, like write_json
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
 
     def read_json_gz(self, pid: str, rel: str):
         with gzip.open(self.path(pid, rel), "rt", encoding="utf-8") as f:

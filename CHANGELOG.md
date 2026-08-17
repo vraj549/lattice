@@ -1,5 +1,100 @@
 # Changelog
 
+## 0.15.0
+
+Production audit — a line-by-line pass over every file — plus the first batch
+of workbench improvements.
+
+### Fixed: typing into any field lost focus after one character
+
+`A.mutate` rebuilt the property panel on every edit, which destroyed the input
+being typed into. Entering "4500" meant clicking the field four times. Text and
+number fields now edit the model without re-rendering the panel; the tree and
+viewport still follow live, and the panel re-renders on blur or Enter.
+
+### Fixed: unbounded GPU memory growth
+
+`Group.clear()` detaches children but does not release their geometry or
+material. Every contour load, every project open, and every keystroke (see
+below) leaked the previous ones. Everything now goes through a disposing
+helper.
+
+Boundary-condition symbols were also rebuilt from scratch on every model edit —
+cones, cylinders and tubes allocated per keystroke. They are now rebuilt only
+when something they actually draw has changed: typing a preload value or a
+name rebuilds nothing.
+
+### Fixed: a bolt could be silently left out of the solve
+
+`_active_bolts` matched mesh records to bolts by ID but validated by *count*.
+Deleting one bolt and adding another — exactly what patterning onto a different
+hole does — left the count unchanged, so the new bolt was dropped from the deck
+without a word and the model solved with a joint that existed in the tree and
+in no matrix. The ID sets must now agree.
+
+The mesh also recorded every *requested* face group rather than the ones it
+wrote, so the stale-mesh guard passed for groups that did not exist and the
+solver aborted on GROUP_MA-not-found minutes later.
+
+### Fixed: project IDs could escape the workspace
+
+`dir()` tested `startswith(root)`, which a sibling path like `../projects-x`
+satisfies. Now compared against `root + separator`, with separators rejected in
+the ID outright.
+
+### Performance
+
+- **Island counting** was a pure-Python union-find over every tet — millions of
+  dict lookups on a large mesh, on every single mesh. Rewritten as vectorised
+  label propagation.
+- **Physical groups** rebuilt the full surface list from a fresh gmsh call for
+  every face tag in every group. Queried once now.
+- **Bolt geometry** rebuilt a tag→face index per bolt; shared now, which
+  matters once a joint is patterned across a flange.
+- **Uploads** ran a synchronous copy inside an async endpoint, blocking the
+  event loop for the whole transfer — including the job polling that shows
+  import progress. Now on a worker thread, chunked, with a 512 MB cap.
+- **Job logs** grew without bound and jobs were never evicted; a long solve
+  could hold tens of MB of text nobody reads. Capped to the tail, with client
+  offsets kept correct across trimming.
+- `psd_at` re-sorted the spectrum on every swept frequency.
+
+### Safety
+
+- One solve per analysis and one mesh per project at a time — a double-click on
+  Run had two jobs writing the same directory.
+- Material properties are validated on the way to the solver: ν outside
+  (−1, 0.5) makes the stiffness matrix singular, and E ≤ 0 is meaningless.
+- A random-vibration sweep narrower than its input spectrum now reports how
+  much of the input it actually covered. Integrating only the swept band
+  silently under-reports g RMS, and nothing else in the result looks wrong.
+- Half-picked bolts no longer abort the entire mesh; they are skipped with a
+  warning, since the run blocker already catches them.
+- `run_solver` could raise `NameError` on the exit-code line and mask the real
+  error.
+
+### Workbench
+
+- **Bolt stress**, not just bolt force: σ axial, τ, σ bend, von Mises and % of
+  yield per bolt, computed on the same stress area the beam uses — with an
+  explicit note that a beam does not resolve the thread root.
+- **Titanium Grade 5, PEEK and PEEK GF30** bolt grades. Modulus travels with
+  the grade: a PEEK screw left at 210 GPa would take a steel bolt's share of
+  the joint.
+- **Custom materials** — name, E, ν, density, yield — validated on entry.
+- **Free rotation.** Vertical dragging hit an invisible wall at the poles; it
+  now wraps through and flips the up-vector.
+- **Zoom to the cursor** rather than the screen centre, with the distance
+  clamped so you cannot zoom inside the model or past the far plane.
+- **Orientation cube** behind the axis arrows — three bare arrows meeting at a
+  point are ambiguous from many viewpoints.
+- **Selecting a solid highlights it** in the viewport.
+- **Deformation scale** shows the true factor, has a **True scale (1×)** button
+  and snaps to it while dragging, and **Animate now works for static** results.
+- FRF plots **redraw on resize** instead of stretching their bitmap.
+- Larger tree expand arrows.
+- Bolt sizes now stop at M8.
+
 ## 0.14.0
 
 ### Small fasteners

@@ -195,8 +195,8 @@ button, select, input, textarea { font-family: inherit; font-size: inherit; colo
 .tnode:first-child > .ind:first-of-type { border-left-color: transparent; }
 
 .tw {
-  width: 13px; height: 13px; flex: none; padding: 0; border: 0; background: none;
-  color: var(--faint); font-size: 8px; line-height: 13px; text-align: center;
+  width: 15px; height: 16px; flex: none; padding: 0; border: 0; background: none;
+  color: var(--dim); font-size: 11px; line-height: 16px; text-align: center;
   cursor: pointer;
 }
 button.tw:hover { color: var(--accent); }
@@ -537,3 +537,6 @@ body.resizing-v { cursor: row-resize; user-select: none; }
 .optcard input { accent-color: var(--accent); margin-top: 2px; }
 .optcard b { font-size: 12px; font-weight: 600; }
 .optcard .hint { margin-top: 2px; }
+
+/* an out-of-limit cell in a results table */
+.rtable td.bad { color: var(--crit); font-weight: 700; }

@@ -6,8 +6,33 @@ import { AxisTriad } from "./axes.js";
 import { buildGlyphs } from "./glyphs.js";
 
 const SOLID_COLORS = [0x7fa8bd, 0xb99f7a, 0x8fae8a, 0xa48fb8, 0xbd9a8f, 0x8f9ebd];
+
+/**
+ * Empty a group and release its GPU memory.
+ *
+ * Group.clear() only detaches children — the BufferGeometry and Material of
+ * every one keeps its VRAM until disposed. Every contour load, every project
+ * open and (before the glyph signature check) every keystroke went through
+ * one of these, so the leak grew without bound and eventually took the tab
+ * with it. Nothing in this file may call .clear() directly.
+ */
+function disposeGroup(group) {
+  const seen = new Set();
+  group.traverse((o) => {
+    if (o.geometry && !seen.has(o.geometry)) { seen.add(o.geometry); o.geometry.dispose(); }
+    const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+    for (const m of mats) {
+      if (seen.has(m)) continue;
+      seen.add(m);
+      // textures are shared (the colour map lives for the session) — the
+      // material owns none of them here, so only the material goes
+      m.dispose();
+    }
+  });
+  group.clear();
+}
 const HOVER = 0xe8b06a, SELECTED = 0xe89344, SUPPORT = 0x8d7dec, LOAD = 0xd97a28,
-      BOLT = 0x4f88b0;
+      BOLT = 0x4f88b0, SOLID_HL = 0x5fb3d4;
 
 export class Viewer {
   constructor(canvas, callbacks = {}) {
@@ -45,6 +70,7 @@ export class Viewer {
     this.faceStates = new Map();  // tag -> 'support' | 'load'
     this.solidOfFace = new Map(); // tag -> [solidTags]
     this.hiddenSolids = new Set();
+    this._hlSolid = null;
     this.pickSet = new Set();
     this.mode = "view";           // view | pickFaces | pickPoint
     this.hoverTag = null;
@@ -131,7 +157,7 @@ export class Viewer {
 
   // ---------------- geometry ----------------
   setGeometry(tess, meta) {
-    this.geoGroup.clear();
+    disposeGroup(this.geoGroup);
     this.faceMeshes.clear();
     this.faceInfo.clear();
     this.solidOfFace.clear();
@@ -198,7 +224,7 @@ export class Viewer {
 
   /** Rebuild the BC/load symbol overlay from the current setup. */
   setGlyphs(setup, geometry) {
-    this.glyphGroup.clear();
+    disposeGroup(this.glyphGroup);
     if (!setup || !geometry || !this.faceInfo.size) { this.requestRender(); return; }
     try {
       this.glyphGroup.add(buildGlyphs(setup, geometry, this.faceInfo));
@@ -218,17 +244,34 @@ export class Viewer {
     this.requestRender();
   }
 
+  /** Highlight every face of one solid — what "selected" means for a part. */
+  setHighlightSolid(tag) {
+    const t = tag == null ? null : Number(tag);
+    if (t === this._hlSolid) return;
+    this._hlSolid = t;
+    this._applyFaceColors();
+  }
+
   _applyFaceColors() {
     for (const [tag, mesh] of this.faceMeshes) {
       let c = mesh.userData.base;
+      const inSel = this._hlSolid != null
+        && (mesh.userData.solids || []).includes(this._hlSolid);
       const st = this.faceStates.get(tag);
       if (st === "support") c = SUPPORT;
       else if (st === "load") c = LOAD;
       else if (st === "bolt") c = BOLT;
+      if (inSel) c = SOLID_HL;
       if (this.pickSet.has(tag)) c = SELECTED;
       if (tag === this.hoverTag && (this.mode !== "view")) c = HOVER;
       mesh.material.color.setHex(c);
-      mesh.material.emissive?.setHex(tag === this.hoverTag && this.mode !== "view" ? 0x332211 : 0x000000);
+      // a lit rim as well as a tint, so the part reads as selected even
+      // where a BC colour already owns the face
+      if (mesh.material.emissive) {
+        mesh.material.emissive.setHex(
+          tag === this.hoverTag && this.mode !== "view" ? 0x332211
+          : inSel ? 0x1d2a33 : 0x000000);
+      }
     }
     this.requestRender();
   }
@@ -308,7 +351,7 @@ export class Viewer {
 
   showMeshPreview(skin) {
     if (skin && skin.vtx) {
-      this.meshGroup.clear();
+      disposeGroup(this.meshGroup);
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.BufferAttribute(decode(skin.vtx), 3));
       g.setIndex(new THREE.BufferAttribute(decode(skin.tri), 1));
@@ -333,7 +376,7 @@ export class Viewer {
   }
 
   showResult(payload, { defScale = 0, animate = false } = {}) {
-    this.resultGroup.clear();
+    disposeGroup(this.resultGroup);
     const vtx = decode(payload.vtx);
     const tri = decode(payload.tri);
     const scal = decode(payload.values);

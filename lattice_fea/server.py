@@ -113,15 +113,37 @@ def create_app(workspace: str = "workspace") -> FastAPI:
     def list_projects():
         return store.list()
 
+    MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+
+    # Deliberately `def`, not `async def`: FastAPI then runs it in a worker
+    # thread. Copying a large STEP with a synchronous read inside an async
+    # endpoint blocks the event loop, freezing every other request — including
+    # the job polling that shows the import progress.
     @app.post("/api/projects")
-    async def create_project(name: str = Form(...), step: UploadFile = File(...)):
+    def create_project(name: str = Form(...), step: UploadFile = File(...)):
         pid = store.create(name)
         step_path = store.path(pid, "geometry.step")
-        with open(step_path, "wb") as f:
-            shutil.copyfileobj(step.file, f)
+        filename = step.filename or "upload.step"
+        written = 0
+        try:
+            with open(step_path, "wb") as f:
+                while True:
+                    chunk = step.file.read(1 << 20)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > MAX_UPLOAD_BYTES:
+                        raise HTTPException(413, "STEP file exceeds 512 MB")
+                    f.write(chunk)
+        except HTTPException:
+            shutil.rmtree(store.dir(pid), ignore_errors=True)
+            raise
+        if written == 0:
+            shutil.rmtree(store.dir(pid), ignore_errors=True)
+            raise HTTPException(400, "the uploaded file is empty")
 
         def work(job):
-            job.append(f"Importing {step.filename} …")
+            job.append(f"Importing {filename} …")
             meta_out = store.path(pid, "geo_meta.json")
             run_gmsh_worker(job, {
                 "op": "import", "step": step_path,
@@ -136,13 +158,15 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             store.save(pid, proj)
             return {"project": pid}
 
-        job = jobs.submit("import", f"import {step.filename}", work)
+        job = jobs.submit("import", f"import {filename}", work)
         return {"id": pid, "job": job.id}
 
     def _project(pid: str) -> dict:
         try:
             return store.load(pid)
         except FileNotFoundError:
+            raise HTTPException(404, "project not found")
+        except ValueError:                      # rejected by the path guard
             raise HTTPException(404, "project not found")
 
     @app.get("/api/projects/{pid}")
@@ -177,6 +201,9 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         if not proj.get("geometry"):
             raise HTTPException(409, "import geometry first")
 
+        if jobs.is_running("mesh", pid):
+            raise HTTPException(409, "this project is already meshing")
+
         def work(job):
             run_gmsh_worker(job, {
                 "op": "mesh",
@@ -188,7 +215,7 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             })
             return {"stats": store.read_json(pid, "mesh/stats.json")}
 
-        job = jobs.submit("mesh", f"mesh {pid}", work)
+        job = jobs.submit("mesh", f"mesh {pid}", work, key=pid)
         return {"job": job.id}
 
     @app.get("/api/projects/{pid}/mesh")
@@ -210,6 +237,11 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             raise HTTPException(409, "mesh the model first")
         if not solver_cfg.available():
             raise HTTPException(409, f"no solver configured: {solver_cfg.detail}")
+        # Two solves writing one run directory interleave their output and
+        # leave results that belong to neither. A double-click on Run is
+        # enough to do it.
+        if jobs.is_running("solve", f"{pid}/{aid}"):
+            raise HTTPException(409, "this analysis is already running")
 
         mesh_stats = store.read_json(pid, "mesh/stats.json")
         run_dir = store.path(pid, "runs", aid)
@@ -256,7 +288,8 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             job.append("Done.")
             return {"analysis": aid}
 
-        job = jobs.submit("solve", f"{analysis['type']} {pid}/{aid}", work)
+        job = jobs.submit("solve", f"{analysis['type']} {pid}/{aid}", work,
+                          key=f"{pid}/{aid}")
         return {"job": job.id}
 
     @app.get("/api/projects/{pid}/results/{aid}")

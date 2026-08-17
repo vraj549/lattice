@@ -194,18 +194,34 @@ def _prelude(b: CommBuild, setup: dict, meta: dict, mesh_stats: dict,
     b.remotes = remotes
 
 
+def is_complete_bolt(b: dict) -> bool:
+    """A bolt that will actually be meshed: both sides have faces."""
+    return bool(b.get("side_a_faces")) and bool(b.get("side_b_faces"))
+
+
 def _active_bolts(setup: dict, mesh_stats: dict) -> list:
-    """Join bolt setup entries with the geometric records from mesh time."""
+    """Join bolt setup entries with the geometric records from mesh time.
+
+    Matched by ID, and the ID SETS must agree. Comparing counts was not
+    enough: delete one bolt and add another — which is exactly what patterning
+    onto a different hole does — and the count is unchanged while the new
+    bolt has no mesh record. It would then be dropped here silently, and the
+    model would solve with a joint that is in the tree and in no matrix.
+    """
     recs = {r.get("id"): r for r in mesh_stats.get("bolts", [])}
-    out = []
-    for bcfg in setup.get("bolts", []):
-        rec = recs.get(bcfg.get("id"))
-        if rec is None:
-            continue
-        out.append({**rec, "cfg": bcfg})
-    if out and len(mesh_stats.get("bolts", [])) != len(setup.get("bolts", [])):
-        raise ValueError("Mesh is older than the bolt setup — re-mesh before solving.")
-    return out
+    live = [b for b in setup.get("bolts", []) if is_complete_bolt(b)]
+    live_ids = {b.get("id") for b in live}
+    mesh_ids = set(recs)
+    if live_ids != mesh_ids:
+        added = len(live_ids - mesh_ids)
+        gone = len(mesh_ids - live_ids)
+        detail = ", ".join(filter(None, [
+            f"{added} added" if added else "",
+            f"{gone} removed" if gone else ""]))
+        raise ValueError(
+            f"The mesh does not match the bolts ({detail}) — bolt beams are "
+            "built at mesh time, so re-mesh before solving.")
+    return [{**recs[b["id"]], "cfg": b} for b in live]
 
 
 def _active_remotes(analysis: dict, ai: int, mesh_stats: dict) -> list:

@@ -91,11 +91,20 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
         # ---- physical groups ----
         for dim, tag in gmsh.model.getEntities(3):
             gmsh.model.addPhysicalGroup(3, [tag], name=f"V{tag}")
+        # One query, not one per face tag: this set was being rebuilt from a
+        # fresh gmsh call inside the comprehension for every tag in every
+        # group, which on an assembly with thousands of faces and a few dozen
+        # boundary conditions dominated the whole meshing step.
+        surfaces = {t for _, t in gmsh.model.getEntities(2)}
+        written = []
         for gname, ftags in face_sets.items():
-            valid = [t for t in ftags
-                     if (2, t) in set(gmsh.model.getEntities(2))]
+            valid = [t for t in ftags if t in surfaces]
             if valid:
                 gmsh.model.addPhysicalGroup(2, valid, name=gname)
+                written.append(gname)
+            else:
+                progress(f"warning: group {gname} references no surface in this "
+                         "geometry and was not written")
 
         gmsh.option.setNumber("Mesh.SaveAll", 0)
         gmsh.write(unv_path)
@@ -123,7 +132,10 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
         stats["probes"] = probes_out
         stats["bolts"] = bolt_records
         stats["remotes"] = remote_records
-        stats["face_groups"] = sorted(face_sets.keys())
+        # Only what was actually written. Recording every REQUESTED group
+        # let the stale-mesh guard pass for a group that does not exist,
+        # and the solver then aborted on GROUP_MA not found.
+        stats["face_groups"] = sorted(written)
 
         skin = _skin(gmsh)
         conn_islands = _count_islands(gmsh)
@@ -165,9 +177,15 @@ def group_name(kind: str, analysis_index: int, item_index: int) -> str:
     return f"{kind}{analysis_index}_{item_index}"
 
 
-def _face_set_centroid(meta: dict, ftags) -> "np.ndarray|None":
+def _face_index(meta: dict) -> dict:
+    """tag -> face record. Built once per mesh: rebuilding it inside the bolt
+    loop was O(bolts x faces), which patterning a joint across a flange turns
+    into real time on a large assembly."""
+    return {f["tag"]: f for f in meta.get("faces", [])}
+
+
+def _face_set_centroid(faces: dict, ftags) -> "np.ndarray|None":
     """Area-weighted centroid of a set of geometric faces."""
-    faces = {f["tag"]: f for f in meta.get("faces", [])}
     acc, area = np.zeros(3), 0.0
     for t in ftags:
         f = faces.get(int(t))
@@ -177,10 +195,9 @@ def _face_set_centroid(meta: dict, ftags) -> "np.ndarray|None":
     return acc / area if area > 0 else None
 
 
-def _bolt_axis(meta: dict, bolt: dict, ca, cb) -> np.ndarray:
+def _bolt_axis(faces: dict, bolt: dict, ca, cb) -> np.ndarray:
     """Bolt axis: prefer a detected cylinder axis, fall back to the
     centroid-to-centroid line."""
-    faces = {f["tag"]: f for f in meta.get("faces", [])}
     for key in ("side_a_faces", "side_b_faces"):
         for t in bolt.get(key, []):
             fit = (faces.get(int(t)) or {}).get("fit") or {}
@@ -199,19 +216,28 @@ def _add_bolt_beams(gmsh, meta: dict, setup: dict, progress) -> list:
     Returns per-bolt records for the comm writer.
     """
     out = []
+    faces = _face_index(meta)
     bolts = setup.get("bolts", [])
     for i, b in enumerate(bolts):
-        ca = _face_set_centroid(meta, b.get("side_a_faces", []))
-        cb = _face_set_centroid(meta, b.get("side_b_faces", []))
+        # A half-picked bolt is skipped, not fatal: the UI already flags it and
+        # blocks the run, and failing the whole mesh over one unfinished item
+        # would throw away minutes of work on a large model.
+        if not (b.get("side_a_faces") and b.get("side_b_faces")):
+            progress(f"bolt {i + 1} ({b.get('name', '')}): faces not picked — skipped")
+            continue
+        ca = _face_set_centroid(faces, b.get("side_a_faces", []))
+        cb = _face_set_centroid(faces, b.get("side_b_faces", []))
         if ca is None or cb is None:
-            raise ValueError(f"Bolt '{b.get('name', i + 1)}': both face sets need faces")
-        axis = _bolt_axis(meta, b, ca, cb)
+            progress(f"bolt {i + 1}: face tags not in this geometry — skipped")
+            continue
+        axis = _bolt_axis(faces, b, ca, cb)
         mid = (ca + cb) / 2.0
         pa = mid + axis * float((ca - mid) @ axis)
         pb = mid + axis * float((cb - mid) @ axis)
         if np.linalg.norm(pb - pa) < 1e-9:
-            raise ValueError(f"Bolt '{b.get('name', i + 1)}': zero grip length — "
-                             "are both face sets on the same feature?")
+            progress(f"bolt {i + 1} ({b.get('name', '')}): zero grip length — "
+                     "both face sets are on the same feature; skipped")
+            continue
 
         dtag = gmsh.model.addDiscreteEntity(1)
         n0 = gmsh.model.mesh.getMaxNodeTag() + 1
@@ -318,33 +344,52 @@ def _skin(gmsh) -> dict:
 
 def _count_islands(gmsh) -> int:
     """Connected components of the volume mesh — >1 means parts of the
-    assembly are not joined and will fly away in modal/static."""
+    assembly are not joined and will fly away in modal/static.
+
+    Vectorised label propagation. The previous version was a pure-Python
+    union-find over every tet's corner nodes: on a million-element mesh that
+    is several million dict lookups and pointer walks, and it ran on every
+    single mesh. This does the same work in numpy, converging in O(log n)
+    fully-vectorised passes.
+    """
     etypes, etags, enodes = gmsh.model.mesh.getElements(3)
-    parent = {}
-
-    def find(a):
-        while parent.get(a, a) != a:
-            parent[a] = parent.get(parent[a], parent[a])
-            a = parent[a]
-        return a
-
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[ra] = rb
-
+    pairs = []
     for et, en in zip(etypes, enodes):
         npery = {4: 4, 11: 10}.get(et)
         if not npery:
             continue
-        # corner nodes only — sufficient for connectivity, 4x cheaper than full
+        # corner nodes only — enough for connectivity, and 2.5x less data
         conn = np.asarray(en, dtype=np.int64).reshape(-1, npery)[:, :4]
-        for row in conn:
-            a = int(row[0])
-            parent.setdefault(a, a)
-            for b in row[1:]:
-                b = int(b)
-                parent.setdefault(b, b)
-                union(a, b)
-    roots = {find(k) for k in parent}
-    return max(1, len(roots))
+        for k in (1, 2, 3):
+            pairs.append(np.stack([conn[:, 0], conn[:, k]], 1))
+    if not pairs:
+        return 1
+
+    edges = np.concatenate(pairs)
+    nodes, idx = np.unique(edges, return_inverse=True)
+    idx = idx.reshape(-1, 2)
+    n = len(nodes)
+    if n == 0:
+        return 1
+
+    # Scatter-minimum without ufunc.at (which is unbuffered and very slow):
+    # sort the edge endpoints once, then each pass is a reduceat.
+    key = np.concatenate([idx[:, 0], idx[:, 1]])
+    src = np.concatenate([idx[:, 1], idx[:, 0]])
+    order = np.argsort(key, kind="stable")
+    key_s, src_s = key[order], src[order]
+    starts = np.flatnonzero(np.r_[True, key_s[1:] != key_s[:-1]])
+    targets = key_s[starts]
+
+    label = np.arange(n, dtype=np.int64)
+    for _ in range(64):                      # far more than log2(n) in practice
+        mins = np.minimum.reduceat(label[src_s], starts)
+        nxt = label.copy()
+        # fancy indexing yields a copy, so this must be an assignment —
+        # np.minimum(..., out=nxt[targets]) would write into a temporary
+        nxt[targets] = np.minimum(nxt[targets], mins)
+        nxt = nxt[nxt]                       # pointer jumping
+        if np.array_equal(nxt, label):
+            break
+        label = nxt
+    return max(1, int(np.unique(label).size))

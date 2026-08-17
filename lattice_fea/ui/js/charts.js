@@ -119,7 +119,33 @@ export function findPeaks(freq, mag, { minRatio = 0.08, maxPeaks = 12 } = {}) {
 }
 
 /** Large FRF plot: log-log, peak markers, per-curve legend. */
+/**
+ * Draw an FRF, and keep it drawn correctly when the pane is resized.
+ *
+ * A canvas has two sizes: the CSS box and the pixel backing store. Drawing
+ * once at load fixes the backing store, so dragging the splitter afterwards
+ * stretched that bitmap to the new width — axes and curves came out warped
+ * and the text smeared. Re-rendering on the element's own resize is the only
+ * thing that actually fixes it.
+ */
 export function frfPlot(canvas, curves, opts = {}) {
+  if (!canvas._latticeRO) {
+    let last = 0;
+    canvas._latticeRO = new ResizeObserver(() => {
+      // the observer fires during the layout that follows our own draw;
+      // redraw only when the box really changed size
+      const w = Math.round(canvas.clientWidth);
+      if (!w || w === last) return;
+      last = w;
+      if (canvas.isConnected && canvas._latticeDraw) canvas._latticeDraw();
+    });
+    canvas._latticeRO.observe(canvas);
+  }
+  canvas._latticeDraw = () => drawFrf(canvas, curves, opts);
+  drawFrf(canvas, curves, opts);
+}
+
+function drawFrf(canvas, curves, opts = {}) {
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth || 520, h = canvas.clientHeight || 300;
   canvas.width = w * dpr; canvas.height = h * dpr;

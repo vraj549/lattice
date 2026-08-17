@@ -21,32 +21,27 @@ LIBRARY = [
 ]
 
 
-# Metric coarse-thread bolts: nominal d (mm), tensile stress area As (mm^2).
-# Suggested preload = 0.65 * As * 640 MPa (class 8.8 yield) — a starting point,
-# not a substitute for a real joint calc.
-BOLT_SIZES = [
-    {"name": "M3",  "d": 3.0,  "As": 5.03},
-    {"name": "M4",  "d": 4.0,  "As": 8.78},
-    {"name": "M5",  "d": 5.0,  "As": 14.2},
-    {"name": "M6",  "d": 6.0,  "As": 20.1},
-    {"name": "M8",  "d": 8.0,  "As": 36.6},
-    {"name": "M10", "d": 10.0, "As": 58.0},
-    {"name": "M12", "d": 12.0, "As": 84.3},
-    {"name": "M14", "d": 14.0, "As": 115.0},
-    {"name": "M16", "d": 16.0, "As": 157.0},
-    {"name": "M20", "d": 20.0, "As": 245.0},
-    {"name": "M24", "d": 24.0, "As": 353.0},
-]
-
-
-def suggest_preload_N(As_mm2: float) -> float:
-    return round(0.65 * As_mm2 * 640.0)
-
-
 def to_solver_units(mat: dict) -> dict:
-    """UI material -> code_aster (mm-t-s) values."""
-    return {
-        "E": float(mat["E_GPa"]) * 1000.0,          # GPa -> MPa
-        "NU": float(mat["nu"]),
-        "RHO": float(mat["rho_kgm3"]) * 1e-12,      # kg/m^3 -> tonne/mm^3
-    }
+    """UI material -> code_aster (mm-t-s) values.
+
+    Raises rather than guessing: a material with a missing or absurd property
+    would otherwise reach the solver as a silently wrong stiffness.
+    """
+    try:
+        E = float(mat["E_GPa"]) * 1000.0            # GPa -> MPa
+        nu = float(mat["nu"])
+        rho = float(mat["rho_kgm3"]) * 1e-12        # kg/m^3 -> tonne/mm^3
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(
+            f"Material '{mat.get('name', '?')}' is missing a property: {e}")
+    name = mat.get("name", "?")
+    if not (E > 0):
+        raise ValueError(f"Material '{name}': Young's modulus must be positive")
+    if not (-1.0 < nu < 0.5):
+        raise ValueError(
+            f"Material '{name}': Poisson's ratio {nu} is outside the physically "
+            "admissible range (-1, 0.5); at 0.5 the material is incompressible "
+            "and the stiffness matrix is singular")
+    if not (rho >= 0):
+        raise ValueError(f"Material '{name}': density must not be negative")
+    return {"E": E, "NU": nu, "RHO": rho}

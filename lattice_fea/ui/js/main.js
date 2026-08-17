@@ -1,6 +1,7 @@
 import { api } from "./api.js";
 import { Viewer } from "./viewer.js";
-import { renderPanel, defaultAnalysis, solutionItems, el } from "./ui.js";
+import { renderPanel, defaultAnalysis, solutionItems, el,
+         panelIsFrozen, setPanelThaw } from "./ui.js";
 import { renderTree, installTreeKeys } from "./tree.js";
 import { mapBoltToTarget, defaultReferenceFace, describeFace,
          claimedFaces } from "./pattern.js";
@@ -222,6 +223,15 @@ const A = {
     A.mutate(() => {});
   },
 
+  /** Define a material that is not in the library. */
+  newMaterial(assignTo) {
+    showMaterialDialog(null, assignTo);
+  },
+  editMaterial(mid) {
+    const m = S.project.setup.materials.find((x) => x.id === mid);
+    if (m) showMaterialDialog(m, null);
+  },
+
   toggleSolid(tag) {
     if (S.hiddenSolids.has(tag)) S.hiddenSolids.delete(tag);
     else S.hiddenSolids.add(tag);
@@ -438,6 +448,9 @@ const A = {
       const s = document.getElementById("vpStat");
       s.innerHTML = s.innerHTML.replace(/deform ×[^<]*/, `deform ×${fmtVal((R.autoScale || 0) * mult)}`);
     }
+    // the slider label reports the factor, so it has to follow the value —
+    // but only when nothing is being typed into the panel
+    if (!panelIsFrozen()) renderPanel(S, A);
   },
 
   async recheckSolver() {
@@ -575,6 +588,79 @@ function showAnalysisDialog() {
     el("div", { class: "btnrow" },
       el("button", { class: "btn btn-accent", onclick: create }, "Create analysis"),
       el("button", { class: "btn", onclick: () => closeDialog() }, "Cancel"))));
+}
+
+// ---------------- custom material dialog ----------------
+// The library covers common stock; anything with a datasheet in hand — a
+// specific temper, a filled polymer, a composite treated as isotropic — has
+// to be typeable, or the tool only works on materials someone else chose.
+
+const MAT_FIELDS = [
+  ["name", "Name", "text", null],
+  ["E_GPa", "Young's modulus E", "number", "GPa"],
+  ["nu", "Poisson's ratio ν", "number", null],
+  ["rho_kgm3", "Density", "number", "kg/m³"],
+  ["yield_MPa", "Yield strength (optional)", "number", "MPa"],
+];
+
+function showMaterialDialog(existing, assignTo) {
+  const draft = existing
+    ? { ...existing }
+    : { id: `custom-${uid()}`, name: "", E_GPa: null, nu: 0.3,
+        rho_kgm3: null, yield_MPa: null };
+  const err = el("div", { class: "hint bad" });
+  const inputs = {};
+
+  const body = el("div", {},
+    el("h1", { class: "modal-title" }, existing ? "Edit material" : "New material"),
+    el("p", { class: "modal-sub" },
+      "Linear elastic and isotropic — the only model Lattice solves. Values "
+      + "are stored with the project, not in the shared library."),
+    el("div", { class: "sec" },
+      ...MAT_FIELDS.map(([key, label, type, unit]) => {
+        const inp = el("input", {
+          type, step: "any", value: draft[key] ?? "",
+          oninput: (e) => {
+            draft[key] = type === "number"
+              ? (e.target.value === "" ? null : Number(e.target.value))
+              : e.target.value;
+          },
+        });
+        inputs[key] = inp;
+        return el("label", { class: "frm" }, unit ? `${label} (${unit})` : label, inp);
+      }),
+      err),
+    el("div", { class: "btnrow" },
+      el("button", { class: "btn btn-accent", onclick: () => {
+        const problem = validateMaterial(draft);
+        if (problem) { err.textContent = "⚠ " + problem; return; }
+        const list = S.project.setup.materials;
+        const i = list.findIndex((m) => m.id === draft.id);
+        if (i >= 0) list[i] = draft; else list.push(draft);
+        if (assignTo != null) S.project.setup.assignments[String(assignTo)] = draft.id;
+        closeDialog();
+        A.mutate(() => {});
+        logLine(`Material “${draft.name}” saved.`);
+      } }, existing ? "Save" : "Create"),
+      el("button", { class: "btn", onclick: () => closeDialog() }, "Cancel")));
+  openDialog(body);
+  setTimeout(() => inputs.name?.focus(), 0);
+}
+
+/** Mirrors the check the solver-unit conversion makes, so a bad number is
+ *  caught while it is still editable rather than at solve time. */
+function validateMaterial(m) {
+  if (!String(m.name || "").trim()) return "Give the material a name.";
+  if (!(m.E_GPa > 0)) return "Young's modulus must be greater than zero.";
+  if (m.nu == null || !(m.nu > -1 && m.nu < 0.5)) {
+    return "Poisson's ratio must be between -1 and 0.5. At 0.5 the material "
+         + "is incompressible and the stiffness matrix is singular.";
+  }
+  if (!(m.rho_kgm3 > 0)) {
+    return "Density must be greater than zero — modal and harmonic analyses "
+         + "need mass.";
+  }
+  return null;
 }
 
 // ---------------- pick bar ----------------
@@ -820,9 +906,37 @@ function faceStates() {
 function refresh() {
   if (!S.project) return;
   renderTree(S, A);
-  renderPanel(S, A);
+  // While a field has focus the panel holds still — rebuilding it would
+  // destroy the element being typed into. See liveInput() in ui.js.
+  if (!panelIsFrozen()) renderPanel(S, A);
   viewer.setFaceStates(faceStates());
-  viewer.setGlyphs({ ...S.project.setup, ...(A.currentAnalysis() || { supports: [], loads: [] }) },
+  viewer.setHighlightSolid(S.selection.kind === "solid" ? S.selection.id : null);
+  updateGlyphs();
+}
+
+/**
+ * Rebuild the BC symbols only when something they draw actually changed.
+ *
+ * This runs on every model edit, and each glyph allocates cone/cylinder/tube
+ * geometries — rebuilding them on every keystroke was both the largest source
+ * of garbage in the app and pure wasted work, since typing a preload value
+ * does not move an arrow.
+ */
+function updateGlyphs() {
+  const a = A.currentAnalysis();
+  const setup = S.project.setup;
+  const sig = JSON.stringify([
+    a?.id,
+    (a?.supports || []).map((s) => [s.type, s.faces, s.ux, s.uy, s.uz]),
+    (a?.loads || []).map((l) => [l.type, l.faces, l.fx, l.fy, l.fz,
+                                 l.mx, l.my, l.mz, l.x, l.y, l.z, l.g, l.g_mag,
+                                 l.axis, l.center, l.pressure]),
+    (setup.bolts || []).map((b) => [b.side_a_faces, b.side_b_faces]),
+    (setup.probes || []).map((p) => [p.x, p.y, p.z]),
+  ]);
+  if (sig === S.glyphSig) return;
+  S.glyphSig = sig;
+  viewer.setGlyphs({ ...setup, ...(a || { supports: [], loads: [] }) },
                    S.project.geometry);
 }
 
@@ -1148,7 +1262,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.14.0";
+const UI_BUILD = "0.15.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;
@@ -1252,6 +1366,8 @@ async function boot() {
   checkVersionSkew();
   initSplitters();
   installTreeKeys(S, A);
+  // a field losing focus (or Enter) re-renders the panel it froze
+  setPanelThaw(() => { if (S.project) renderPanel(S, A); });
   await showOverlay();
 }
 

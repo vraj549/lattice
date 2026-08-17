@@ -120,3 +120,28 @@ def test_response_zero_outside_spec():
     t = [1.0, 1.0, 1.0]
     r = response(freq, t, SPEC, 1.0)
     assert r["grms"] == 0.0
+
+
+def test_sweep_that_misses_the_spec_is_reported():
+    """A sweep narrower than the spectrum under-reports g RMS silently.
+
+    The integral only spans swept frequencies, so stopping at 500 Hz on a
+    20-2000 Hz spec throws away most of the input. The number still looks
+    plausible, so the shortfall has to be measured and handed back.
+    """
+    spec = [[20, 0.04], [2000, 0.04]]          # flat, easy to reason about
+    full = [20 + i * (1980 / 400) for i in range(401)]
+    narrow = [20 + i * (480 / 400) for i in range(401)]   # 20-500 Hz only
+    t_full = [1.0] * len(full)
+    t_narrow = [1.0] * len(narrow)
+
+    r_full = response(full, t_full, spec, 1.0)
+    r_narrow = response(narrow, t_narrow, spec, 1.0)
+
+    assert r_full["input_covered"] > 0.999
+    # 480 Hz of a 1980 Hz flat band
+    assert abs(r_narrow["input_covered"] - 480 / 1980) < 0.01
+    # and the RMS really is low, which is exactly why it must be flagged
+    assert r_narrow["grms"] < 0.55 * r_full["grms"]
+    assert r_narrow["sweep_band"] == [20, 500.0]
+    assert r_narrow["spec_band"] == [20.0, 2000.0]

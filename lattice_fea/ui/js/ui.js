@@ -260,15 +260,41 @@ const sec = (label, ...kids) => el("div", { class: "sec" },
 const dl = (rows) => el("dl", {}, rows.map(([k, v]) =>
   el("div", { class: "fld" }, el("dt", {}, k), el("dd", {}, String(v)))));
 
+/**
+ * Text and number fields edit the model WITHOUT re-rendering the panel.
+ *
+ * Every edit used to go through A.mutate, which rebuilds this panel — so the
+ * input element you were typing into was destroyed after the first keystroke
+ * and focus fell back to <body>. Entering "4500" meant clicking the field
+ * four times. The tree and viewport still update live; only the panel holds
+ * still, and it re-renders on `change` (blur or Enter) once you are done.
+ */
+function liveInput(attrs, emit) {
+  return el("input", {
+    ...attrs,
+    oninput: (e) => { withPanelFrozen(() => emit(e.target)); },
+    onchange: () => { thawPanel(); },
+  });
+}
+
+let _panelFrozen = 0;
+export const panelIsFrozen = () => _panelFrozen > 0;
+function withPanelFrozen(fn) {
+  _panelFrozen++;
+  try { fn(); } finally { _panelFrozen--; }
+}
+let _thaw = () => {};
+export function setPanelThaw(fn) { _thaw = fn; }
+function thawPanel() { _thaw(); }
+
 function numInput(label, value, oninput, attrs = {}) {
   return el("label", { class: "frm" }, label,
-    el("input", { type: "number", value: value ?? "", step: "any", ...attrs,
-      oninput: (e) => oninput(e.target.value === "" ? null : Number(e.target.value)) }));
+    liveInput({ type: "number", value: value ?? "", step: "any", ...attrs },
+      (t) => oninput(t.value === "" ? null : Number(t.value))));
 }
 function textInput(label, value, oninput) {
   return el("label", { class: "frm" }, label,
-    el("input", { type: "text", value: value ?? "",
-      oninput: (e) => oninput(e.target.value) }));
+    liveInput({ type: "text", value: value ?? "" }, (t) => oninput(t.value)));
 }
 function selInput(label, value, options, onchange) {
   const s = el("select", { onchange: (e) => onchange(e.target.value) },
@@ -365,11 +391,18 @@ function panelSolid(S, A, put, tag) {
     ...setup.materials.filter((m) => !m.id.startsWith("lib-")).map((m) => [m.id, `${m.name} (custom)`])];
 
   const hidden = S.hiddenSolids.has(s.tag);
+  const custom = setup.materials.filter((m) => !m.id.startsWith("lib-"));
   put(s.name || `Solid ${tag}`, `${s.faces.length} faces`,
     sec("Material",
       selInput("Assign material", mid.startsWith("custom") ? mid : (mid ? `lib:${findLib(S, mid)}` : ""), opts,
         (v) => A.assignMaterial(tag, v)),
-      matProps(S, mid)),
+      matProps(S, mid),
+      el("div", { class: "btnrow" },
+        el("button", { class: "btn btn-small", onclick: () => A.newMaterial(tag) },
+          "New custom material…"),
+        custom.some((m) => m.id === mid)
+          ? el("button", { class: "btn btn-small", onclick: () => A.editMaterial(mid) },
+              "Edit") : null)),
     sec("Properties", dl([
       ["Volume", `${fmtVal(s.volume)} mm³`],
       ["Mass", massOf(S, s)],
@@ -552,12 +585,6 @@ export const BOLT_SIZES = [
   { id: "M5", label: "M5 × 0.8", d: 5.0, As: 14.2, series: "metric" },
   { id: "M6", label: "M6 × 1.0", d: 6.0, As: 20.1, series: "metric" },
   { id: "M8", label: "M8 × 1.25", d: 8.0, As: 36.6, series: "metric" },
-  { id: "M10", label: "M10 × 1.5", d: 10.0, As: 58.0, series: "metric" },
-  { id: "M12", label: "M12 × 1.75", d: 12.0, As: 84.3, series: "metric" },
-  { id: "M14", label: "M14 × 2.0", d: 14.0, As: 115, series: "metric" },
-  { id: "M16", label: "M16 × 2.0", d: 16.0, As: 157, series: "metric" },
-  { id: "M20", label: "M20 × 2.5", d: 20.0, As: 245, series: "metric" },
-  { id: "M24", label: "M24 × 3.0", d: 24.0, As: 353, series: "metric" },
   { id: "0-80", label: "#0-80 UNF", d: 1.524, As: 1.161, series: "unified" },
   { id: "2-56", label: "#2-56 UNC", d: 2.184, As: 2.387, series: "unified" },
   { id: "4-40", label: "#4-40 UNC", d: 2.845, As: 3.897, series: "unified" },
@@ -573,12 +600,29 @@ export const BOLT_SIZES = [
  * certifies to.
  */
 export const BOLT_GRADES = [
-  { id: "8.8", label: "Class 8.8", yield_MPa: 640, series: "metric" },
-  { id: "10.9", label: "Class 10.9", yield_MPa: 940, series: "metric" },
-  { id: "12.9", label: "Class 12.9", yield_MPa: 1100, series: "metric" },
-  { id: "A574", label: "ASTM A574 alloy socket head", yield_MPa: 1055, series: "unified" },
-  { id: "SS", label: "Stainless A2-70 / 18-8", yield_MPa: 450, series: "any" },
+  { id: "8.8", label: "Class 8.8", yield_MPa: 640, E_GPa: 210, series: "metric" },
+  { id: "10.9", label: "Class 10.9", yield_MPa: 940, E_GPa: 210, series: "metric" },
+  { id: "12.9", label: "Class 12.9", yield_MPa: 1100, E_GPa: 210, series: "metric" },
+  { id: "A574", label: "ASTM A574 alloy socket head", yield_MPa: 1055, E_GPa: 210, series: "unified" },
+  { id: "SS", label: "Stainless A2-70 / 18-8", yield_MPa: 450, E_GPa: 193, series: "any" },
+  // Ti-6Al-4V annealed (ASTM F136 / Grade 5): Rp0.2 ~ 860 MPa, E ~ 114 GPa.
+  { id: "TI5", label: "Titanium Grade 5 (Ti-6Al-4V)", yield_MPa: 860, E_GPa: 114, series: "any" },
+  // Polymer fasteners: yield is an order of magnitude down and the modulus
+  // two, so both must travel with the grade — a PEEK screw modelled at
+  // 210 GPa would carry load a steel bolt's share of the joint.
+  { id: "PEEK", label: "PEEK (unfilled)", yield_MPa: 98, E_GPa: 3.8, series: "any" },
+  { id: "PEEKGF30", label: "PEEK GF30 (30 % glass)", yield_MPa: 135, E_GPa: 10.0, series: "any" },
 ];
+
+/** Polymer and titanium fasteners creep and relax; flag the ones that do. */
+export const GRADE_NOTES = {
+  PEEK: "PEEK relaxes: expect to lose a large fraction of preload over time and "
+      + "with temperature. This is a linear elastic model — it does not creep.",
+  PEEKGF30: "Glass-filled PEEK still relaxes, and its properties are anisotropic "
+      + "and mould-dependent. Treat this modulus as nominal.",
+  TI5: "Titanium galls readily in threads; the usable preload is often set by "
+      + "the joint's galling limit rather than by yield.",
+};
 
 export const boltSize = (id) => BOLT_SIZES.find((s) => s.id === id) || null;
 
@@ -668,9 +712,12 @@ function panelBolt(S, A, put, id) {
       selInput("Grade", bl.grade ?? gradeOpts[0]?.id ?? "",
         gradeOpts.map((g) => [g.id, `${g.label} — ${g.yield_MPa} MPa`]),
         (v) => A.mutate(() => {
+          const g = BOLT_GRADES.find((x) => x.id === v);
           bl.grade = v;
-          bl.yield_MPa = BOLT_GRADES.find((g) => g.id === v)?.yield_MPa ?? bl.yield_MPa;
+          if (g) { bl.yield_MPa = g.yield_MPa; bl.E_GPa = g.E_GPa; }
         })),
+      GRADE_NOTES[bl.grade]
+        ? el("div", { class: "hint warn" }, "⚠ " + GRADE_NOTES[bl.grade]) : null,
       numInput("Yield / proof stress (MPa)", sy,
         (v) => A.mutate(() => { bl.yield_MPa = v || null; })),
       numInput("Preload (N)", bl.preload_N, (v) => A.mutate(() => { bl.preload_N = v; })),
@@ -739,6 +786,7 @@ function applyBoltSize(bl, id) {
       const def = BOLT_GRADES.find((x) => x.series === s.series);
       bl.grade = def?.id ?? null;
       bl.yield_MPa = def?.yield_MPa ?? null;
+      if (def?.E_GPa) bl.E_GPa = def.E_GPa;
     }
   }
 }
@@ -1423,14 +1471,12 @@ function secContours(S, A, a) {
         selInput("Palette", contourStyle.palette,
           [["rainbow", "Rainbow"], ["turbo", "Turbo"]],
           (v) => { contourStyle.palette = v; A.restyleContours(); })),
-      el("label", { class: "frm" }, "Deformation scale ×",
-        el("input", { type: "range", min: 0, max: 3, step: 0.01,
-          value: cur ? Math.log10((cur.defMult || 1) * 10) : 1,
-          oninput: (e) => A.setDeform(Math.pow(10, Number(e.target.value)) / 10) })),
-      a.type !== "static"
-        ? el("div", { class: "btnrow" },
-            el("button", { class: "btn", onclick: () => A.toggleAnimate() },
-              S.animating ? "Stop animation" : "Animate")) : null,
+      deformControl(S, A, cur),
+      // Animation is not a modal-only idea: watching a static deflection grow
+      // and relax is the fastest way to see where a part is actually moving.
+      el("div", { class: "btnrow" },
+        el("button", { class: "btn", onclick: () => A.toggleAnimate() },
+          S.animating ? "Stop animation" : "Animate")),
       el("div", { class: "btnrow" },
         el("button", { class: "btn btn-accent", onclick: () => A.loadField(a.id) }, "Show contours"),
         el("button", { class: "btn btn-small",
@@ -1470,27 +1516,62 @@ function secBolts(S, A, a) {
     }
     if (per.size) {
       const bolts = S.project.setup.bolts;
-      secs.push(sec("Bolt forces",
+      secs.push(sec("Bolt forces and stress",
         el("table", { class: "rtable" },
-          el("tr", {}, ["Bolt", "Axial N", "Shear N", "Bending N·mm", "vs preload"].map((h) => el("th", {}, h))),
+          el("tr", {}, ["Bolt", "Axial N", "Shear N", "\u03c3 axial", "\u03c4",
+                        "\u03c3 bend", "\u03c3 eqv", "% yield"].map((h) => el("th", {}, h))),
           [...per.entries()].map(([label, r]) => {
-            // label is "BOLT<n>" — map by index parsed from the label, not row order
+            // label is "BOLT<n>" \u2014 map by index parsed from the label, not row order
             const n = Number((label.match(/BOLT(\d+)/) || [])[1]);
             const cfg = n ? bolts[n - 1] : null;
-            const pct = cfg?.preload_N ? `${(100 * r.N / cfg.preload_N).toFixed(0)}%` : "—";
+            const st = boltStress(cfg, r);
             return el("tr", {},
               el("td", {}, cfg?.name || label),
               el("td", {}, fmtVal(r.N)),
               el("td", {}, fmtVal(r.V)),
-              el("td", {}, fmtVal(r.M)),
-              el("td", {}, pct));
+              el("td", {}, st ? fmtVal(st.axial) : "\u2014"),
+              el("td", {}, st ? fmtVal(st.shear) : "\u2014"),
+              el("td", {}, st ? fmtVal(st.bend) : "\u2014"),
+              el("td", {}, st ? fmtVal(st.eqv) : "\u2014"),
+              el("td", { class: st && st.pct > 100 ? "bad" : "" },
+                 st ? `${st.pct.toFixed(0)}%` : "\u2014"));
           })),
         el("div", { class: "hint" },
-          "Beam end forces from EFGE_ELNO. Axial includes the preload you applied; " +
-          "check shank stress and joint margins per your bolt spec (e.g. VDI 2230).")));
+          "Stresses are on the tensile stress area A\u209b, from the beam end " +
+          "forces (EFGE_ELNO) \u2014 the same section the beam was given, so " +
+          "nothing new is assumed. \u03c3 axial = N/A\u209b and includes the " +
+          "preload; \u03c4 = V/A\u209b; \u03c3 bend = M\u00b7c/I; \u03c3 eqv " +
+          "is von Mises \u221a((\u03c3+\u03c3b)\u00b2 + 3\u03c4\u00b2), the " +
+          "comparison VDI 2230 makes against proof stress."),
+        el("div", { class: "hint warn" },
+          "\u26a0 A beam does not resolve the thread root, the fillet under the " +
+          "head, or bending across the first engaged thread \u2014 the actual " +
+          "stress concentrations. This sizes the joint; it is not a fatigue " +
+          "assessment of the fastener.")));
     }
   }
   return secs;
+}
+
+/**
+ * Bolt stresses from beam end forces.
+ *
+ * All on the equivalent circular section of the tensile stress area — the
+ * section the beam was actually given — so N, V and M are already consistent
+ * with it and no second assumption enters.
+ */
+function boltStress(cfg, r) {
+  if (!cfg) return null;
+  const A = boltArea(cfg);
+  if (!(A > 0)) return null;
+  const rad = Math.sqrt(A / Math.PI);
+  const I = Math.PI * rad ** 4 / 4;
+  const axial = r.N / A;
+  const shear = r.V / A;
+  const bend = I > 0 ? (r.M * rad) / I : 0;
+  const eqv = Math.sqrt((axial + bend) ** 2 + 3 * shear ** 2);
+  const sy = boltYield(cfg);
+  return { axial, shear, bend, eqv, pct: sy > 0 ? (100 * eqv) / sy : 0 };
 }
 
 function secReactions(S, A, a) {
@@ -1595,6 +1676,48 @@ function randomSections(S, A, a) {
         `\u2713 ${pct.toFixed(1)} % effective mass captured — truncation is acceptable.`)));
   }
   return secs;
+}
+
+/**
+ * Deformation scale.
+ *
+ * Auto-scale exaggerates to about 5 % of the model diagonal, which on a stiff
+ * part can be a factor of thousands — useful for seeing the shape, useless
+ * for judging whether a clearance closes. 1x (true scale) is therefore a
+ * distinguished value: it is labelled, it is one click away, and the slider
+ * snaps to it so you can find it by dragging.
+ */
+function deformControl(S, A, cur) {
+  const R = cur || S.activeResult;
+  const mult = R?.defMult ?? 1;
+  const auto = R?.autoScale || 0;
+  const trueMult = auto > 0 ? 1 / auto : null;      // slider value giving x1
+  const total = auto * mult;
+
+  const slider = el("input", {
+    type: "range", min: -2, max: 3, step: 0.001,
+    value: String(Math.log10(Math.max(mult, 1e-6))),
+    oninput: (e) => {
+      let m = Math.pow(10, Number(e.target.value));
+      // snap to true scale within a few percent of it
+      if (trueMult && Math.abs(Math.log10(m / trueMult)) < 0.04) m = trueMult;
+      A.setDeform(m);
+    },
+  });
+
+  return el("div", {},
+    el("label", { class: "frm" },
+      `Deformation ×${fmtVal(total)}${trueMult && Math.abs(mult - trueMult) < 1e-9 ? " — true scale" : ""}`,
+      slider),
+    el("div", { class: "btnrow" },
+      trueMult ? el("button", { class: "btn btn-small",
+        onclick: () => A.setDeform(trueMult) }, "True scale (1×)") : null,
+      el("button", { class: "btn btn-small", onclick: () => A.setDeform(1) }, "Auto"),
+      el("button", { class: "btn btn-small", onclick: () => A.setDeform(0) }, "Undeformed")),
+    el("div", { class: "hint" },
+      auto > 0
+        ? `Auto scales the peak displacement to about 5 % of the model — here ×${fmtVal(auto)}.`
+        : "No displacement in this field."));
 }
 
 function compOptions(f) {
