@@ -145,6 +145,9 @@ def default_setup() -> dict:
         "bolts": [],            # [{id, name, side_a_faces:[], side_b_faces:[],
                                 #   size, d_mm, as_mm2, grade, yield_MPa, E_GPa, preload_N}]
         "ties": [],             # [{id, name, slave_faces:[], master_solid:int}]
+        # [{id, name, kind, mu, faces_a:[], faces_b:[], solids:[a,b], suppressed}]
+        # kind: bonded | noseparation | frictionless | friction
+        "contacts": [],
         "probes": [],           # [{id, name, x,y,z}]  (mm)
         "mesh": {"size_mm": None, "curvature": 16, "order": 2, "local": []},
         "analyses": [],         # each: {id, type, name, config, supports[], loads[]}

@@ -16,10 +16,11 @@ from fastapi.staticfiles import StaticFiles
 
 import hashlib
 
-from . import __version__, comm_writer, config, random_vib, results
+from . import (__version__, ccx_writer, comm_writer, config, random_vib,
+               results)
 from .materials import LIBRARY
 from .projects import ProjectStore
-from .solver import JobManager, popen_isolated, reap, run_solver
+from .solver import (JobManager, popen_isolated, reap, run_ccx, run_solver)
 
 UI_DIR = os.path.join(os.path.dirname(__file__), "ui")
 
@@ -120,7 +121,8 @@ def create_app(workspace: str = "workspace") -> FastAPI:
     # endpoint blocks the event loop, freezing every other request — including
     # the job polling that shows the import progress.
     @app.post("/api/projects")
-    def create_project(name: str = Form(...), step: UploadFile = File(...)):
+    def create_project(name: str = Form(...), step: UploadFile = File(...),
+                       assembly: str = Form("bonded")):
         pid = store.create(name)
         step_path = store.path(pid, "geometry.step")
         filename = step.filename or "upload.step"
@@ -147,6 +149,7 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             meta_out = store.path(pid, "geo_meta.json")
             run_gmsh_worker(job, {
                 "op": "import", "step": step_path,
+                "fragment": assembly != "contact",
                 "brep": store.path(pid, "geometry.brep"),
                 "tess": store.path(pid, "tess.json.gz"),
                 "meta_out": meta_out,
@@ -235,7 +238,7 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             raise HTTPException(404, "analysis not found")
         if not store.exists(pid, "mesh/stats.json"):
             raise HTTPException(409, "mesh the model first")
-        if not solver_cfg.available():
+        if not solver_cfg.engines():
             raise HTTPException(409, f"no solver configured: {solver_cfg.detail}")
         # Two solves writing one run directory interleave their output and
         # leave results that belong to neither. A double-click on Run is
@@ -247,23 +250,46 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         run_dir = store.path(pid, "runs", aid)
         os.makedirs(run_dir, exist_ok=True)
 
-        try:
-            comm, export = comm_writer.build_run(analysis, proj["setup"],
-                                                 proj["geometry"], mesh_stats, solver_cfg)
-        except ValueError as e:
-            raise HTTPException(422, str(e))
+        # Which engine runs this. The analysis may name one; otherwise take
+        # whatever is installed, preferring code_aster because it covers every
+        # analysis type.
+        want = (analysis.get("config") or {}).get("engine") or ""
+        engines = {e["id"] for e in solver_cfg.engines()}
+        if want and want not in engines:
+            raise HTTPException(409, f"solver '{want}' is not available here")
+        engine = want or ("aster" if "aster" in engines else "ccx")
 
-        with open(os.path.join(run_dir, "run.comm"), "w", encoding="utf-8") as f:
-            f.write(comm)
-        with open(os.path.join(run_dir, "run.export"), "w", encoding="utf-8") as f:
-            f.write(export)
-        shutil.copyfile(store.path(pid, "mesh", "mesh.unv"),
-                        os.path.join(run_dir, "mesh.unv"))
+        if engine == "ccx":
+            try:
+                deck = ccx_writer.build_deck(analysis, proj["setup"],
+                                             proj["geometry"], mesh_stats)
+            except ValueError as e:
+                raise HTTPException(422, str(e))
+            if not store.exists(pid, "mesh/mesh.inp"):
+                raise HTTPException(409, "re-mesh: this mesh predates CalculiX support")
+            with open(os.path.join(run_dir, "job.inp"), "w", encoding="utf-8") as f:
+                f.write(deck)
+            shutil.copyfile(store.path(pid, "mesh", "mesh.inp"),
+                            os.path.join(run_dir, "mesh.inp"))
+        else:
+            try:
+                comm, export = comm_writer.build_run(analysis, proj["setup"],
+                                                     proj["geometry"], mesh_stats,
+                                                     solver_cfg)
+            except ValueError as e:
+                raise HTTPException(422, str(e))
+            with open(os.path.join(run_dir, "run.comm"), "w", encoding="utf-8") as f:
+                f.write(comm)
+            with open(os.path.join(run_dir, "run.export"), "w", encoding="utf-8") as f:
+                f.write(export)
+            shutil.copyfile(store.path(pid, "mesh", "mesh.unv"),
+                            os.path.join(run_dir, "mesh.unv"))
         # Every artifact of a previous run must go. Leaving even one behind
         # lets a FAILED re-run present the previous run's numbers as if they
         # were current — results parsing only checks whether files exist.
         for f in os.listdir(run_dir):
-            if f.endswith((".med", ".csv", ".json")) or f in ("tables.txt", "log.txt"):
+            if (f.endswith((".med", ".csv", ".json", ".frd", ".dat", ".sta", ".cvg"))
+                    or f in ("tables.txt", "log.txt")):
                 try:
                     os.remove(os.path.join(run_dir, f))
                 except OSError:
@@ -272,10 +298,16 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         geo = proj["geometry"]
 
         def work(job):
-            rc = run_solver(solver_cfg, run_dir, job)
-            job.append("Parsing results …")
-            meta = results.build_results(run_dir, geo["bbox"],
-                                         mesh_stats.get("geo_volume"))
+            if engine == "ccx":
+                rc = run_ccx(solver_cfg, run_dir, job, "job")
+                job.append("Parsing results …")
+                meta = results.build_results_ccx(run_dir, "job")
+            else:
+                rc = run_solver(solver_cfg, run_dir, job)
+                job.append("Parsing results …")
+                meta = results.build_results(run_dir, geo["bbox"],
+                                             mesh_stats.get("geo_volume"))
+            meta["engine"] = engine
             meta["exit_code"] = rc
             meta["signature"] = solve_signature(analysis, proj["setup"], mesh_stats)
             store.write_json(pid, f"runs/{aid}/meta.json", meta)

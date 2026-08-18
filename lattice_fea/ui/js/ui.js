@@ -244,6 +244,7 @@ function renderPanelBody(S, A, put, kind, id) {
     case "load": return panelLoad(S, A, put, id);
     case "bolt": return panelBolt(S, A, put, id);
     case "tie": return panelTie(S, A, put, id);
+    case "contact": return panelContact(S, A, put, id);
     case "probe": return panelProbe(S, A, put, id);
     case "mesh": return panelMesh(S, A, put);
     case "analysis": return panelAnalysis(S, A, put, id);
@@ -822,6 +823,68 @@ function panelTie(S, A, put, id) {
         delBtn("tie", () => A.removeItem("ties", id))));
 }
 
+/**
+ * A contact interface.
+ *
+ * Bonded is a linear constraint and is what a fragmented (conformal) assembly
+ * already is. The other three are what make a preloaded joint mean anything:
+ * with a bonded interface the parts can neither separate nor slide, so the
+ * clamp load has nothing to do and slip cannot be assessed at all.
+ */
+function panelContact(S, A, put, id) {
+  const c = (S.project.setup.contacts || []).find((x) => x.id === id);
+  if (!c) return put("Contact", "");
+  const geo = S.project.geometry;
+  const solidName = (t) => geo.solids.find((s) => s.tag === t)?.name || `Solid ${t}`;
+  const sliding = ["frictionless", "friction", "noseparation"].includes(c.kind);
+
+  put(c.name || "Contact", (c.solids || []).map(solidName).join(" ↔ "),
+    sec("Definition",
+      textInput("Name", c.name, (v) => A.mutate(() => { c.name = v; })),
+      selInput("Behaviour", c.kind || "bonded", [
+        ["bonded", "Bonded — glued, no sliding or gapping"],
+        ["noseparation", "No separation — cannot gap, free to slide"],
+        ["frictionless", "Frictionless — can gap and slide freely"],
+        ["friction", "Frictional — can gap, slides above μ·N"]],
+        (v) => A.mutate(() => { c.kind = v; })),
+      c.kind === "friction"
+        ? numInput("Friction coefficient μ", c.mu ?? 0.2,
+            (v) => A.mutate(() => { c.mu = v ?? 0.2; }), { min: 0, max: 2, step: 0.05 })
+        : null,
+      c.kind === "friction"
+        ? el("div", { class: "hint" },
+            "Steel on steel dry is roughly 0.15–0.25; a slip-critical joint is "
+            + "usually specified by its faying-surface class, not by a guess.")
+        : null),
+    sec("Faces", dl([
+      ["Side A", `${(c.faces_a || []).length} face(s) on ${solidName((c.solids || [])[0])}`],
+      ["Side B", `${(c.faces_b || []).length} face(s) on ${solidName((c.solids || [])[1])}`],
+      ["Interface area", c.area ? `${fmtVal(c.area)} mm²` : "—"],
+    ]),
+      el("div", { class: "btnrow" },
+        el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
+          const a = c.faces_a; c.faces_a = c.faces_b; c.faces_b = a;
+          c.solids = [(c.solids || [])[1], (c.solids || [])[0]];
+        }) }, "Swap sides"),
+        el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
+          c.suppressed = !c.suppressed;
+        }) }, c.suppressed ? "Un-suppress" : "Suppress")),
+      el("div", { class: "hint" },
+        "Side B is the slave — give that side the finer mesh. Suppressing a "
+        + "contact leaves the parts free of each other entirely.")),
+    sliding
+      ? sec(null, el("div", { class: "hint warn" },
+          "⚠ Anything that can slide or separate makes the solve NONLINEAR: "
+          + "whether the surfaces touch is part of the answer, so the run steps "
+          + "the load up and iterates. Expect it to take considerably longer "
+          + "than a bonded model, and it applies to static only — modal and "
+          + "harmonic are linear by definition and use the bonded state."))
+      : sec(null, el("div", { class: "hint" },
+          "Bonded stays linear and is exact. Use it wherever parts really are "
+          + "welded, glued or clamped hard enough never to move.")),
+    sec(null, delBtn("contact", () => A.removeItem("contacts", id))));
+}
+
 function panelProbe(S, A, put, id) {
   const p = S.project.setup.probes.find((x) => x.id === id);
   if (!p) return put("Probe", "");
@@ -976,11 +1039,48 @@ function resolutionWarning(S, peaks) {
  *  and SimScale both do it: the analysis row answers "can I run this", and the
  *  settings row answers "what exactly am I running". They were one panel, and
  *  it had grown to a screen and a half of scrolling. */
+/**
+ * Which solver runs this study.
+ *
+ * They are not interchangeable. code_aster covers every analysis type here;
+ * CalculiX installs from a package manager and so is often the only one
+ * present on macOS, but this tool only drives it for static and modal. An
+ * engine that cannot run the study is offered disabled with the reason rather
+ * than hidden, so the limitation is legible instead of mysterious.
+ */
+function engineSection(S, A, a, c) {
+  const engines = S.config?.solver?.engines || [];
+  if (!engines.length) {
+    return sec("Solver", el("div", { class: "hint bad" },
+      "No solver detected. See README \u2192 Solver setup."));
+  }
+  const current = c.engine || (engines.find((e) => e.id === "aster") ? "aster"
+                                                                    : engines[0].id);
+  const chosen = engines.find((e) => e.id === current);
+  const canRun = chosen ? chosen.types.includes(a.type) : false;
+
+  return sec("Solver",
+    selInput("Engine", current,
+      engines.map((e) => [e.id, e.types.includes(a.type)
+        ? e.label : `${e.label} — cannot run ${a.type}`]),
+      (v) => A.mutate(() => { c.engine = v; })),
+    el("div", { class: "hint" },
+      chosen ? `${chosen.label}: ${chosen.detail}` : ""),
+    !canRun ? el("div", { class: "hint bad" },
+      `\u26a0 ${chosen?.label} does not run ${a.type} in Lattice. `
+      + `Available here: ${engines.filter((e) => e.types.includes(a.type))
+           .map((e) => e.label).join(", ") || "none"}.`) : null,
+    current === "ccx" && S.project.setup.bolts?.length
+      ? el("div", { class: "hint bad" },
+          "\u26a0 Bolt beams and their distributing couplings are not emitted "
+          + "for CalculiX yet \u2014 this model needs code_aster.") : null);
+}
+
 function panelSettings(S, A, put, id) {
   const a = S.project.setup.analyses.find((x) => x.id === id);
   if (!a) return put("Analysis Settings", "");
   const c = a.config || {};
-  const secs = [];
+  const secs = [engineSection(S, A, a, c)];
 
   if (a.type === "modal") {
     secs.push(sec("Extraction",

@@ -53,7 +53,7 @@ def _fresh_model(gmsh, name: str):
 # Import
 # --------------------------------------------------------------------------
 
-def import_step(step_path: str, brep_path: str) -> dict:
+def import_step(step_path: str, brep_path: str, fragment: bool = True) -> dict:
     """Import STEP, fragment solids, save canonical brep, return metadata
     (names matched by center-of-mass/volume signature after reload)."""
     with GMSH_LOCK:
@@ -78,7 +78,7 @@ def import_step(step_path: str, brep_path: str) -> dict:
             pre_names[tag] = nm
 
         # fragment: imprints + dedups shared boundaries -> conformal interfaces
-        if len(vols) > 1:
+        if len(vols) > 1 and fragment:
             out, out_map = gmsh.model.occ.fragment(vols[:1], vols[1:])
             gmsh.model.occ.synchronize()
             # map original -> children names (children usually 1:1)
@@ -88,7 +88,7 @@ def import_step(step_path: str, brep_path: str) -> dict:
                     if cdim == 3 and ctag not in post_names:
                         post_names[ctag] = pre_names.get(tag, "")
         else:
-            post_names = {vols[0][1]: pre_names.get(vols[0][1], "")}
+            post_names = {t: pre_names.get(t, "") for _, t in vols}
 
         # signatures for name matching after reload
         sigs = []
@@ -102,6 +102,11 @@ def import_step(step_path: str, brep_path: str) -> dict:
         gmsh.clear()
 
     meta = _analyze_brep(brep_path, sigs)
+    meta["fragmented"] = bool(fragment and len(vols) > 1)
+    if not meta["fragmented"]:
+        meta["contact_pairs"] = find_contact_pairs(meta)
+    else:
+        meta["contact_pairs"] = []
     return meta
 
 
@@ -296,3 +301,52 @@ def tessellate(brep_path: str, diag: float) -> dict:
         gmsh.clear()
 
     return {"faces": out_faces, "edges": edges}
+
+
+def find_contact_pairs(meta: dict, rel_tol: float = 0.02) -> list:
+    """Faces of different solids that lie on top of each other.
+
+    Only meaningful on an UNFRAGMENTED import. Fragmenting merges coincident
+    boundaries into one shared face, which is what makes an assembly bonded
+    and conformal — and also why a fragmented model has nothing to slide:
+    there are no longer two surfaces there.
+
+    Detection is on area and centroid, which is decisive for the flat mating
+    faces of a bolted joint: two faces of different parts with the same area
+    whose centroids sit on top of each other are the two halves of one
+    interface. Tolerance is relative to the face size, so it holds from a
+    washer face to a whole flange.
+    """
+    faces = meta.get("faces", [])
+    by_solid = {}
+    for f in faces:
+        for sd in f.get("solids", []):
+            by_solid.setdefault(sd, []).append(f)
+
+    diag = meta.get("diag", 100.0) or 100.0
+    pairs = []
+    seen = set()
+    solids = sorted(by_solid)
+    for i, sa in enumerate(solids):
+        for sb in solids[i + 1:]:
+            for fa in by_solid[sa]:
+                for fb in by_solid[sb]:
+                    key = tuple(sorted((fa["tag"], fb["tag"])))
+                    if key in seen:
+                        continue
+                    amax = max(fa["area"], fb["area"])
+                    if amax <= 0:
+                        continue
+                    if abs(fa["area"] - fb["area"]) / amax > rel_tol:
+                        continue
+                    # centroids within a fraction of the face's own size
+                    tol = max(math.sqrt(amax) * rel_tol, diag * 1e-4)
+                    if math.dist(fa["com"], fb["com"]) > tol:
+                        continue
+                    seen.add(key)
+                    pairs.append({
+                        "solids": [sa, sb],
+                        "faces_a": [fa["tag"]], "faces_b": [fb["tag"]],
+                        "area": round(min(fa["area"], fb["area"]), 4),
+                    })
+    return pairs

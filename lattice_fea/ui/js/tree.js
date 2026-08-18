@@ -41,6 +41,14 @@ function buildModel(S, A) {
   }
 
   const conns = [
+    ...(setup.contacts || []).map((c, i) => ({
+      key: `ct:${c.id}`, kind: "contact", id: c.id,
+      icon: "interface", iconClass: CONTACT_CLASS[c.kind] || "c-ok",
+      label: c.name || `Contact ${i + 1}`,
+      meta: c.suppressed ? "suppressed" : CONTACT_SHORT[c.kind] || c.kind,
+      warn: c.suppressed,
+      title: `${c.solids?.join(" ↔ ") || ""} — ${CONTACT_SHORT[c.kind] || c.kind}`,
+    })),
     ...setup.bolts.map((bl, i) => ({
       key: `bo:${bl.id}`, kind: "bolt", id: bl.id, icon: "bolt", iconClass: "c-bolt",
       label: bl.name || `Bolt ${i + 1}`,
@@ -81,8 +89,9 @@ function buildModel(S, A) {
       meta: plural(geo.faces.length, "face"), children: solids },
     { key: "con", icon: "connection", label: "Connections",
       meta: conns.length ? String(conns.length) : "none", children: conns,
-      empty: "No bolts or ties — bonded interfaces are found on import.",
+      empty: "No contacts, bolts or ties yet.",
       insert: [
+        { label: "Detect contacts…", onclick: () => A.detectContacts() },
         { label: "Bolt (beam + spider)", onclick: () => A.addBolt() },
         { label: "Tie (bonded, non-conformal)", onclick: () => A.addTie(),
           disabled: geo.solids.length < 2,
@@ -176,6 +185,13 @@ function analysisNode(S, A, a) {
     children: kids, insert, cls: "analysis",
   };
 }
+
+const CONTACT_SHORT = { bonded: "bonded", noseparation: "no separation",
+                        frictionless: "frictionless", friction: "friction" };
+// bonded is a constraint (green, like a tie); anything that can slide or open
+// is a nonlinear solve and gets the load colour to say so
+const CONTACT_CLASS = { bonded: "c-ok", noseparation: "c-load",
+                        frictionless: "c-load", friction: "c-load" };
 
 const ANALYSIS_ICONS = { static: "analysis", modal: "modes",
                          harmonic: "frf", random: "random" };

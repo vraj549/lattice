@@ -98,6 +98,7 @@ class SolverConfig:
     host_cores: int = field(default_factory=lambda: os.cpu_count() or 0)
     host_ram_mb: int = 0
     vm_ram_mb: int = 0          # WSL VM total, when running through WSL
+    ccx_cmd: str = ""           # CalculiX binary, when one is on PATH
 
     def available(self) -> bool:
         return self.mode in ("native", "wsl", "docker")
@@ -114,7 +115,22 @@ class SolverConfig:
             "available": self.available(), "detail": self.detail, "notes": self.notes,
             "host_cores": self.host_cores, "host_ram_mb": self.host_ram_mb,
             "vm_ram_mb": self.vm_ram_mb,
+            "ccx_cmd": self.ccx_cmd, "ccx": bool(self.ccx_cmd),
+            "engines": self.engines(),
         }
+
+    def engines(self) -> list:
+        """Solver engines that can actually run here, in preference order."""
+        out = []
+        if self.available():
+            out.append({"id": "aster", "label": "code_aster",
+                        "detail": self.detail,
+                        "types": ["static", "modal", "harmonic", "random"]})
+        if self.ccx_cmd:
+            out.append({"id": "ccx", "label": "CalculiX",
+                        "detail": self.ccx_cmd,
+                        "types": ["static", "modal"]})
+        return out
 
 
 def _load_toml(paths) -> dict:
@@ -147,11 +163,41 @@ def _wsl_has_cmd(distro: str, cmd: str) -> bool:
     return rc == 0
 
 
+# CalculiX ships under a version-suffixed name from most package managers.
+CCX_NAMES = ("ccx", "ccx_2.23", "ccx_2.22", "ccx_2.21", "ccx_2.20", "CalculiX")
+
+
+def find_ccx() -> str:
+    """Path to a CalculiX binary, or "" — checked separately from code_aster
+    because the two are independent: a Mac usually has ccx and no aster."""
+    explicit = os.environ.get("LATTICE_CCX_CMD", "")
+    if explicit:
+        return explicit if shutil.which(explicit.split()[0]) else ""
+    for n in CCX_NAMES:
+        if shutil.which(n):
+            return n
+    return ""
+
+
 def _probe_resources(cfg: "SolverConfig") -> "SolverConfig":
     cfg.host_ram_mb = host_ram_mb() or 0
     if cfg.mode == "wsl":
         cfg.vm_ram_mb = wsl_ram_mb(cfg.wsl_distro) or 0
+    cfg.ccx_cmd = cfg.ccx_cmd or find_ccx()
     return cfg
+
+
+def _int_env(env, key: str, default: int, cfg) -> int:
+    """A malformed number in the environment must not stop the server from
+    starting — it is a setting, not a precondition."""
+    raw = env.get(key)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        cfg.notes.append(f"{key}={raw!r} is not an integer; using {default}")
+        return default
 
 
 def detect(workspace: str = ".") -> SolverConfig:
@@ -168,9 +214,9 @@ def detect(workspace: str = ".") -> SolverConfig:
     cfg.cmd = env.get("LATTICE_ASTER_CMD", cfg.cmd)
     cfg.wsl_distro = env.get("LATTICE_WSL_DISTRO", cfg.wsl_distro)
     cfg.docker_image = env.get("LATTICE_DOCKER_IMAGE", cfg.docker_image)
-    cfg.memory_mb = int(env.get("LATTICE_MEMORY_MB", cfg.memory_mb))
-    cfg.time_limit_s = int(env.get("LATTICE_TIME_LIMIT_S", cfg.time_limit_s))
-    cfg.ncpus = int(env.get("LATTICE_NCPUS", cfg.ncpus))
+    cfg.memory_mb = _int_env(env, "LATTICE_MEMORY_MB", cfg.memory_mb, cfg)
+    cfg.time_limit_s = _int_env(env, "LATTICE_TIME_LIMIT_S", cfg.time_limit_s, cfg)
+    cfg.ncpus = _int_env(env, "LATTICE_NCPUS", cfg.ncpus, cfg)
 
     explicitly_set = cfg.mode != "none" or "LATTICE_ASTER_MODE" in env or "mode" in file_cfg
     if explicitly_set and cfg.mode != "none":

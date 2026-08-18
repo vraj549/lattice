@@ -174,19 +174,28 @@ def _prelude(b: CommBuild, setup: dict, meta: dict, mesh_stats: dict,
     # tie constraints (bonded, non-conformal)
     ties = [t for t in setup.get("ties", [])
             if t.get("slave_faces") and t.get("master_solid")]
-    if ties:
+    # A BONDED contact is the same constraint: glue the slave face onto the
+    # master's volume. Keeping it linear matters — a bonded interface has no
+    # status to solve for, so paying for a Newton loop would buy nothing.
+    bonded = [c for c in active_contacts(setup, mesh_stats)
+              if c.get("kind", "bonded") == "bonded"]
+    if ties or bonded:
         b.w("# tied (glued) face-to-volume constraints for non-conformal interfaces")
         b.w("tiec = AFFE_CHAR_MECA(MODELE=model, LIAISON_MAIL=(")
         for i, t in enumerate(ties):
             b.w(f"    _F(GROUP_MA_MAIT=('V{int(t['master_solid'])}',),")
             b.w(f"       GROUP_MA_ESCL=('TIE{i + 1}',), TYPE_RACCORD='MASSIF'),")
+        for c in bonded:
+            master = int((c.get("solids") or [0])[0])
+            b.w(f"    _F(GROUP_MA_MAIT=('V{master}',),")
+            b.w(f"       GROUP_MA_ESCL=('{c['gb']}',), TYPE_RACCORD='MASSIF'),")
         b.w("))")
         b.w()
 
     b.constraint_charges = []
     if beam_groups:
         b.constraint_charges.append("spider")
-    if ties:
+    if ties or bonded:
         b.constraint_charges.append("tiec")
     b.has_bolts = bool(bolts)
     b.has_beams = bool(beam_groups)
@@ -410,6 +419,105 @@ def _support_groups(analysis: dict, ai: int) -> list:
 
 # --------------------------------------------------------------------------
 
+SLIDING_KINDS = ("frictionless", "friction", "noseparation")
+
+
+def active_contacts(setup: dict, mesh_stats: dict) -> list:
+    """Contacts whose two face groups actually made it into the mesh."""
+    have = set(mesh_stats.get("face_groups") or [])
+    out = []
+    for i, c in enumerate(setup.get("contacts", []) or []):
+        if c.get("suppressed") or not (c.get("faces_a") and c.get("faces_b")):
+            continue
+        ga, gb = f"CTA{i + 1}", f"CTB{i + 1}"
+        if have and not (ga in have and gb in have):
+            raise ValueError(
+                f"The mesh does not contain the faces of contact "
+                f"'{c.get('name', ga)}' — re-mesh before solving.")
+        out.append({**c, "index": i + 1, "ga": ga, "gb": gb})
+    return out
+
+
+def needs_nonlinear(contacts: list) -> bool:
+    """Sliding or separating contact is a nonlinear problem.
+
+    Whether two surfaces are touching is part of the answer, not part of the
+    question, so the stiffness depends on the solution and MECA_STATIQUE
+    cannot be used. This is also the whole reason bolt preload is worth
+    modelling: in a bonded joint the interface can neither open nor slip, so
+    the preload does nothing a bonded connection was not already doing.
+    """
+    return any(c.get("kind", "bonded") in SLIDING_KINDS for c in contacts)
+
+
+def _contact_defi(b: CommBuild, contacts: list) -> "str|None":
+    """DEFI_CONTACT over every non-bonded interface.
+
+    CONTINUE formulation: the augmented-Lagrangian one, which is the robust
+    default for solid-on-solid in code_aster. Bonded pairs are not listed —
+    they are handled as LIAISON_MAIL ties, which stay linear and are exact.
+    """
+    zones = [c for c in contacts if c.get("kind", "bonded") in SLIDING_KINDS]
+    if not zones:
+        return None
+    b.w("# Contact. Master is the first-listed side; the finer side should be")
+    b.w("# the slave, which is why the UI lets you swap them.")
+    b.w("contact = DEFI_CONTACT(MODELE=model, FORMULATION='CONTINUE',")
+    b.w("                       ALGO_RESO_GEOM='NEWTON',")
+    b.w("                       ZONE=(")
+    for c in zones:
+        kind = c.get("kind")
+        b.w(f"    _F(GROUP_MA_MAIT='{c['ga']}', GROUP_MA_ESCL='{c['gb']}',")
+        if kind == "friction":
+            mu = float(c.get("mu") or 0.2)
+            b.w("       ALGO_CONT='STANDARD', COEF_CONT=100.0,")
+            b.w(f"       FROTTEMENT='COULOMB', COULOMB={_fmt(mu)},")
+            b.w("       ALGO_FROT='STANDARD', COEF_FROT=100.0,")
+        elif kind == "noseparation":
+            # glued in the normal direction once closed, free to slide
+            b.w("       ALGO_CONT='STANDARD', COEF_CONT=100.0,")
+            b.w("       CONTACT_INIT='OUI',")
+        else:                                   # frictionless
+            b.w("       ALGO_CONT='STANDARD', COEF_CONT=100.0,")
+        b.w("       ),")
+    b.w("))")
+    b.w()
+    return "contact"
+
+
+def _ramp(b: CommBuild, n_steps: int, preload: bool) -> None:
+    """Time discretisation.
+
+    Two ramps when there is preload: the bolts are tightened first with no
+    external load, then the load is applied on top. Applying both at once
+    would let the joint be pushed open before it was ever clamped, which is
+    not the sequence the hardware sees and can fail to converge.
+    """
+    stops = "0.0, 1.0, 2.0" if preload else "0.0, 1.0"
+    b.w(f"tlist = DEFI_LIST_REEL(DEBUT=0.0, INTERVALLE=(")
+    if preload:
+        b.w(f"    _F(JUSQU_A=1.0, NOMBRE={max(2, n_steps // 2)}),")
+        b.w(f"    _F(JUSQU_A=2.0, NOMBRE={max(2, n_steps)}),")
+    else:
+        b.w(f"    _F(JUSQU_A=1.0, NOMBRE={max(2, n_steps)}),")
+    b.w("))")
+    b.w("tstep = DEFI_LIST_INST(METHODE='AUTO',")
+    b.w("                       DEFI_LIST=_F(LIST_INST=tlist),")
+    b.w("                       ECHEC=_F(SUBD_METHODE='MANUEL', SUBD_PAS=4,")
+    b.w("                                SUBD_NIVEAU=4))")
+    if preload:
+        b.w("# bolts tighten over [0,1] and hold; external load ramps over [1,2]")
+        b.w("fpre = DEFI_FONCTION(NOM_PARA='INST', PROL_DROITE='CONSTANT',")
+        b.w("                     VALE=(0.0, 0.0, 1.0, 1.0, 2.0, 1.0))")
+        b.w("fext = DEFI_FONCTION(NOM_PARA='INST', PROL_DROITE='CONSTANT',")
+        b.w("                     VALE=(0.0, 0.0, 1.0, 0.0, 2.0, 1.0))")
+    else:
+        b.w("fext = DEFI_FONCTION(NOM_PARA='INST', PROL_DROITE='CONSTANT',")
+        b.w("                     VALE=(0.0, 0.0, 1.0, 1.0))")
+    b.w(f"# ramp stops: {stops}")
+    b.w()
+
+
 def write_static(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
                  analysis: dict = None, ai: int = 1) -> CommBuild:
     b = CommBuild()
@@ -420,12 +528,18 @@ def write_static(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
     if load is None and preload is None:
         raise ValueError("Static analysis needs at least one load (force, pressure, gravity, or bolt preload).")
 
-    charges = [fix] + b.constraint_charges + ([load] if load else []) + ([preload] if preload else [])
-    excit = ", ".join(f"_F(CHARGE={c})" for c in charges)
-    b.w("res = MECA_STATIQUE(MODELE=model, CHAM_MATER=chmat,")
-    b.w(f"                    EXCIT=({excit},),{_cara_arg(b)}")
-    b.w("                    SOLVEUR=_F(METHODE='MUMPS'))")
-    b.w()
+    contacts = active_contacts(setup, mesh_stats)
+    nonlinear = needs_nonlinear(contacts)
+    if nonlinear:
+        _write_nonlinear_static(b, fix, load, preload, contacts, analysis)
+    else:
+        charges = ([fix] + b.constraint_charges + ([load] if load else [])
+                   + ([preload] if preload else []))
+        excit = ", ".join(f"_F(CHARGE={c})" for c in charges)
+        b.w("res = MECA_STATIQUE(MODELE=model, CHAM_MATER=chmat,")
+        b.w(f"                    EXCIT=({excit},),{_cara_arg(b)}")
+        b.w("                    SOLVEUR=_F(METHODE='MUMPS'))")
+        b.w()
     vol_restrict = ""
     if getattr(b, "has_beams", False):
         # stress recovery is a solid-element concept; beams get EFGE below
@@ -507,6 +621,37 @@ def _optional(b: CommBuild, comment: str, body) -> None:
     b.w(f"    print('Lattice: skipped {comment} —', _e)")
     b.w()
 
+
+
+def _write_nonlinear_static(b: CommBuild, fix, load, preload, contacts, analysis):
+    """Incremental static with contact.
+
+    Small strain, small displacement (the default PETIT deformation): the
+    nonlinearity here is the contact status, not the geometry. Anything that
+    actually needs large rotation is outside what this tool claims to do.
+    """
+    cvar = _contact_defi(b, contacts)
+    cfg = (analysis or {}).get("config", {}) or {}
+    _ramp(b, int(cfg.get("contact_steps") or 8), preload is not None)
+
+    excit = [f"_F(CHARGE={fix})"] + [f"_F(CHARGE={c})" for c in b.constraint_charges]
+    if preload:
+        excit.append(f"_F(CHARGE={preload}, FONC_MULT=fpre)"
+                     if preload else "")
+    if load:
+        excit.append(f"_F(CHARGE={load}, FONC_MULT=fext)")
+    excit = [e for e in excit if e]
+
+    b.w("res = STAT_NON_LINE(MODELE=model, CHAM_MATER=chmat,")
+    b.w(f"                    EXCIT=({', '.join(excit)},),{_cara_arg(b)}")
+    if cvar:
+        b.w(f"                    CONTACT={cvar},")
+    b.w("                    COMPORTEMENT=_F(RELATION='ELAS', DEFORMATION='PETIT'),")
+    b.w("                    INCREMENT=_F(LIST_INST=tstep),")
+    b.w("                    NEWTON=_F(REAC_ITER=1),")
+    b.w("                    CONVERGENCE=_F(RESI_GLOB_RELA=1e-6, ITER_GLOB_MAXI=30),")
+    b.w("                    SOLVEUR=_F(METHODE='MUMPS'))")
+    b.w()
 
 def write_modal(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
                 analysis: dict = None, ai: int = 1) -> CommBuild:

@@ -125,6 +125,44 @@ const A = {
     A.mutate(() => {});
     A.pickFaces(bl, "side_a_faces");
   },
+  /** Turn the interfaces found at import into editable contacts. */
+  detectContacts() {
+    const geo = S.project.geometry;
+    const pairs = geo.contact_pairs || [];
+    const setup = S.project.setup;
+    setup.contacts ||= [];
+    if (!pairs.length) {
+      if (geo.fragmented) {
+        logLine("This assembly was imported CONJOINED: coincident faces were "
+              + "merged, so the parts share nodes and are already bonded. "
+              + "Re-import with separate parts to define sliding contact.",
+                "warnln");
+      } else {
+        logLine("No touching faces were found between parts.", "warnln");
+      }
+      return;
+    }
+    const seen = new Set(setup.contacts.map(
+      (c) => (c.faces_a || []).join() + "|" + (c.faces_b || []).join()));
+    let made = 0;
+    for (const pr of pairs) {
+      const key = pr.faces_a.join() + "|" + pr.faces_b.join();
+      if (seen.has(key)) continue;
+      const nm = (t) => geo.solids.find((x) => x.tag === t)?.name || ("Solid " + t);
+      setup.contacts.push({
+        id: uid(), name: nm(pr.solids[0]) + " \u2194 " + nm(pr.solids[1]),
+        kind: "bonded", mu: 0.2, solids: pr.solids,
+        faces_a: pr.faces_a, faces_b: pr.faces_b, area: pr.area,
+      });
+      made++;
+    }
+    A.mutate(() => {});
+    logLine(made
+      ? "Detected " + made + " contact interface(s), all set to bonded. "
+        + "Change any that can slide or separate."
+      : "Every detected interface already has a contact.");
+  },
+
   addTie() {
     const t = { id: uid(), name: `Tie ${S.project.setup.ties.length + 1}`,
                 slave_faces: [], master_solid: null };
@@ -741,7 +779,7 @@ function nextCopyName(list, base) {
 }
 
 const SINGULAR = { bolts: "bolt", ties: "tie", probes: "probe",
-                   supports: "support", loads: "load" };
+                   supports: "support", loads: "load", contacts: "contact" };
 document.getElementById("pickCancel").addEventListener("click", () => {
   viewer.endPick();
   pickCtx = null;
@@ -1218,7 +1256,9 @@ document.getElementById("newForm").addEventListener("submit", async (e) => {
   if (!name || !file) return;
   status.textContent = "Uploading…";
   try {
-    const { id, job } = await api.upload("/api/projects", { name, step: file });
+    const assembly = document.getElementById("npAssembly")?.value || "bonded";
+    const { id, job } = await api.upload("/api/projects",
+                                         { name, step: file, assembly });
     status.textContent = "Importing geometry…";
     const poll = async () => {
       const j = await api.get(`/api/jobs/${job}`);
@@ -1262,7 +1302,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.15.0";
+const UI_BUILD = "0.16.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;

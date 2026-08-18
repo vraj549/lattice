@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.16.0
+
+Contact, and CalculiX as a second solver.
+
+### Contact — so preload means something
+
+You were right that a bolt preload in a fully bonded model does almost nothing.
+A bonded interface can neither separate nor slide, so the clamp load has no
+job to do and joint slip cannot be assessed at all. That is now fixed at the
+root.
+
+`occ.fragment()` merges coincident faces into one shared face — which is what
+makes an assembly bonded and conformal, and also why there was nothing there to
+slide. So the assembly treatment is now a choice at import:
+
+- **Bonded** (default, unchanged) — merge touching faces, parts share nodes.
+- **Separate parts** — keep both surfaces, and detect the interfaces between
+  them by matching area and centroid.
+
+Detected interfaces become **Contacts** in the tree, each with a behaviour:
+
+| Behaviour | Can gap | Can slide | Solve |
+|---|---|---|---|
+| Bonded | no | no | linear (`LIAISON_MAIL` tie) |
+| No separation | no | yes | nonlinear |
+| Frictionless | yes | freely | nonlinear |
+| Frictional | yes | above μN | nonlinear |
+
+Anything that can slide or separate makes the static solve nonlinear —
+`STAT_NON_LINE` with `DEFI_CONTACT` on code_aster, `*CONTACT PAIR` on
+CalculiX — because whether the surfaces touch is part of the answer.
+
+**Preload is applied before the external load.** With contact present the run
+uses two ramps: the bolts tighten over the first step and hold, then the load
+comes on over the second. Applying both at once lets the joint be pushed open
+before it was ever clamped — not the sequence the hardware sees, and a good way
+to lose convergence.
+
+Modal and harmonic are linear by definition and use the bonded state; that is
+stated in the panel rather than left to be discovered.
+
+### CalculiX
+
+A second solver, because code_aster only runs through WSL or Docker and so
+does not exist on a Mac at all. CalculiX installs from a package manager, and
+Lattice now detects it, offers it per analysis in **Analysis Settings →
+Solver**, writes its deck, and reads its `.frd` results into the same viewer.
+
+Covers **static and modal**, including contact. Bolts, harmonic and random stay
+on code_aster, and choosing an engine that cannot run a study says so rather
+than failing later.
+
+Validated end to end against closed-form results, not just "it ran":
+
+- Cantilever tip deflection vs `PL³/3EI` plus shear: **0.00 %** difference.
+- First bending frequency vs `1.875²/2π · √(EI/mL⁴)`: within 6 %.
+- Both are tests, not one-off checks.
+
+Distributed loads are applied as consistent nodal forces integrated from the
+element shape functions at mesh time — CalculiX addresses face loads by element
+face number, which a mesh exported from physical groups does not carry. The
+weights integrate to the true face area exactly (verified to 1e-9).
+
+### Also
+
+- Bolt sizes stop at M8.
+- Frictionless supports and pressure loads are refused on CalculiX with the
+  reason, rather than approximated.
+
 ## 0.15.0
 
 Production audit — a line-by-line pass over every file — plus the first batch

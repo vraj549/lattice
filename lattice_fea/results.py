@@ -249,3 +249,53 @@ def parse_fonction(text: str) -> dict:
         return {"freq": xs.tolist(), "module": ys[:, 0].tolist(),
                 "phase": ys[:, 1].tolist()}
     return {"freq": xs.tolist(), "module": ys[:, 0].tolist(), "phase": []}
+
+
+# --------------------------------------------------------------------------
+# CalculiX
+# --------------------------------------------------------------------------
+
+def build_results_ccx(run_dir: str, jobname: str = "job") -> dict:
+    """Package a CalculiX run the same way build_results does for code_aster.
+
+    Presenting both solvers through one shape is what lets the whole results
+    UI — contours, probes, exports — work regardless of which one ran.
+    """
+    from .frd_reader import FrdFile
+
+    frd = os.path.join(run_dir, f"{jobname}.frd")
+    meta = {"fields": [], "tables": {}, "frf": [], "warnings": [], "engine": "ccx"}
+    if not os.path.isfile(frd):
+        meta["warnings"].append("CalculiX wrote no .frd file — see the log.")
+        return meta
+
+    f = FrdFile(frd)
+    if not len(f.nodes):
+        meta["warnings"].append("The .frd file contains no nodes.")
+        return meta
+
+    disp_blocks = [b for b in f.blocks if b["name"].upper().startswith("DISP")]
+    stress_blocks = [b for b in f.blocks if b["name"].upper().startswith("STRESS")]
+
+    if disp_blocks:
+        meta["fields"].append({
+            "name": "DISP", "label": "Displacement", "kind": "DEPL", "part": "R",
+            "comps": ["DX", "DY", "DZ"],
+            "steps": [{"key": str(i), "ndt": i + 1, "value": b["step"]}
+                      for i, b in enumerate(disp_blocks)],
+        })
+    if stress_blocks:
+        meta["fields"].append({
+            "name": "STRESS", "label": "Stress tensor", "kind": "SIGM", "part": "R",
+            "comps": [c or f"S{i}" for i, c in enumerate(stress_blocks[0]["comps"])],
+            "steps": [{"key": str(i), "ndt": i + 1, "value": b["step"]}
+                      for i, b in enumerate(stress_blocks)],
+        })
+
+    freqs = [b["step"] for b in disp_blocks if b["step"]]
+    if len(freqs) > 1:
+        meta["tables"]["modes"] = [{
+            "columns": ["NUME_MODE", "FREQ"],
+            "rows": [[i + 1, fr] for i, fr in enumerate(freqs)],
+        }]
+    return meta

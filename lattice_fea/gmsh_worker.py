@@ -25,7 +25,8 @@ def log(msg: str) -> None:
 def op_import(a: dict) -> None:
     from . import geometry
     log("Importing STEP …")
-    meta = geometry.import_step(a["step"], a["brep"])
+    meta = geometry.import_step(a["step"], a["brep"],
+                                fragment=a.get("fragment", True))
     log(f"  {len(meta['solids'])} solid(s), {len(meta['faces'])} faces, "
         f"{len(meta['interfaces'])} bonded interface(s)")
     log("Tessellating for display …")

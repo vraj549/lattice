@@ -203,3 +203,33 @@ def run_solver(cfg: SolverConfig, jobdir: str, job: Job) -> int:
             reap(proc)
     job.append(f"[exit code {rc}]")
     return rc
+
+
+def run_ccx(cfg: SolverConfig, jobdir: str, job: Job, jobname: str = "job") -> int:
+    """Run CalculiX in `jobdir`. ccx takes the deck name without .inp."""
+    argv = shlex.split(cfg.ccx_cmd) + ["-i", jobname]
+    job.append(f"$ {' '.join(argv)}  (in {jobdir})")
+    env = dict(os.environ)
+    # ccx reads its thread count from the environment, not a flag
+    env["OMP_NUM_THREADS"] = str(max(1, int(cfg.ncpus)))
+    env["CCX_NPROC_STIFFNESS"] = env["OMP_NUM_THREADS"]
+    logfile = os.path.join(jobdir, "log.txt")
+    rc = -1
+    with open(logfile, "w", encoding="utf-8", errors="replace") as lf:
+        proc = popen_isolated(argv, cwd=jobdir, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True,
+                              errors="replace", bufsize=1, env=env)
+        job._proc = proc
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                try:
+                    lf.write(line)
+                except Exception:  # noqa: BLE001
+                    pass
+                job.append(line)
+            rc = proc.wait()
+        finally:
+            reap(proc)
+    job.append(f"[exit code {rc}]")
+    return rc

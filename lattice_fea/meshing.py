@@ -108,6 +108,17 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
 
         gmsh.option.setNumber("Mesh.SaveAll", 0)
         gmsh.write(unv_path)
+        # An Abaqus deck as well, for CalculiX. Same mesh, same groups —
+        # written here so both solvers are always looking at the identical
+        # discretisation and a result cannot depend on which one ran.
+        try:
+            gmsh.option.setNumber("Mesh.SaveGroupsOfNodes", 1)
+            inp_path = unv_path.rsplit(".", 1)[0] + ".inp"
+            gmsh.write(inp_path)
+            _strip_surface_elements(inp_path)
+        except Exception as e:                      # noqa: BLE001
+            progress(f"warning: could not write the CalculiX mesh ({e}); "
+                     "code_aster is unaffected")
 
         stats = _stats(gmsh, order)
         stats["wall_s"] = round(time.time() - t0, 1)
@@ -136,6 +147,18 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
         # let the stale-mesh guard pass for a group that does not exist,
         # and the solver then aborted on GROUP_MA not found.
         stats["face_groups"] = sorted(written)
+
+        # Consistent nodal loads for every face group.
+        #
+        # CalculiX applies a distributed face load through element-face
+        # numbers, which a mesh written from physical groups does not carry.
+        # Integrating the shape functions here instead gives the exact
+        # equivalent nodal forces for a uniform unit traction, and works for
+        # any solver that takes point loads. Corner nodes of a quadratic
+        # triangle legitimately get zero — that is what the shape functions
+        # integrate to, not a bug.
+        stats["face_nodes"] = _face_group_weights(gmsh, written)
+        stats["face_elems"] = _face_group_element_faces(gmsh, written)
 
         skin = _skin(gmsh)
         conn_islands = _count_islands(gmsh)
@@ -169,6 +192,14 @@ def _collect_face_sets(setup: dict) -> dict:
     for i, t in enumerate(setup.get("ties", [])):
         if t.get("slave_faces"):
             sets[f"TIE{i + 1}"] = [int(x) for x in t["slave_faces"]]
+    # contact interfaces: one group per side, so the solver can pair them
+    for i, c in enumerate(setup.get("contacts", [])):
+        if c.get("suppressed"):
+            continue
+        if c.get("faces_a"):
+            sets[f"CTA{i + 1}"] = [int(x) for x in c["faces_a"]]
+        if c.get("faces_b"):
+            sets[f"CTB{i + 1}"] = [int(x) for x in c["faces_b"]]
     return sets
 
 
@@ -393,3 +424,130 @@ def _count_islands(gmsh) -> int:
             break
         label = nxt
     return max(1, int(np.unique(label).size))
+
+
+def _face_group_weights(gmsh, group_names) -> dict:
+    """{group: {node_tag: area_weight}} for a uniform unit traction.
+
+    T3: each corner gets A/3.
+    T6: corners get 0 and mid-side nodes A/3 — the standard consistent load
+    vector for a quadratic triangle under uniform pressure.
+    """
+    out = {}
+    want = set(group_names)
+    for dim, tag in gmsh.model.getPhysicalGroups(2):
+        name = gmsh.model.getPhysicalName(dim, tag)
+        if name not in want:
+            continue
+        weights = {}
+        for ent in gmsh.model.getEntitiesForPhysicalGroup(dim, tag):
+            etypes, etags, enodes = gmsh.model.mesh.getElements(2, int(ent))
+            for et, en in zip(etypes, enodes):
+                npery = {2: 3, 9: 6}.get(int(et))
+                if not npery:
+                    continue
+                conn = np.asarray(en, dtype=np.int64).reshape(-1, npery)
+                pts = {}
+                for t in np.unique(conn):
+                    c = gmsh.model.mesh.getNode(int(t))[0]
+                    pts[int(t)] = np.asarray(c, dtype=float)
+                for row in conn:
+                    p0, p1, p2 = (pts[int(row[k])] for k in range(3))
+                    area = 0.5 * float(np.linalg.norm(np.cross(p1 - p0, p2 - p0)))
+                    if area <= 0:
+                        continue
+                    carry = row[3:] if npery == 6 else row[:3]
+                    share = area / 3.0
+                    for t in carry:
+                        weights[int(t)] = weights.get(int(t), 0.0) + share
+        if weights:
+            out[name] = weights
+    return out
+
+
+# Abaqus element types gmsh emits for 2D physical groups. CalculiX reads a
+# bare CPS/CPE element as a genuine plane-stress or plane-strain element and
+# then refuses the model because it does not lie in z=0. The surfaces are only
+# there to carry node sets for boundary conditions, so the elements go and the
+# node sets stay.
+_SURFACE_TYPES = ("CPS3", "CPS4", "CPS6", "CPS8", "CPE3", "CPE4", "CPE6",
+                  "CPE8", "S3", "S4", "S6", "S8", "STRI65", "T3D2", "T3D3")
+
+
+def _strip_surface_elements(path: str) -> None:
+    """Rewrite an Abaqus deck keeping solid elements and every node set."""
+    out, skip = [], False
+    dropped = set()
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            head = line.strip().upper()
+            if head.startswith("*"):
+                if head.startswith("*ELEMENT"):
+                    etype = ""
+                    for part in line.split(","):
+                        if "TYPE" in part.upper():
+                            etype = part.split("=")[-1].strip().upper()
+                    skip = etype in _SURFACE_TYPES
+                    if skip:
+                        for part in line.split(","):
+                            if "ELSET" in part.upper():
+                                dropped.add(part.split("=")[-1].strip())
+                elif head.startswith("*ELSET"):
+                    name = line.split("=")[-1].strip()
+                    skip = name in dropped
+                else:
+                    skip = False
+            if not skip:
+                out.append(line)
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(out)
+
+
+# Abaqus/CalculiX face numbering for a tetrahedron, by corner nodes. Contact
+# masters must be element FACES, not loose surface elements, so each boundary
+# triangle has to be traced back to the tet it belongs to and told which of
+# that tet's four faces it is.
+_TET_FACES = ((0, 1, 2), (0, 3, 1), (1, 3, 2), (2, 3, 0))
+
+
+def _face_group_element_faces(gmsh, group_names) -> dict:
+    """{group: [[element_tag, face_number], ...]} for solid element faces."""
+    want = set(group_names)
+    if not want:
+        return {}
+
+    # every tet face, keyed by its sorted corner nodes
+    lookup = {}
+    for dim, tag in gmsh.model.getEntities(3):
+        etypes, etags, enodes = gmsh.model.mesh.getElements(3, int(tag))
+        for et, ets, en in zip(etypes, etags, enodes):
+            npery = {4: 4, 11: 10}.get(int(et))
+            if not npery:
+                continue
+            conn = np.asarray(en, dtype=np.int64).reshape(-1, npery)
+            tags = np.asarray(ets, dtype=np.int64)
+            for row, etag in zip(conn, tags):
+                for fi, idx in enumerate(_TET_FACES):
+                    key = tuple(sorted(int(row[k]) for k in idx))
+                    lookup.setdefault(key, (int(etag), fi + 1))
+
+    out = {}
+    for dim, tag in gmsh.model.getPhysicalGroups(2):
+        name = gmsh.model.getPhysicalName(dim, tag)
+        if name not in want:
+            continue
+        faces = []
+        for ent in gmsh.model.getEntitiesForPhysicalGroup(dim, tag):
+            etypes, _, enodes = gmsh.model.mesh.getElements(2, int(ent))
+            for et, en in zip(etypes, enodes):
+                npery = {2: 3, 9: 6}.get(int(et))
+                if not npery:
+                    continue
+                conn = np.asarray(en, dtype=np.int64).reshape(-1, npery)
+                for row in conn:
+                    hit = lookup.get(tuple(sorted(int(row[k]) for k in range(3))))
+                    if hit:
+                        faces.append([hit[0], hit[1]])
+        if faces:
+            out[name] = faces
+    return out
