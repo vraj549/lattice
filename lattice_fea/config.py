@@ -99,6 +99,14 @@ class SolverConfig:
     host_ram_mb: int = 0
     vm_ram_mb: int = 0          # WSL VM total, when running through WSL
     ccx_cmd: str = ""           # CalculiX binary, when one is on PATH
+    # CalculiX threads. ONE by default, and that is a correctness decision,
+    # not caution: the multithreaded SPOOLES factorization in ccx returns
+    # silently wrong answers on some runs. Measured on a cantilever whose
+    # exact answer is known, same deck each time: 1 thread was right 14/14,
+    # 2 threads was wrong once in 14 (by 43 %), 3 threads four times in 14
+    # (by up to 52 %). Exit code 0 every time. Raise it only if you have
+    # verified your own build, via LATTICE_CCX_THREADS.
+    ccx_threads: int = 1
 
     def available(self) -> bool:
         return self.mode in ("native", "wsl", "docker")
@@ -116,6 +124,7 @@ class SolverConfig:
             "host_cores": self.host_cores, "host_ram_mb": self.host_ram_mb,
             "vm_ram_mb": self.vm_ram_mb,
             "ccx_cmd": self.ccx_cmd, "ccx": bool(self.ccx_cmd),
+            "ccx_threads": self.ccx_threads,
             "engines": self.engines(),
         }
 
@@ -217,6 +226,12 @@ def detect(workspace: str = ".") -> SolverConfig:
     cfg.memory_mb = _int_env(env, "LATTICE_MEMORY_MB", cfg.memory_mb, cfg)
     cfg.time_limit_s = _int_env(env, "LATTICE_TIME_LIMIT_S", cfg.time_limit_s, cfg)
     cfg.ncpus = _int_env(env, "LATTICE_NCPUS", cfg.ncpus, cfg)
+    cfg.ccx_threads = max(1, _int_env(env, "LATTICE_CCX_THREADS", cfg.ccx_threads, cfg))
+    if cfg.ccx_threads > 1:
+        cfg.notes.append(
+            f"CalculiX is set to {cfg.ccx_threads} threads. Its multithreaded "
+            "factorization has been observed to return wrong results without "
+            "any error; verify your build before trusting these runs.")
 
     explicitly_set = cfg.mode != "none" or "LATTICE_ASTER_MODE" in env or "mode" in file_cfg
     if explicitly_set and cfg.mode != "none":

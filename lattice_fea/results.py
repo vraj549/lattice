@@ -255,7 +255,9 @@ def parse_fonction(text: str) -> dict:
 # CalculiX
 # --------------------------------------------------------------------------
 
-def build_results_ccx(run_dir: str, jobname: str = "job") -> dict:
+def build_results_ccx(run_dir: str, jobname: str = "job",
+                      applied=None, support_nodes=None,
+                      model_diag=None) -> dict:
     """Package a CalculiX run the same way build_results does for code_aster.
 
     Presenting both solvers through one shape is what lets the whole results
@@ -292,6 +294,80 @@ def build_results_ccx(run_dir: str, jobname: str = "job") -> dict:
                       for i, b in enumerate(stress_blocks)],
         })
 
+    # ---- equilibrium check ----
+    #
+    # A static solution must balance: the reactions at the supports have to
+    # add up to minus the applied load. It is cheap, needs no reference
+    # solution, and catches the one failure mode that has no other symptom —
+    # a factorization that quietly returns a corrupted answer and exits 0.
+    #
+    # Summed over the SUPPORTED nodes specifically. CalculiX's FORC field is
+    # the total nodal force, external included, so over the whole model it is
+    # zero by construction and would prove nothing.
+    if applied is not None and support_nodes and any(abs(v) > 0 for v in applied):
+        forc = next((b for b in f.blocks if b["name"].upper().startswith("FORC")), None)
+        if forc and forc["values"]:
+            want = {int(n) for n in support_nodes}
+            react = [0.0, 0.0, 0.0]
+            for tag, vals in forc["values"].items():
+                if int(tag) not in want:
+                    continue
+                for k in range(min(3, len(vals))):
+                    react[k] += vals[k]
+            scale = max(abs(v) for v in applied) or 1.0
+            resid = [react[k] + applied[k] for k in range(3)]
+            rel = max(abs(r) for r in resid) / scale
+            meta["equilibrium"] = {"applied": applied, "reaction": react,
+                                   "residual_rel": rel}
+            if rel > 0.02:
+                meta["warnings"].append(
+                    f"EQUILIBRIUM CHECK FAILED: support reactions do not balance "
+                    f"the applied load ({rel * 100:.1f}% residual). Applied "
+                    f"{_vec(applied)} N, reactions {_vec(react)} N. Do not use "
+                    f"these results. The usual cause is a multithreaded "
+                    f"factorization returning a corrupted solution — set "
+                    f"LATTICE_CCX_THREADS=1 and run again.")
+
+    # A second, independent check: a node held by a fixed support must not
+    # have moved. Equilibrium alone does not catch everything — a corrupted
+    # solve can add a rigid-body component, which balances perfectly and is
+    # still wrong. Between them these cover the cases seen in testing, but
+    # neither is a proof: the real defence is running the solver in a
+    # configuration that does not corrupt solutions in the first place.
+    if support_nodes and disp_blocks:
+        comps, u = f.field("DISP") or ([], None)
+        if u is not None and len(u):
+            want = {int(n) for n in support_nodes}
+            idx = [f.tag_index[t] for t in want if t in f.tag_index]
+            if idx:
+                held = float(np.nanmax(np.abs(u[idx])))
+                moved = float(np.nanmax(np.abs(u)))
+                meta["fixed_dof_drift"] = held
+                if moved > 0 and held > 1e-3 * moved:
+                    meta["warnings"].append(
+                        f"FIXED SUPPORTS MOVED: a node that is held to zero "
+                        f"displaced {held:.3g} mm, against {moved:.3g} mm peak "
+                        f"in the model. The solution does not satisfy its own "
+                        f"boundary conditions. Do not use these results; set "
+                        f"LATTICE_CCX_THREADS=1 and run again.")
+
+    # Linear small-displacement theory quietly stops applying long before it
+    # stops producing numbers. A load ten times too large returns a deflection
+    # ten times too large and looks entirely normal, so the scale of the
+    # answer is compared against the size of the part.
+    if model_diag and disp_blocks:
+        got = f.field("DISP")
+        if got and got[1] is not None and len(got[1]):
+            peak = float(np.nanmax(np.abs(got[1])))
+            meta["peak_disp"] = peak
+            if peak > 0.1 * model_diag:
+                meta["warnings"].append(
+                    f"Peak displacement is {peak:.4g} mm on a model {model_diag:.4g} mm "
+                    f"across ({100 * peak / model_diag:.0f} % of its size). This is a "
+                    f"LINEAR small-displacement analysis: it assumes the shape barely "
+                    f"changes, so at this magnitude the result is arithmetic, not "
+                    f"physics. Check the load magnitude and units.")
+
     freqs = [b["step"] for b in disp_blocks if b["step"]]
     if len(freqs) > 1:
         meta["tables"]["modes"] = [{
@@ -299,3 +375,7 @@ def build_results_ccx(run_dir: str, jobname: str = "job") -> dict:
             "rows": [[i + 1, fr] for i, fr in enumerate(freqs)],
         }]
     return meta
+
+
+def _vec(v) -> str:
+    return "(" + ", ".join(f"{x:.4g}" for x in v) + ")"

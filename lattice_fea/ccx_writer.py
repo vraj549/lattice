@@ -117,6 +117,29 @@ def _boundaries(d: Deck, analysis: dict, ai: int) -> None:
     d.w()
 
 
+def applied_total(analysis: dict, mesh_stats: dict) -> list:
+    """Resultant of every face load, in N. Used to check the solve balances."""
+    tot = [0.0, 0.0, 0.0]
+    for l in analysis.get("loads", []):
+        if l.get("type") == "force" and l.get("faces"):
+            for k, key in enumerate(("fx", "fy", "fz")):
+                tot[k] += float(l.get(key, 0) or 0)
+    return tot
+
+
+def support_nodes(analysis: dict, mesh_stats: dict) -> list:
+    """Every node held by a support — where the reactions live."""
+    face_nodes = mesh_stats.get("face_nodes") or {}
+    ai = 1
+    out = []
+    for i, s in enumerate(analysis.get("supports", [])):
+        if not s.get("faces"):
+            continue
+        w = face_nodes.get(group_name("SUP", ai, i + 1)) or {}
+        out.extend(int(n) for n in w)
+    return out
+
+
 def _cloads(d: Deck, analysis: dict, ai: int, meta: dict, mesh_stats: dict) -> bool:
     """Consistent nodal forces for every face load. Returns True if any."""
     face_nodes = mesh_stats.get("face_nodes") or {}

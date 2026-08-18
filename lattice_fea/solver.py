@@ -210,9 +210,20 @@ def run_ccx(cfg: SolverConfig, jobdir: str, job: Job, jobname: str = "job") -> i
     argv = shlex.split(cfg.ccx_cmd) + ["-i", jobname]
     job.append(f"$ {' '.join(argv)}  (in {jobdir})")
     env = dict(os.environ)
-    # ccx reads its thread count from the environment, not a flag
-    env["OMP_NUM_THREADS"] = str(max(1, int(cfg.ncpus)))
+    # ccx reads its thread count from the environment, not a flag. This is
+    # deliberately NOT cfg.ncpus — see SolverConfig.ccx_threads.
+    env["OMP_NUM_THREADS"] = str(max(1, int(cfg.ccx_threads)))
     env["CCX_NPROC_STIFFNESS"] = env["OMP_NUM_THREADS"]
+    env["CCX_NPROC_EQUATION_SOLVER"] = env["OMP_NUM_THREADS"]
+    # ccx APPENDS to an existing .frd, so a stale one from a previous attempt
+    # would be read back as if it were this run's answer.
+    for ext in ("frd", "dat", "sta", "cvg", "12d"):
+        stale = os.path.join(jobdir, f"{jobname}.{ext}")
+        if os.path.exists(stale):
+            try:
+                os.unlink(stale)
+            except OSError:
+                pass
     logfile = os.path.join(jobdir, "log.txt")
     rc = -1
     with open(logfile, "w", encoding="utf-8", errors="replace") as lf:

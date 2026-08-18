@@ -301,7 +301,11 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             if engine == "ccx":
                 rc = run_ccx(solver_cfg, run_dir, job, "job")
                 job.append("Parsing results …")
-                meta = results.build_results_ccx(run_dir, "job")
+                meta = results.build_results_ccx(
+                    run_dir, "job",
+                    applied=ccx_writer.applied_total(analysis, mesh_stats),
+                    support_nodes=ccx_writer.support_nodes(analysis, mesh_stats),
+                    model_diag=geo.get("diag"))
             else:
                 rc = run_solver(solver_cfg, run_dir, job)
                 job.append("Parsing results …")

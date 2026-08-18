@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.16.1
+
+Stress-testing CalculiX found a correctness bug, in CalculiX.
+
+### Multithreaded CalculiX returns silently wrong answers
+
+Re-running one unchanged deck for a cantilever whose exact answer is known:
+
+| threads | runs | wrong | worst error |
+|---|---|---|---|
+| 1 | 14 | 0 | 0.00 % |
+| 2 | 14 | 1 | 43 % |
+| 3 | 14 | 4 | 52 % |
+| 4, 6, 8 | many | frequent | up to 68 % |
+
+Same input, same machine, exit code 0 every time, nothing in the log. The
+factorization simply produces a corrupted solution on some runs.
+
+Lattice was setting `OMP_NUM_THREADS` to the machine's core count, so this
+would have produced wrong results roughly a third of the time on an 8-core Mac.
+**CalculiX now runs single-threaded by default.** This is a correctness
+setting, not a performance one, and there is a test asserting it.
+`LATTICE_CCX_THREADS` can raise it, and says loudly what you are accepting.
+
+Single-threaded is exact at every scale tested — 4k to 107k nodes (320k DOF),
+0.00 % against beam theory throughout.
+
+### Three checks on every CalculiX result
+
+Wrong answers that exit cleanly need to be caught, not assumed away:
+
+- **Equilibrium** — support reactions must balance the applied load. Summed
+  over the supported nodes specifically: CalculiX's nodal force field includes
+  applied loads, so over the whole model it is zero by construction and proves
+  nothing.
+- **Fixed supports must not move** — a corrupted solve can add a rigid-body
+  component, which balances perfectly and is still wrong.
+- **Small-displacement sanity** — peak displacement against the size of the
+  part. Linear theory stops applying long before it stops producing numbers;
+  a load 10× too large returns a deflection 10× too large and looks normal.
+
+Together the first two caught 2 of 5 corrupted runs with no false alarms in 13
+clean ones. That is a backstop, not a proof — which is exactly why the thread
+default is the actual fix.
+
+### Also fixed
+
+- **CalculiX appends to an existing `.frd`**, so a stale file from a previous
+  attempt was being read back as the current answer. This invalidated my own
+  first determinism test, which is how the bug hid. Stale outputs are now
+  removed before every run.
+- Failure modes verified to fail loudly: no supports, no material, ν = 0.5,
+  frictionless supports and pressure loads on CalculiX are all refused at deck
+  time with the reason, before any solver time is spent.
+
 ## 0.16.0
 
 Contact, and CalculiX as a second solver.

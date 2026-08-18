@@ -201,3 +201,72 @@ def test_frictional_contact_solves(tmp_path):
     assert p.returncode == 0, p.stdout[-2000:]
     comps, u = FrdFile(os.path.join(run, "job.frd")).field("DISP")
     assert np.isfinite(u).any()
+
+
+def test_calculix_defaults_to_one_thread():
+    """CalculiX must not be run multithreaded by default.
+
+    Measured on a cantilever with a known exact answer, re-running one
+    unchanged deck: 1 thread was right 14/14, while 2, 3, 4, 6 and 8 threads
+    each returned silently corrupted solutions on some runs — errors up to
+    68 %, exit code 0, nothing in the log. This is a correctness setting, not
+    a performance one, so it is asserted rather than left to a comment.
+    """
+    from lattice_fea.config import SolverConfig, detect
+    assert SolverConfig().ccx_threads == 1
+    cfg = detect("workspace")
+    assert cfg.ccx_threads == 1
+
+
+def test_solution_checks_flag_a_corrupted_result(tmp_path):
+    """The equilibrium and fixed-DOF checks must fire on a bad solution and
+    stay quiet on a good one."""
+    from lattice_fea import results as R
+
+    class FakeBlock(dict):
+        pass
+
+    def fake(disp, forc, tags):
+        f = type("F", (), {})()
+        f.blocks = [{"name": "DISP", "step": 1.0, "comps": ["D1", "D2", "D3"],
+                     "values": dict(zip(tags, disp))},
+                    {"name": "FORC", "step": 1.0, "comps": ["F1", "F2", "F3"],
+                     "values": dict(zip(tags, forc))}]
+        f.node_tags = list(tags)
+        f.nodes = np.zeros((len(tags), 3))
+        f.tag_index = {t: i for i, t in enumerate(tags)}
+        f.field = lambda name, step=0: (
+            ["D1", "D2", "D3"],
+            np.asarray(disp if name.upper().startswith("DISP") else forc))
+        return f
+
+    tags = [1, 2, 3]
+    good_disp = [[0, 0, 0], [0, 0, -1.0], [0, 0, -2.0]]
+    good_forc = [[0, 0, 500.0], [0, 0, 0], [0, 0, 0]]      # reaction balances
+    bad_forc = [[0, 0, 10.0], [0, 0, 0], [0, 0, 0]]        # does not
+    bad_disp = [[0, 0, -0.5], [0, 0, -1.0], [0, 0, -2.0]]  # support moved
+
+    monkey = R.__dict__
+    orig = monkey.get("_frd_for_test")
+
+    def check(disp, forc):
+        import lattice_fea.frd_reader as fr
+        real = fr.FrdFile
+        fr.FrdFile = lambda *a, **k: fake(disp, forc, tags)
+        try:
+            p = tmp_path / "job.frd"
+            p.write_text("stub")
+            return R.build_results_ccx(str(tmp_path), "job",
+                                       applied=[0, 0, -500.0],
+                                       support_nodes=[1])
+        finally:
+            fr.FrdFile = real
+
+    ok = check(good_disp, good_forc)
+    assert not any("EQUILIBRIUM" in w or "FIXED SUPPORTS" in w for w in ok["warnings"])
+
+    unbalanced = check(good_disp, bad_forc)
+    assert any("EQUILIBRIUM" in w for w in unbalanced["warnings"])
+
+    drifted = check(bad_disp, good_forc)
+    assert any("FIXED SUPPORTS" in w for w in drifted["warnings"])
