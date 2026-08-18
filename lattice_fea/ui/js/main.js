@@ -1169,7 +1169,11 @@ function showResources() {
   const tight = ceiling && sv.memory_mb > ceiling * 0.85;
 
   const rows = [
-    ["Solver mode", sv.mode + (sv.wsl_distro ? ` · ${sv.wsl_distro}` : "")],
+    ["Engines available",
+     (sv.engines || []).map((e) => e.label).join(", ") || "none"],
+    ["code_aster mode", sv.mode + (sv.wsl_distro ? ` · ${sv.wsl_distro}` : "")],
+    ...(sv.ccx ? [["CalculiX", `${sv.ccx_cmd} · ${sv.ccx_threads} thread`
+        + (sv.ccx_threads === 1 ? " (multithreaded ccx can return wrong results)" : "s")]] : []),
     ["Threads given to the solver", `${sv.ncpus} of ${sv.host_cores || "?"} cores`],
     ["Memory limit for the solver", gb(sv.memory_mb)],
     [wsl ? "RAM inside the WSL VM" : "RAM on this machine", gb(ceiling)],
@@ -1302,7 +1306,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.16.0";
+const UI_BUILD = "0.17.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;
@@ -1335,6 +1339,7 @@ function updateSolverChip() {
       res.hidden = true;
     }
   }
+  const engines = sv.engines || [];
   if (sv.demo) {
     chip.querySelector(".dot").className = "dot run";
     chipText.textContent = "DEMO SOLVER — results are fake";
@@ -1346,18 +1351,23 @@ function updateSolverChip() {
         "not computed. Never use them for engineering decisions.";
       document.getElementById("app").prepend(bar);
     }
-  } else if (sv.available) {
+  } else if (engines.length) {
+    // Whatever can actually run goes in the chip. Reporting only code_aster
+    // told a Mac with a working CalculiX that it had no solver at all.
     chip.querySelector(".dot").className = "dot ok";
-    chipText.textContent = `code_aster · ${sv.mode}${sv.wsl_distro ? " · " + sv.wsl_distro : ""}`;
+    chipText.textContent = engines.map((e) => e.label).join(" + ")
+      + (sv.mode === "wsl" && sv.wsl_distro ? ` · ${sv.wsl_distro}` : "");
   } else {
     chip.querySelector(".dot").className = "dot bad";
-    chipText.textContent = "no solver — demo mode";
+    chipText.textContent = "no solver";
   }
-  chip.title = sv.detail + (sv.notes?.length ? "\n" + sv.notes.join("\n") : "");
+  chip.title = (engines.length
+    ? engines.map((e) => `${e.label}: ${e.detail} — ${e.types.join(", ")}`).join("\n")
+    : sv.detail) + (sv.notes?.length ? "\n" + sv.notes.join("\n") : "");
   const ov = document.getElementById("ovSolver");
   if (ov) {
-    ov.textContent = sv.available
-      ? `Solver: ${sv.detail}`
+    ov.textContent = engines.length
+      ? `Solvers: ${engines.map((e) => `${e.label} (${e.types.join(", ")})`).join(" · ")}`
       : `⚠ ${sv.detail} — meshing and setup still work; see README to enable solving.`;
   }
 }

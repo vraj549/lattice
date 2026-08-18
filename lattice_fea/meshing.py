@@ -159,6 +159,7 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
         # integrate to, not a bug.
         stats["face_nodes"] = _face_group_weights(gmsh, written)
         stats["face_elems"] = _face_group_element_faces(gmsh, written)
+        stats["face_normals"] = _face_group_normals(gmsh, written)
 
         skin = _skin(gmsh)
         conn_islands = _count_islands(gmsh)
@@ -460,6 +461,14 @@ def _face_group_weights(gmsh, group_names) -> dict:
                     share = area / 3.0
                     for t in carry:
                         weights[int(t)] = weights.get(int(t), 0.0) + share
+                    # Corner nodes of a quadratic face carry no load, but they
+                    # ARE on the face. Recording them with zero weight keeps
+                    # the load exact while giving callers the complete node
+                    # set — the reaction sum was missing them, and came out
+                    # 0.6 % short of the applied load for that reason alone.
+                    if npery == 6:
+                        for t in row[:3]:
+                            weights.setdefault(int(t), 0.0)
         if weights:
             out[name] = weights
     return out
@@ -550,4 +559,51 @@ def _face_group_element_faces(gmsh, group_names) -> dict:
                         faces.append([hit[0], hit[1]])
         if faces:
             out[name] = faces
+    return out
+
+
+def _face_group_normals(gmsh, group_names) -> dict:
+    """{group: {normal, flatness}} — the area-weighted mean unit normal, and
+    how close the group is to being one flat plane.
+
+    A frictionless (symmetry) support constrains motion along the surface
+    normal. On a plane that is one direction for the whole face; on a curved
+    face it differs node to node, and a solver that takes one vector per node
+    set cannot express it. `flatness` is the minimum of n_i . n_mean over the
+    group, so 1.0 is exactly planar — enough to decide honestly whether the
+    constraint can be written at all.
+    """
+    out = {}
+    want = set(group_names)
+    for dim, tag in gmsh.model.getPhysicalGroups(2):
+        name = gmsh.model.getPhysicalName(dim, tag)
+        if name not in want:
+            continue
+        acc = np.zeros(3)
+        normals, areas = [], []
+        for ent in gmsh.model.getEntitiesForPhysicalGroup(dim, tag):
+            etypes, _, enodes = gmsh.model.mesh.getElements(2, int(ent))
+            for et, en in zip(etypes, enodes):
+                npery = {2: 3, 9: 6}.get(int(et))
+                if not npery:
+                    continue
+                conn = np.asarray(en, dtype=np.int64).reshape(-1, npery)
+                pts = {int(t): np.asarray(gmsh.model.mesh.getNode(int(t))[0], dtype=float)
+                       for t in np.unique(conn[:, :3])}
+                for row in conn:
+                    p0, p1, p2 = (pts[int(row[k])] for k in range(3))
+                    n = np.cross(p1 - p0, p2 - p0)
+                    a = 0.5 * float(np.linalg.norm(n))
+                    if a <= 0:
+                        continue
+                    normals.append(n / (2 * a))
+                    areas.append(a)
+                    acc += n / 2.0
+        if not normals:
+            continue
+        mean = acc / max(np.linalg.norm(acc), 1e-30)
+        dots = [float(np.dot(nn, mean)) for nn in normals]
+        out[name] = {"normal": [round(float(x), 8) for x in mean],
+                     "flatness": round(min(dots), 6),
+                     "area": round(float(sum(areas)), 6)}
     return out

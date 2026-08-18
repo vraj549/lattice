@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.17.0
+
+Switching solvers is now a dropdown, and the tool works the same either side of it.
+
+### Parity
+
+CalculiX gained what it was missing for ordinary work:
+
+| | before | now |
+|---|---|---|
+| Pressure loads | refused | `*DLOAD` on element faces |
+| Rotational body loads | refused | `*DLOAD ... CENTRIF` |
+| Frictionless / symmetry supports | refused | `*TRANSFORM` into the face frame |
+| von Mises, Tresca, principals | missing | derived from the stress tensor |
+| Reactions table | missing | same block shape as code_aster |
+
+The field and component menus, the contour view, the probe, the exports and
+the Solution branch are now identical whichever engine ran. A CalculiX result
+opens in the same panels, with the same names, as a code_aster one.
+
+### Choosing an engine
+
+- The **solver is a field on the analysis itself**, not buried in settings —
+  it is the first thing you check when a run behaves differently.
+- The **tree row shows which engine** each analysis uses.
+- **Capability blockers appear before you run**, from a table the server
+  publishes and the deck writer enforces, so the panel cannot drift from what
+  the writer will accept. Pick an engine that cannot run a study and it says
+  why, and offers a one-click switch to one that can.
+- The status chip reports **every** engine present. On a Mac with CalculiX
+  installed it used to say "no solver — demo mode", because it only ever
+  looked for code_aster.
+
+Bolts, ties, remote loads, harmonic and random remain code_aster only, and are
+now stated as such up front rather than discovered at run time.
+
+### Found while testing the parity
+
+- **The equilibrium check was 0.6 % out on every model.** Corner nodes of a
+  quadratic face carry no load, so they were absent from the face node map —
+  and their reactions were being left out of the sum. They are now recorded
+  with zero weight: the load is unchanged, the node set is complete, and the
+  residual dropped to 1e-4 %.
+- **Pressure loads were invisible to the check** — `applied_total` only added
+  up force loads, so a pressure-loaded model was never verified at all. A
+  safety check with a hole in it is decoration.
+- **Reactions at transformed nodes are reported in the local frame.** Summing
+  them as global was wrong; they are rotated back now.
+- **A symmetry face sharing an edge with another support** would rotate that
+  support's "fixed" into the symmetry frame, and sharing an edge with a loaded
+  face would rotate part of the load. Shared nodes are now excluded from the
+  transform: the more restrictive constraint wins, and loads always act in the
+  direction asked for.
+- The "fixed supports moved" check no longer fires on frictionless or
+  prescribed-displacement supports, which are supposed to move.
+
+Verified end to end through the running server: reaction 800.0000 N against
+800 N applied, residual 5.5e-9.
+
 ## 0.16.1
 
 Stress-testing CalculiX found a correctness bug, in CalculiX.

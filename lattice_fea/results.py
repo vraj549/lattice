@@ -256,7 +256,7 @@ def parse_fonction(text: str) -> dict:
 # --------------------------------------------------------------------------
 
 def build_results_ccx(run_dir: str, jobname: str = "job",
-                      applied=None, support_nodes=None,
+                      applied=None, support_frames=None,
                       model_diag=None) -> dict:
     """Package a CalculiX run the same way build_results does for code_aster.
 
@@ -281,17 +281,29 @@ def build_results_ccx(run_dir: str, jobname: str = "job",
 
     if disp_blocks:
         meta["fields"].append({
-            "name": "DISP", "label": "Displacement", "kind": "DEPL", "part": "R",
+            "name": "DISP", "label": "Displacement", "kind": "DEPL", "part": "",
             "comps": ["DX", "DY", "DZ"],
             "steps": [{"key": str(i), "ndt": i + 1, "value": b["step"]}
                       for i, b in enumerate(disp_blocks)],
         })
     if stress_blocks:
+        steps = [{"key": str(i), "ndt": i + 1, "value": b["step"]}
+                 for i, b in enumerate(stress_blocks)]
+        # Two entries from one block, so the field/component menus offer the
+        # same choices they do for code_aster. Equivalent stresses are derived
+        # from the tensor when the field is read; CalculiX writes only the six
+        # components, but a results panel that omits von Mises is not the same
+        # tool depending on which solver ran.
         meta["fields"].append({
-            "name": "STRESS", "label": "Stress tensor", "kind": "SIGM", "part": "R",
+            "name": "SIEQ", "label": "Equivalent stress", "kind": "SIEQ",
+            "part": "", "source": "STRESS",
+            "comps": ["VMIS", "TRESCA", "PRIN_1", "PRIN_2", "PRIN_3"],
+            "steps": steps,
+        })
+        meta["fields"].append({
+            "name": "STRESS", "label": "Stress tensor", "kind": "SIGM", "part": "",
             "comps": [c or f"S{i}" for i, c in enumerate(stress_blocks[0]["comps"])],
-            "steps": [{"key": str(i), "ndt": i + 1, "value": b["step"]}
-                      for i, b in enumerate(stress_blocks)],
+            "steps": steps,
         })
 
     # ---- equilibrium check ----
@@ -304,16 +316,28 @@ def build_results_ccx(run_dir: str, jobname: str = "job",
     # Summed over the SUPPORTED nodes specifically. CalculiX's FORC field is
     # the total nodal force, external included, so over the whole model it is
     # zero by construction and would prove nothing.
-    if applied is not None and support_nodes and any(abs(v) > 0 for v in applied):
+    if applied is not None and support_frames and any(abs(v) > 0 for v in applied):
         forc = next((b for b in f.blocks if b["name"].upper().startswith("FORC")), None)
         if forc and forc["values"]:
-            want = {int(n) for n in support_nodes}
             react = [0.0, 0.0, 0.0]
-            for tag, vals in forc["values"].items():
-                if int(tag) not in want:
-                    continue
-                for k in range(min(3, len(vals))):
-                    react[k] += vals[k]
+            counted = set()
+            for grp in support_frames:
+                frame = grp.get("frame")
+                for tag in grp["nodes"]:
+                    if int(tag) in counted:      # a node on a shared edge
+                        continue                 # belongs to one sum only
+                    counted.add(int(tag))
+                    vals = forc["values"].get(int(tag))
+                    if not vals:
+                        continue
+                    v = [vals[k] if k < len(vals) else 0.0 for k in range(3)]
+                    if frame:
+                        # local -> global: sum of each local component along
+                        # its own axis expressed in global coordinates
+                        v = [sum(v[a] * frame[a][k] for a in range(3))
+                             for k in range(3)]
+                    for k in range(3):
+                        react[k] += v[k]
             scale = max(abs(v) for v in applied) or 1.0
             resid = [react[k] + applied[k] for k in range(3)]
             rel = max(abs(r) for r in resid) / scale
@@ -334,6 +358,11 @@ def build_results_ccx(run_dir: str, jobname: str = "job",
     # still wrong. Between them these cover the cases seen in testing, but
     # neither is a proof: the real defence is running the solver in a
     # configuration that does not corrupt solutions in the first place.
+    # Only genuinely FIXED nodes. A frictionless support slides in-plane by
+    # definition and a prescribed displacement moves on purpose; including
+    # either would make this fire on correct models.
+    support_nodes = [n for g in (support_frames or [])
+                     if g.get("type", "fixed") == "fixed" for n in g["nodes"]]
     if support_nodes and disp_blocks:
         comps, u = f.field("DISP") or ([], None)
         if u is not None and len(u):
@@ -368,6 +397,15 @@ def build_results_ccx(run_dir: str, jobname: str = "job",
                     f"changes, so at this magnitude the result is arithmetic, not "
                     f"physics. Check the load magnitude and units.")
 
+    eq = meta.get("equilibrium")
+    if eq:
+        # the same block shape build_results() produces, so the Reactions
+        # panel and the CSV export do not care which solver ran
+        meta["tables"]["tables"] = [{
+            "columns": ["INTITULE", "RESU", "NOM_CHAM", "DX", "DY", "DZ"],
+            "rows": [["REACTIONS", 1.0, "REAC_NODA", *eq["reaction"]]],
+        }]
+
     freqs = [b["step"] for b in disp_blocks if b["step"]]
     if len(freqs) > 1:
         meta["tables"]["modes"] = [{
@@ -375,6 +413,64 @@ def build_results_ccx(run_dir: str, jobname: str = "job",
             "rows": [[i + 1, fr] for i, fr in enumerate(freqs)],
         }]
     return meta
+
+
+def stress_invariants(tensor: "np.ndarray", comp: str) -> "np.ndarray":
+    """Equivalent stresses from the six Cauchy components (xx,yy,zz,xy,yz,zx).
+
+    CalculiX reports the tensor only. Deriving these here keeps one definition
+    of von Mises in the project rather than one per solver.
+    """
+    sxx, syy, szz, sxy, syz, szx = (tensor[:, i] for i in range(6))
+    if comp == "VMIS":
+        return np.sqrt(0.5 * ((sxx - syy) ** 2 + (syy - szz) ** 2 + (szz - sxx) ** 2)
+                       + 3.0 * (sxy ** 2 + syz ** 2 + szx ** 2))
+    n = len(sxx)
+    m = np.empty((n, 3, 3))
+    m[:, 0, 0], m[:, 1, 1], m[:, 2, 2] = sxx, syy, szz
+    m[:, 0, 1] = m[:, 1, 0] = sxy
+    m[:, 1, 2] = m[:, 2, 1] = syz
+    m[:, 0, 2] = m[:, 2, 0] = szx
+    ev = np.linalg.eigvalsh(np.nan_to_num(m))      # ascending
+    if comp == "TRESCA":
+        return ev[:, 2] - ev[:, 0]
+    return ev[:, {"PRIN_1": 0, "PRIN_2": 1, "PRIN_3": 2}.get(comp, 2)]
+
+
+def field_payload_ccx(run_dir: str, field: str, step_key: str, comp: str,
+                      jobname: str = "job") -> dict:
+    """Skin + scalar values for a CalculiX result, matching field_payload()."""
+    from .frd_reader import FrdFile
+
+    f = FrdFile(os.path.join(run_dir, f"{jobname}.frd"))
+    src = "STRESS" if field in ("SIEQ", "STRESS") else "DISP"
+    got = f.field(src, int(step_key or 0))
+    if got is None:
+        raise ValueError(f"field {field} not in the CalculiX results")
+    comps, arr = got
+
+    if field == "SIEQ":
+        scal = stress_invariants(arr, comp)
+    elif field == "STRESS":
+        scal = arr[:, comps.index(comp)] if comp in comps else arr[:, 0]
+    elif comp == "MAG":
+        scal = np.linalg.norm(arr, axis=1)
+    else:
+        idx = {"DX": 0, "DY": 1, "DZ": 2}.get(comp, 0)
+        scal = arr[:, idx]
+
+    dgot = f.field("DISP", int(step_key or 0))
+    disp = dgot[1] if dgot else None
+    tri, used = f.skin()
+    vtx = f.nodes[used].astype(np.float32)
+    scal = np.nan_to_num(scal[used]).astype(np.float32)
+    out = {"vtx": _b64(vtx.ravel()), "tri": _b64(tri.ravel()),
+           "values": _b64(scal), "min": float(scal.min()), "max": float(scal.max())}
+    if disp is not None:
+        d = np.nan_to_num(disp[used]).astype(np.float32)
+        out["disp"] = _b64(d.ravel())
+        out["disp_max"] = float(np.linalg.norm(d, axis=1).max())
+    return out
 
 
 def _vec(v) -> str:

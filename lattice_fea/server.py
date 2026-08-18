@@ -94,6 +94,7 @@ def create_app(workspace: str = "workspace") -> FastAPI:
     @app.get("/api/config")
     def get_config():
         return {"version": __version__, "solver": solver_cfg.as_dict(),
+                "capabilities": {"ccx": ccx_writer.CAPABILITIES},
                 "workspace": os.path.abspath(workspace)}
 
     @app.post("/api/config/recheck")
@@ -304,7 +305,7 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                 meta = results.build_results_ccx(
                     run_dir, "job",
                     applied=ccx_writer.applied_total(analysis, mesh_stats),
-                    support_nodes=ccx_writer.support_nodes(analysis, mesh_stats),
+                    support_frames=ccx_writer.support_frames(analysis, mesh_stats),
                     model_diag=geo.get("diag"))
             else:
                 rc = run_solver(solver_cfg, run_dir, job)
@@ -510,7 +511,13 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         proj = _project(pid)
         run_dir = store.path(pid, "runs", aid)
         mesh_stats = store.read_json(pid, "mesh/stats.json") if store.exists(pid, "mesh/stats.json") else {}
+        engine = "aster"
+        if store.exists(pid, f"runs/{aid}/meta.json"):
+            engine = store.read_json(pid, f"runs/{aid}/meta.json").get("engine", "aster")
         try:
+            if engine == "ccx":
+                return JSONResponse(results.field_payload_ccx(
+                    run_dir, name, step, comp))
             return JSONResponse(results.field_payload(
                 run_dir, name, step, comp,
                 proj["geometry"]["bbox"], mesh_stats.get("geo_volume")))

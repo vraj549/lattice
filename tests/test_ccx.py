@@ -256,9 +256,10 @@ def test_solution_checks_flag_a_corrupted_result(tmp_path):
         try:
             p = tmp_path / "job.frd"
             p.write_text("stub")
-            return R.build_results_ccx(str(tmp_path), "job",
-                                       applied=[0, 0, -500.0],
-                                       support_nodes=[1])
+            return R.build_results_ccx(
+                str(tmp_path), "job", applied=[0, 0, -500.0],
+                support_frames=[{"group": "SUP1_1", "nodes": [1],
+                                 "frame": None, "type": "fixed"}])
         finally:
             fr.FrdFile = real
 

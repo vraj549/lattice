@@ -1048,32 +1048,95 @@ function resolutionWarning(S, peaks) {
  * engine that cannot run the study is offered disabled with the reason rather
  * than hidden, so the limitation is legible instead of mysterious.
  */
+/**
+ * Can this engine run this analysis, and if not, why?
+ *
+ * Mirrors ccx_writer.unsupported_reason on the server, from the capability
+ * table the server publishes — so what the panel says before you run is what
+ * the deck writer will enforce when you do. Guessing separately here is how
+ * the two drift apart.
+ */
+export function engineBlockers(S, a, engineId) {
+  const caps = S.config?.capabilities?.[engineId];
+  if (!caps) return [];                       // aster: no restrictions modelled
+  const setup = S.project.setup;
+  const out = [];
+  const name = ENGINE_LABEL[engineId] || engineId;
+
+  if (!caps.types.includes(a.type)) {
+    out.push(`${name} runs ${caps.types.join(" and ")} in Lattice — ` +
+             `“${a.name || a.type}” is ${a.type}.`);
+  }
+  if (setup.bolts?.length && !caps.features.includes("bolts")) {
+    out.push(`${name} cannot model bolts yet (they need a distributing ` +
+             `coupling and a pre-tension section).`);
+  }
+  if (setup.ties?.length && !caps.features.includes("ties")) {
+    out.push(`${name} does not emit tie constraints yet.`);
+  }
+  for (const l of a.loads || []) {
+    if (l.faces?.length === 0 && !["gravity", "rotation"].includes(l.type)) continue;
+    if (!caps.loads.includes(l.type)) {
+      out.push(`${name} does not support “${l.name || l.type}” (${l.type} load).`);
+    }
+  }
+  for (const sup of a.supports || []) {
+    if (!caps.supports.includes(sup.type)) {
+      out.push(`${name} does not support “${sup.name || sup.type}” (${sup.type}).`);
+    }
+  }
+  return out;
+}
+
+export const ENGINE_LABEL = { aster: "code_aster", ccx: "CalculiX" };
+
+/** The engine this analysis will actually use. */
+export function engineOf(S, a) {
+  const engines = S.config?.solver?.engines || [];
+  const want = a.config?.engine;
+  if (want && engines.some((e) => e.id === want)) return want;
+  if (want) return want;                        // chosen but unavailable here
+  return engines.some((e) => e.id === "aster") ? "aster" : (engines[0]?.id || "aster");
+}
+
+/** An engine present here that CAN run this analysis, if any. */
+export function engineThatCanRun(S, a) {
+  for (const e of S.config?.solver?.engines || []) {
+    if (!engineBlockers(S, a, e.id).length) return e.id;
+  }
+  return null;
+}
+
 function engineSection(S, A, a, c) {
   const engines = S.config?.solver?.engines || [];
   if (!engines.length) {
     return sec("Solver", el("div", { class: "hint bad" },
       "No solver detected. See README \u2192 Solver setup."));
   }
-  const current = c.engine || (engines.find((e) => e.id === "aster") ? "aster"
-                                                                    : engines[0].id);
-  const chosen = engines.find((e) => e.id === current);
-  const canRun = chosen ? chosen.types.includes(a.type) : false;
+  const current = engineOf(S, a);
+  const blockers = engineBlockers(S, a, current);
+  const alt = engineThatCanRun(S, a);
 
   return sec("Solver",
     selInput("Engine", current,
-      engines.map((e) => [e.id, e.types.includes(a.type)
-        ? e.label : `${e.label} — cannot run ${a.type}`]),
+      engines.map((e) => {
+        const bad = engineBlockers(S, a, e.id).length;
+        return [e.id, bad ? `${e.label} \u2014 cannot run this` : e.label];
+      }),
       (v) => A.mutate(() => { c.engine = v; })),
     el("div", { class: "hint" },
-      chosen ? `${chosen.label}: ${chosen.detail}` : ""),
-    !canRun ? el("div", { class: "hint bad" },
-      `\u26a0 ${chosen?.label} does not run ${a.type} in Lattice. `
-      + `Available here: ${engines.filter((e) => e.types.includes(a.type))
-           .map((e) => e.label).join(", ") || "none"}.`) : null,
-    current === "ccx" && S.project.setup.bolts?.length
-      ? el("div", { class: "hint bad" },
-          "\u26a0 Bolt beams and their distributing couplings are not emitted "
-          + "for CalculiX yet \u2014 this model needs code_aster.") : null);
+      engines.find((e) => e.id === current)?.detail || ""),
+    ...blockers.map((t) => el("div", { class: "hint bad" }, "\u26a0 " + t)),
+    blockers.length && alt && alt !== current
+      ? el("div", { class: "btnrow" },
+          el("button", { class: "btn btn-accent",
+            onclick: () => A.mutate(() => { c.engine = alt; }) },
+            `Switch to ${ENGINE_LABEL[alt] || alt}`))
+      : null,
+    el("div", { class: "hint" },
+      "The model is the same either way \u2014 geometry, mesh, materials, "
+      + "supports and loads are shared. Switching engines re-runs the same "
+      + "setup and marks existing results out of date."));
 }
 
 function panelSettings(S, A, put, id) {
@@ -1216,9 +1279,18 @@ function panelSettings(S, A, put, id) {
  *  greyed-out button with no explanation is a dead end. */
 function runBlockers(S, a) {
   const blockers = [];
-  if (!S.config?.solver?.available) {
-    blockers.push("No code_aster solver detected. Set it up (README → Solver setup), " +
+  const engines = S.config?.solver?.engines || [];
+  if (!engines.length) {
+    blockers.push("No solver detected. Set one up (README → Solver setup), " +
                   "then use Recheck solver — the check runs when the server starts.");
+  } else {
+    const eng = engineOf(S, a);
+    if (!engines.some((e) => e.id === eng)) {
+      blockers.push(`This analysis is set to run on ${ENGINE_LABEL[eng] || eng}, ` +
+                    "which is not installed here. Change it in Analysis Settings.");
+    }
+    // exactly what the deck writer would refuse, said before the run
+    for (const t of engineBlockers(S, a, eng)) blockers.push(t);
   }
   if (!S.meshData?.stats) {
     blockers.push("The model is not meshed yet — open Mesh and press Generate mesh.");
@@ -1267,8 +1339,15 @@ function panelAnalysis(S, A, put, id) {
     sec("Definition",
       textInput("Name", a.name, (v) => A.mutate(() => { a.name = v; })),
       dl([["Type", TYPE_NAMES[a.type] || a.type],
-          ["Driven by", drivenBy(a)],
-          ["Solver", "code_aster · MUMPS"]])),
+          ["Driven by", drivenBy(a)]]),
+      // the engine belongs here, not buried in settings: it is the first
+      // thing you check when a run behaves differently from yesterday
+      selInput("Solver", engineOf(S, a),
+        (S.config?.solver?.engines || []).map((e) => {
+          const bad = engineBlockers(S, a, e.id).length;
+          return [e.id, bad ? `${e.label} — cannot run this` : e.label];
+        }),
+        (v) => A.mutate(() => { (a.config ||= {}).engine = v; }))),
     sec(null,
       el("div", { class: "btnrow" },
         el("button", { class: "btn btn-accent", disabled: running || blockers.length > 0,
@@ -1340,6 +1419,19 @@ function panelSolution(S, A, put, id) {
     el("span", { class: "mt" }, it.meta || "")));
 
   put("Solution", a.name || a.type, ...statusHead(S, A, a),
+    sec("Run", dl([
+      ["Solved by", ENGINE_LABEL[meta.engine] || meta.engine || "code_aster"],
+      ...(meta.equilibrium
+        ? [["Equilibrium residual",
+            `${(meta.equilibrium.residual_rel * 100).toFixed(3)} %`]] : []),
+      ...(meta.peak_disp != null
+        ? [["Peak displacement", `${fmtVal(meta.peak_disp)} mm`]] : []),
+    ]),
+      meta.equilibrium
+        ? el("div", { class: "hint" },
+            "Reactions balance the applied load to this residual — a direct "
+            + "check that the solve is self-consistent, independent of whether "
+            + "the model itself is right.") : null),
     sec("Outputs", el("div", { class: "listrows" }, rows)),
     sec("Export",
       el("div", { class: "btnrow" },

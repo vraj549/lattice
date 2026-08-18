@@ -11,7 +11,8 @@
 // label rather than a thing you could open.
 
 import { el, needsLoads, analysisStatus, solutionItems, meshIssues,
-         loadMeta, excitationMeta, boltSizeOf } from "./ui.js";
+         loadMeta, excitationMeta, boltSizeOf, engineOf,
+         engineBlockers, ENGINE_LABEL } from "./ui.js";
 import { icon, RESULT_ICONS } from "./icons.js";
 import { fmtVal } from "./colormap.js";
 
@@ -181,7 +182,10 @@ function analysisNode(S, A, a) {
     // already chose. Ansys distinguishes analysis systems the same way.
     icon: ANALYSIS_ICONS[a.type] || "analysis",
     label: a.name || a.type, badge: st.badge,
-    title: `${TYPE_NAMES[a.type] || a.type} — ${st.title}`,
+    meta: ENGINE_LABEL[engineOf(S, a)] || engineOf(S, a),
+    warn: engineBlockers(S, a, engineOf(S, a)).length > 0,
+    title: `${TYPE_NAMES[a.type] || a.type} — ${st.title}\n`
+         + `solver: ${ENGINE_LABEL[engineOf(S, a)] || engineOf(S, a)}`,
     children: kids, insert, cls: "analysis",
   };
 }
