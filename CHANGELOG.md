@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.17.1
+
+Results panels show results.
+
+Roughly 1,200 characters of method explanation came out of the results panels —
+how von Mises is formed, what Q means, why beam bolt stress is on the stress
+area, what 3σ is for, how Miles' equation relates to the integrated answer. It
+was correct and it was in the wrong place: reference material you re-read on
+every single run is noise.
+
+It now lives in **[docs/METHODS.md](docs/METHODS.md)**, with a quiet *method
+notes* link at the foot of each results panel. **[docs/SOLVERS.md](docs/SOLVERS.md)**
+covers the two engines and the CalculiX threading finding.
+
+What stayed on screen is anything that says something about *this* run and
+needs a decision:
+
+- Results out of date, and why
+- Modal truncation below 90 % effective mass — the result is low
+- Too few sweep points inside a half-power band — Q is under-reported
+- Equilibrium / fixed-support / small-displacement check failures
+- Solver messages
+
+The "✓ truncation is acceptable" all-clear went too: an absent warning already
+says that.
+
+Bolt forces, reactions and modes now carry no prose at all — a table, a link,
+and the exports.
+
 ## 0.17.0
 
 Switching solvers is now a dropdown, and the tool works the same either side of it.

@@ -1427,11 +1427,7 @@ function panelSolution(S, A, put, id) {
       ...(meta.peak_disp != null
         ? [["Peak displacement", `${fmtVal(meta.peak_disp)} mm`]] : []),
     ]),
-      meta.equilibrium
-        ? el("div", { class: "hint" },
-            "Reactions balance the applied load to this residual — a direct "
-            + "check that the solve is self-consistent, independent of whether "
-            + "the model itself is right.") : null),
+      ),
     sec("Outputs", el("div", { class: "listrows" }, rows)),
     sec("Export",
       el("div", { class: "btnrow" },
@@ -1439,9 +1435,7 @@ function panelSolution(S, A, put, id) {
           onclick: () => A.exportResults(a.id, "all") }, "Export all (CSV)"),
         el("button", { class: "btn",
           onclick: () => A.exportResults(a.id, "tables") }, "Tables only")),
-      el("div", { class: "hint" },
-        "Nodal values of a field are exported from the Contours panel — they " +
-        "are one file per field and step, and much larger.")),
+      ),
     sec("Re-run",
       el("div", { class: "btnrow" },
         el("button", { class: "btn", onclick: () => A.runAnalysis(a.id) }, "Run again"),
@@ -1484,6 +1478,14 @@ const RESULT_TITLES = {
   warnings: "Solver messages",
 };
 
+/** Pointer to the reference for this result, for when it is wanted.
+ *  The panels show numbers; the method notes live in docs/METHODS.md. */
+function methodRef(anchor, label) {
+  return el("div", { class: "methodref" },
+    el("a", { href: `https://github.com/vraj549/lattice/blob/main/docs/METHODS.md#${anchor}`,
+              target: "_blank", rel: "noopener" }, label || "method notes"));
+}
+
 function panelResult(S, A, put, id) {
   const [aid, what] = String(id).split("|");
   const a = (S.project.setup.analyses || []).find((x) => x.id === aid);
@@ -1506,7 +1508,11 @@ function panelResult(S, A, put, id) {
   }[what]?.() || [];
 
   const exportWhat = { frf: "frf", random: "random" }[what] || "tables";
+  const anchor = { contours: "contours", modes: "modes", frf: "frequency-response",
+                   random: "random-vibration", bolts: "bolt-forces-and-stress",
+                   reactions: "reactions" }[what];
   const tail = sec(null,
+    anchor ? methodRef(anchor) : null,
     el("div", { class: "btnrow" },
       el("button", { class: "btn btn-small",
         onclick: () => A.exportResults(aid, exportWhat) }, "Export this (CSV)"),
@@ -1551,7 +1557,6 @@ function secModes(S, A, a) {
           el("span", { class: "mi" }, String(r.n).padStart(2, "0")),
           el("span", { class: "mbar" }, el("i", { style: `width:${8 + (r.f / fmax) * 88}%` })),
           el("span", { class: "mf" }, `${fmtVal(r.f)} Hz`)))),
-      el("div", { class: "hint" }, "Select a mode to view / animate its shape."),
       part ? partTable(part, meta.tables?.tables) : null));
   }
   return secs;
@@ -1608,9 +1613,6 @@ function secFRF(S, A, a) {
       canvas,
       el("div", { class: "hint" }, curves.map((c) =>
         el("span", { style: `color:${c.color};margin-right:8px` }, c.label))),
-      totalF > 0 ? el("div", { class: "hint" },
-        `Applied force ${fmtVal(totalF)} N. A linear sweep scales exactly with ` +
-        `input, so amplification and peak frequencies do not depend on it.`) : null,
       peaks.length ? el("div", {},
         el("span", { class: "lbl", style: "display:block;margin:10px 0 4px" }, "Peaks"),
         el("table", { class: "rtable" },
@@ -1621,9 +1623,6 @@ function secFRF(S, A, a) {
             el("td", {}, fmtVal(pk.amp)),
             el("td", {}, pk.q ? pk.q.toFixed(1) : "\u2014"),
             el("td", {}, pk.q ? (1 / (2 * pk.q)).toFixed(4) : "\u2014")))),
-        el("div", { class: "hint" },
-          "Q is the amplification at resonance from the half-power bandwidth; " +
-          "\u03b6 = 1/(2Q) should come back close to the damping you entered."),
         resolutionWarning(S, peaks)) : null,
     ));
 
@@ -1728,18 +1727,7 @@ function secBolts(S, A, a) {
               el("td", { class: st && st.pct > 100 ? "bad" : "" },
                  st ? `${st.pct.toFixed(0)}%` : "\u2014"));
           })),
-        el("div", { class: "hint" },
-          "Stresses are on the tensile stress area A\u209b, from the beam end " +
-          "forces (EFGE_ELNO) \u2014 the same section the beam was given, so " +
-          "nothing new is assumed. \u03c3 axial = N/A\u209b and includes the " +
-          "preload; \u03c4 = V/A\u209b; \u03c3 bend = M\u00b7c/I; \u03c3 eqv " +
-          "is von Mises \u221a((\u03c3+\u03c3b)\u00b2 + 3\u03c4\u00b2), the " +
-          "comparison VDI 2230 makes against proof stress."),
-        el("div", { class: "hint warn" },
-          "\u26a0 A beam does not resolve the thread root, the fillet under the " +
-          "head, or bending across the first engaged thread \u2014 the actual " +
-          "stress concentrations. This sizes the joint; it is not a fatigue " +
-          "assessment of the fastener.")));
+        ));
     }
   }
   return secs;
@@ -1777,10 +1765,7 @@ function secReactions(S, A, a) {
         ["ΣFy", `${fmtVal(sum[1])} N`],
         ["ΣFz", `${fmtVal(sum[2])} N`],
         ["|ΣF|", `${fmtVal(Math.hypot(...sum))} N`]]),
-    el("div", { class: "hint" },
-      "Sum of nodal reactions over the supported faces. For a static run these " +
-      "should balance the applied load — a large residual points at a load that " +
-      "did not attach to the mesh."))];
+    )];
 }
 
 function secWarnings(S, A, a) {
@@ -1808,17 +1793,14 @@ function randomSections(S, A, a) {
         el("td", {}, nameOf(c)),
         el("td", {}, c.grms.toFixed(2)),
         el("td", {}, c.three_sigma.toFixed(2))))),
-    el("div", { class: "hint" },
-      `Input ${R.grms_in.toFixed(2)} g RMS \u2192 worst response ` +
-      `${worst ? worst.grms.toFixed(2) : "\u2014"} g RMS ` +
-      `(amplification ${worst && R.grms_in ? (worst.grms / R.grms_in).toFixed(1) : "\u2014"}\u00d7). ` +
-      `3\u03c3 is the usual design peak.`)));
+    dl([["Input", `${R.grms_in.toFixed(2)} g RMS`],
+        ["Worst response", `${worst ? worst.grms.toFixed(2) : "\u2014"} g RMS`],
+        ["Amplification",
+         worst && R.grms_in ? `${(worst.grms / R.grms_in).toFixed(1)}\u00d7` : "\u2014"]])));
 
   // response PSD plot
   const canvas = el("canvas", { class: "frfbig" });
-  secs.push(sec("Response PSD (g²/Hz)", canvas,
-    el("div", { class: "hint" },
-      "Dashed = input spectrum, solid = response at each probe.")));
+  secs.push(sec("Response PSD (g²/Hz)", canvas));
   requestAnimationFrame(() => {
     if (!canvas.isConnected) return;
     const curves = R.curves.map((c, i) => ({
@@ -1841,10 +1823,7 @@ function randomSections(S, A, a) {
           el("td", {}, m.psd_at_fn.toFixed(4)),
           el("td", {}, m.grms.toFixed(2)),
           el("td", {}, m.three_sigma.toFixed(2))))),
-      el("div", { class: "hint" },
-        "Single-DOF estimate per mode. Close agreement with the table above " +
-        "means one mode dominates and the shortcut is valid; a big gap means " +
-        "several modes contribute and you should trust the integrated result.")));
+      ));
   }
 
   // truncation check — warn, do not block
@@ -1864,8 +1843,7 @@ function randomSections(S, A, a) {
         `in the drive direction. Base excitation acts through inertia, so the ` +
         `missing mass makes this result LOW. Extract more modes (raise f max) ` +
         `before trusting the RMS.`)
-        : el("div", { class: "hint good" },
-        `\u2713 ${pct.toFixed(1)} % effective mass captured — truncation is acceptable.`)));
+        : null));
   }
   return secs;
 }
@@ -1906,10 +1884,7 @@ function deformControl(S, A, cur) {
         onclick: () => A.setDeform(trueMult) }, "True scale (1×)") : null,
       el("button", { class: "btn btn-small", onclick: () => A.setDeform(1) }, "Auto"),
       el("button", { class: "btn btn-small", onclick: () => A.setDeform(0) }, "Undeformed")),
-    el("div", { class: "hint" },
-      auto > 0
-        ? `Auto scales the peak displacement to about 5 % of the model — here ×${fmtVal(auto)}.`
-        : "No displacement in this field."));
+  );
 }
 
 function compOptions(f) {

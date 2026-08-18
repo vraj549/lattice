@@ -540,3 +540,12 @@ body.resizing-v { cursor: row-resize; user-select: none; }
 
 /* an out-of-limit cell in a results table */
 .rtable td.bad { color: var(--crit); font-weight: 700; }
+
+/* A link to the reference, not the reference itself. Method notes in every
+   results panel meant scrolling past the same paragraph on every run. */
+.methodref { margin-bottom: 6px; }
+.methodref a {
+  font-size: 10.5px; color: var(--faint); text-decoration: none;
+  border-bottom: 1px dotted var(--line-2);
+}
+.methodref a:hover { color: var(--accent); border-bottom-color: var(--accent); }

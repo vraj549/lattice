@@ -197,6 +197,14 @@ current.
 Try it immediately with `examples/bracket_assembly.step` (regenerate with
 `python examples/make_examples.py`).
 
+## Documentation
+
+- [docs/METHODS.md](docs/METHODS.md) — what each result is, how it is computed,
+  and where it stops being valid. The results panels show numbers and anything
+  that needs acting on; the reasoning lives here.
+- [docs/SOLVERS.md](docs/SOLVERS.md) — code_aster vs CalculiX, what each covers,
+  and why CalculiX runs single-threaded.
+
 ## Bolted joints
 
 Lattice implements the standard linear bolt idealization used by Ansys beam
