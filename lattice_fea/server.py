@@ -20,7 +20,8 @@ from . import (__version__, ccx_writer, comm_writer, config, random_vib,
                results)
 from .materials import LIBRARY
 from .projects import ProjectStore
-from .solver import (JobManager, popen_isolated, reap, run_ccx, run_solver)
+from .solver import (JobManager, extract_errors, popen_isolated, reap,
+                     run_ccx, run_solver, summarise_failure)
 
 UI_DIR = os.path.join(os.path.dirname(__file__), "ui")
 
@@ -44,7 +45,11 @@ def run_gmsh_worker(job, args: dict) -> None:
         finally:
             reap(proc)
         if rc != 0:
-            raise RuntimeError(f"geometry worker failed (exit {rc}) — see log")
+            tail = extract_errors(job.log[-400:])
+            for ln in tail:
+                job.append(ln)
+            head = tail[0].strip() if tail else f"exit code {rc}"
+            raise RuntimeError(f"{head}  (worker exit {rc})")
     finally:
         try:
             os.unlink(argfile)
@@ -317,7 +322,8 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             meta["signature"] = solve_signature(analysis, proj["setup"], mesh_stats)
             store.write_json(pid, f"runs/{aid}/meta.json", meta)
             if rc != 0 and not meta["fields"] and not meta["tables"]:
-                raise RuntimeError(f"solver failed (exit {rc}) — see log")
+                logfile = os.path.join(run_dir, "log.txt")
+                raise RuntimeError(summarise_failure(job, logfile, rc))
             if rc != 0:
                 job.append("Solver exited non-zero but partial results were recovered.")
             for w in meta.get("warnings", []):

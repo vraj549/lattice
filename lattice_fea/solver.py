@@ -244,3 +244,59 @@ def run_ccx(cfg: SolverConfig, jobdir: str, job: Job, jobname: str = "job") -> i
             reap(proc)
     job.append(f"[exit code {rc}]")
     return rc
+
+
+# code_aster prints its real complaint inside a banner and then a one-line
+# diagnostic; gmsh and Python print a traceback. "exit code 1" on its own
+# sends you looking through thousands of lines for the twenty that matter.
+_ERROR_MARKERS = (
+    "<EXCEPTION>", "<F>_", "<S>_ERROR", "DIAGNOSTIC JOB",
+    "Traceback (most recent call last)", "Error   :", "*ERROR",
+    "ValueError", "RuntimeError", "erreur", "ERREUR",
+)
+
+
+def extract_errors(lines, limit: int = 24) -> list:
+    """The lines worth reading from a failed run's output.
+
+    Returns the marker lines plus a little of the context around them, in
+    order, capped — enough to see what went wrong without reprinting the log.
+    """
+    keep = set()
+    for i, ln in enumerate(lines):
+        if any(m in ln for m in _ERROR_MARKERS):
+            for j in range(max(0, i - 1), min(len(lines), i + 6)):
+                keep.add(j)
+    if not keep:
+        # nothing recognisable — the tail is the next best thing
+        return [ln.rstrip() for ln in lines[-limit:] if ln.strip()]
+    out = []
+    prev = None
+    for i in sorted(keep):
+        if prev is not None and i > prev + 1:
+            out.append("   …")
+        out.append(lines[i].rstrip())
+        prev = i
+        if len(out) >= limit:
+            out.append("   … (truncated; full output in the log file)")
+            break
+    return [x for x in out if x.strip()]
+
+
+def summarise_failure(job, logfile: str, rc: int) -> str:
+    """A failure message that says what happened and where to look."""
+    lines = []
+    try:
+        with open(logfile, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        pass
+    if not lines:
+        with job._lock:
+            lines = list(job.log)
+    detail = extract_errors(lines)
+    for ln in detail:
+        job.append(ln)
+    job.append(f"Full output: {logfile}")
+    head = detail[0].strip() if detail else f"exit code {rc}"
+    return f"{head}  (exit {rc}; full output in {logfile})"

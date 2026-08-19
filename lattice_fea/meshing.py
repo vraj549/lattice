@@ -16,6 +16,12 @@ import numpy as np
 
 from .geometry import GMSH_LOCK, _gmsh, _fresh_model, _b64
 
+# Bumped whenever a mesh written by an older build is no longer trustworthy.
+# 2: UNV groups could contain node entities (a leaked gmsh write option),
+#    which made code_aster fail on a duplicate GROUP_NO. Meshes written before
+#    this are re-generated rather than silently reused.
+MESH_FORMAT = 2
+
 
 def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
                  progress=lambda s: None) -> dict:
@@ -107,7 +113,21 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
                          "geometry and was not written")
 
         gmsh.option.setNumber("Mesh.SaveAll", 0)
+
+        # Write options are set explicitly before EVERY write, never left to
+        # whatever the last write wanted.
+        #
+        # The gmsh session is shared and long-lived, so an option set for one
+        # format silently applies to the next. Turning on SaveGroupsOfNodes
+        # for the Abaqus deck leaked into the following mesh's UNV, which then
+        # carried node entities inside the element groups. code_aster read
+        # those as GROUP_NO, and the deck's own
+        # DEFI_GROUP(CREA_GROUP_NO=TOUT_GROUP_MA) then collided with a group
+        # that already existed — so the first mesh after a restart solved and
+        # every one after it failed.
+        gmsh.option.setNumber("Mesh.SaveGroupsOfNodes", 0)
         gmsh.write(unv_path)
+
         # An Abaqus deck as well, for CalculiX. Same mesh, same groups —
         # written here so both solvers are always looking at the identical
         # discretisation and a result cannot depend on which one ran.
@@ -119,9 +139,12 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
         except Exception as e:                      # noqa: BLE001
             progress(f"warning: could not write the CalculiX mesh ({e}); "
                      "code_aster is unaffected")
+        finally:
+            gmsh.option.setNumber("Mesh.SaveGroupsOfNodes", 0)
 
         stats = _stats(gmsh, order)
         stats["wall_s"] = round(time.time() - t0, 1)
+        stats["mesh_format"] = MESH_FORMAT
         stats["size_mm"] = size
 
         # expected volume — used later to self-validate MED connectivity parsing
@@ -157,9 +180,20 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
         # any solver that takes point loads. Corner nodes of a quadratic
         # triangle legitimately get zero — that is what the shape functions
         # integrate to, not a bug.
-        stats["face_nodes"] = _face_group_weights(gmsh, written)
-        stats["face_elems"] = _face_group_element_faces(gmsh, written)
-        stats["face_normals"] = _face_group_normals(gmsh, written)
+        # These three exist to serve CalculiX. None of them is needed by
+        # code_aster, and the mesh itself is already written by this point —
+        # so a failure in any of them must not throw away a completed mesh.
+        # It costs the user minutes and tells them nothing about their model.
+        for key, fn in (("face_nodes", _face_group_weights),
+                        ("face_elems", _face_group_element_faces),
+                        ("face_normals", _face_group_normals)):
+            try:
+                stats[key] = fn(gmsh, written)
+            except Exception as e:              # noqa: BLE001
+                stats[key] = {}
+                progress(f"warning: could not build {key} ({e}). "
+                         "code_aster is unaffected; CalculiX will ask you to "
+                         "re-mesh if it needs this.")
 
         skin = _skin(gmsh)
         conn_islands = _count_islands(gmsh)

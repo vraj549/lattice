@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.17.2
+
+Fixes the regression that broke code_aster, and makes a failed run say what
+went wrong.
+
+### Root cause: a leaked gmsh option corrupted the mesh file
+
+CalculiX support (0.16.0) writes an Abaqus deck alongside the UNV, and turns on
+`Mesh.SaveGroupsOfNodes` to do it. **gmsh options are global to the session,
+and the server keeps one session for its whole life** — so that setting stayed
+on and applied to the *next* project's UNV.
+
+A UNV written that way puts node entities inside the element groups. code_aster
+reads them as `GROUP_NO`, and the deck's own
+`DEFI_GROUP(CREA_GROUP_NO=_F(TOUT_GROUP_MA='OUI'))` then tries to create a group
+that already exists — the run aborts.
+
+Measured on one unchanged model, meshed three times in one process:
+
+```
+run 1:  unv = 2,264,458 bytes   sha=7615471f53fe     <- correct
+run 2:  unv = 2,762,528 bytes   sha=be33a63580f3     <- 1,659 nodes in SUP1_1
+run 3:  unv = 2,762,528 bytes   sha=be33a63580f3
+```
+
+That is exactly the reported behaviour: **the first mesh after starting the
+server solved, and every mesh after it failed.**
+
+Write options are now set explicitly before every write and restored
+afterwards. Two tests cover it — one asserts repeated meshes are byte-identical,
+one asserts no group ever contains a node entity.
+
+**Meshes already on disk are still bad.** They are versioned now
+(`mesh_format`), flagged in the tree as needing a re-mesh, and refused by the
+deck writer with that reason rather than failing inside the solver.
+
+### "exit code 1" now says what happened
+
+A failure reported the exit code and "see log", without saying which log.
+Failures now extract the lines that matter — `<EXCEPTION>`, `<S>_ERROR`,
+`DIAGNOSTIC JOB`, Python tracebacks, gmsh errors — echo them into the job
+output, and name the log file path. The message reads as the actual complaint
+instead of a number.
+
+### Meshing no longer fails for CalculiX's benefit
+
+Three passes exist purely to serve CalculiX (nodal load weights, element-face
+maps, face normals). They ran after the UNV was already written, unguarded, so
+a failure in any of them threw away a completed mesh — for a user who may not
+even have CalculiX. They now warn and continue.
+
+### Also
+
+- Two tests called `gmsh.finalize()` on the shared session, so everything that
+  ran after them failed with "Gmsh has not been initialized" — a long way from
+  the cause.
+
 ## 0.17.1
 
 Results panels show results.

@@ -188,26 +188,23 @@ def test_med_layout_fallback_without_hint(tmp_path):
     """The coordinate-interlace fallback must agree with the bbox-validated
     answer. gmsh's MED writer stores coordinates component-major; an earlier
     heuristic guessed interleaved and silently scrambled every node."""
-    import gmsh
     import numpy as np
     from lattice_fea.med_reader import MedFile
 
     med = str(tmp_path / "m.med")
-    try:
-        gmsh.initialize(interruptible=False)
-    except TypeError:
-        gmsh.initialize()
-    gmsh.option.setNumber("General.Terminal", 0)
-    gmsh.clear()
-    gmsh.model.add("box")
-    # deliberately unequal extents, the case the heuristic must resolve
-    gmsh.model.occ.addBox(0, 0, 0, 90, 50, 16)
-    gmsh.model.occ.synchronize()
-    gmsh.option.setNumber("Mesh.MeshSizeMax", 20)
-    gmsh.model.mesh.generate(3)
-    gmsh.write(med)
-    gmsh.clear()
-    gmsh.finalize()
+    # Use the module's own gmsh session. Calling gmsh.finalize() here tore it
+    # down for every test that ran afterwards, which failed as
+    # "Gmsh has not been initialized" a long way from the cause.
+    with geometry.GMSH_LOCK:
+        g = geometry._gmsh()
+        geometry._fresh_model(g, "box")
+        # deliberately unequal extents, the case the heuristic must resolve
+        g.model.occ.addBox(0, 0, 0, 90, 50, 16)
+        g.model.occ.synchronize()
+        g.option.setNumber("Mesh.MeshSizeMax", 20)
+        g.model.mesh.generate(3)
+        g.write(med)
+        g.clear()
 
     hinted = MedFile(med, [0, 0, 0, 90, 50, 16])
     blind = MedFile(med)
@@ -228,26 +225,20 @@ def test_skin_triangles_all_wind_outward(tmp_path):
     signed tetrahedron volumes of a consistently outward-wound closed surface
     reproduces the enclosed volume, and any flipped triangle subtracts.
     """
-    import gmsh
     import numpy as np
     from lattice_fea.med_reader import MedFile
 
     med = str(tmp_path / "m.med")
-    try:
-        gmsh.initialize(interruptible=False)
-    except TypeError:
-        gmsh.initialize()
-    gmsh.option.setNumber("General.Terminal", 0)
-    gmsh.clear()
-    gmsh.model.add("box")
-    gmsh.model.occ.addBox(0, 0, 0, 30, 20, 10)
-    gmsh.model.occ.synchronize()
-    gmsh.option.setNumber("Mesh.MeshSizeMax", 8)
-    gmsh.model.mesh.generate(3)
-    gmsh.model.mesh.setOrder(2)
-    gmsh.write(med)
-    gmsh.clear()
-    gmsh.finalize()
+    with geometry.GMSH_LOCK:
+        g = geometry._gmsh()
+        geometry._fresh_model(g, "box")
+        g.model.occ.addBox(0, 0, 0, 30, 20, 10)
+        g.model.occ.synchronize()
+        g.option.setNumber("Mesh.MeshSizeMax", 8)
+        g.model.mesh.generate(3)
+        g.model.mesh.setOrder(2)
+        g.write(med)
+        g.clear()
 
     f = MedFile(med, [0, 0, 0, 30, 20, 10])
     try:
@@ -281,3 +272,73 @@ def test_stale_mesh_group_names_are_caught(meshed):
     # and the current mesh still builds fine
     comm, _ = comm_writer.build_run(a, setup, meta, out["stats"], SolverConfig())
     assert "SUP1_1" in comm
+
+
+def _fresh_static_setup(meta):
+    """A setup of this test's own. The module-scoped fixture is mutated by
+    other tests, so reusing it makes these depend on execution order."""
+    faces = sorted(meta["faces"], key=lambda f: -f["area"])
+    setup = default_setup()
+    setup["materials"] = [{"id": "al", "name": "Al", "E_GPa": 68.9, "nu": 0.33,
+                           "rho_kgm3": 2700}]
+    setup["assignments"] = {str(s["tag"]): "al" for s in meta["solids"]}
+    setup["mesh"]["size_mm"] = 8
+    setup["analyses"] = [{
+        "id": "a1", "type": "static", "name": "Static", "config": {},
+        "supports": [{"id": "s1", "name": "fix", "type": "fixed",
+                      "faces": [faces[0]["tag"]]}],
+        "loads": [{"id": "l1", "name": "load", "type": "force",
+                   "faces": [faces[1]["tag"]], "fx": 0, "fy": 0, "fz": -1200}],
+    }]
+    return setup
+
+
+def test_repeated_meshing_writes_an_identical_unv(imported, tmp_path):
+    """The server is long-lived: the second mesh must equal the first.
+
+    gmsh options are global to the session, so one set for a different output
+    format silently applies to the next write. SaveGroupsOfNodes, turned on
+    for the Abaqus deck, leaked into the following UNV — which then carried
+    node entities inside its element groups. code_aster read those as
+    GROUP_NO, and the deck's own DEFI_GROUP(CREA_GROUP_NO=TOUT_GROUP_MA)
+    collided with a group that already existed. The first mesh after a restart
+    solved; every one after it failed.
+    """
+    import hashlib
+    brep, meta, _ = imported
+    setup = _fresh_static_setup(meta)
+    hashes = []
+    for i in range(3):
+        unv = str(tmp_path / f"m{i}.unv")
+        meshing.mesh_project(brep, unv, meta, setup)
+        hashes.append(hashlib.sha256(open(unv, "rb").read()).hexdigest())
+    assert len(set(hashes)) == 1, "the UNV changed between identical meshes"
+
+
+def test_unv_groups_hold_elements_only(imported, tmp_path):
+    """A group carrying node entities makes code_aster create a GROUP_NO that
+    the generated deck then tries to create again."""
+    brep, meta, _ = imported
+    setup = _fresh_static_setup(meta)
+    unv = str(tmp_path / "check.unv")
+    meshing.mesh_project(brep, unv, meta, setup)
+    txt = open(unv, errors="ignore").read()
+    assert "  2477\n" in txt, "no group block in the UNV"
+    block = txt.split("    -1\n  2477\n")[1].split("    -1")[0]
+    lines = block.splitlines()
+    i = 0
+    seen = 0
+    while i < len(lines):
+        parts = lines[i].split()
+        if len(parts) == 8 and all(p.lstrip("-").isdigit() for p in parts):
+            n = int(parts[-1])
+            for r in lines[i + 2: i + 2 + (n + 1) // 2]:
+                f = r.split()
+                for k in range(0, len(f), 4):
+                    # entity type 8 is an element, 7 a node
+                    assert f[k] != "7", "group contains node entities"
+            seen += 1
+            i += 2 + (n + 1) // 2
+        else:
+            i += 1
+    assert seen > 0

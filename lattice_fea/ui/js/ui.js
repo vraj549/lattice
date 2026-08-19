@@ -139,10 +139,20 @@ export function staleForAnalyses(S) {
  * the tree and in none of the matrices — the load path would silently not be
  * there, which is worse than a failed run.
  */
+export const MESH_FORMAT = 2;
+
 export function meshIssues(S) {
   const stats = S.meshData?.stats;
   if (!stats) return [];
   const out = [];
+
+  // A mesh from an older build may be unusable rather than merely stale.
+  if ((stats.mesh_format || 0) < MESH_FORMAT) {
+    out.push({ scope: "all",
+      text: "this mesh was written by an earlier version of Lattice whose "
+          + "group records could confuse code_aster (duplicate GROUP_NO). "
+          + "Re-mesh before running" });
+  }
   for (const s of staleForAnalyses(S)) {
     out.push({ scope: "all",
       text: `boundary conditions changed for “${s.analysis.name || s.analysis.type}” ` +

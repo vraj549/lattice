@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from lattice_fea import comm_writer, geometry  # noqa: E402
+from lattice_fea import comm_writer, geometry, meshing  # noqa: E402
 from lattice_fea.config import SolverConfig  # noqa: E402
 from lattice_fea.projects import default_setup  # noqa: E402
 
@@ -29,6 +29,7 @@ def base(kind, mu=None):
             "faces": [{"tag": t, "area": 100.0, "com": [0, 0, 0]}
                       for t in (1, 3, 5, 11)]}
     stats = {"bolts": [], "remotes": [], "probes": [],
+             "mesh_format": meshing.MESH_FORMAT,
              "face_groups": ["CTA1", "CTB1", "LOA1_1", "SUP1_1"]}
     return setup, meta, stats
 

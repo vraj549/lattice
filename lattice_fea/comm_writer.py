@@ -871,6 +871,12 @@ def check_mesh_current(analysis: dict, ai: int, mesh_stats: dict) -> None:
     would run for minutes and then abort with a group-not-found error deep in
     the log. Catch it here instead, for free.
     """
+    from .meshing import MESH_FORMAT
+    if (mesh_stats.get("mesh_format") or 0) < MESH_FORMAT:
+        raise ValueError(
+            "This mesh was written by an earlier version of Lattice. Its group "
+            "records can contain node entities, which makes code_aster fail on "
+            "a duplicate GROUP_NO. Re-mesh, then run again.")
     have = set(mesh_stats.get("face_groups") or [])
     if not have:
         return                                  # meshed before groups were recorded
