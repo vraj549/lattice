@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.18.0
+
+Documentation rewritten, and the installation path fixed — it was broken.
+
+### `pip install -e .` did not work on a clean clone
+
+The `pip` bundled with a Python 3.9 virtual environment cannot do an editable
+install of a `pyproject.toml`-only package:
+
+```
+A "pyproject.toml" file was found, but editable mode currently
+requires a setuptools-based build.
+```
+
+It **fails while looking like it succeeded** — nothing is installed, and the
+app dies later with `No module named 'gmsh'`, which points nowhere near the
+cause. That was the exact command in the README. Both the README and the new
+install guide now upgrade pip first and explain why, with `pip install .` as
+the alternative. Verified by cloning the repo fresh, following the documented
+steps, and booting the app.
+
+### `doctor` was giving wrong answers
+
+The environment check is the thing you run when installation is not working, so
+it being wrong is worse than it being absent.
+
+- It **did not know CalculiX exists** — reported "no solver" and "geometry/mesh
+  only" on a machine with a working one.
+- It reported **"no support with faces" for every project**, because it read
+  supports from the model. They moved into each analysis in 0.9.
+- It told people to `docker pull codeastersolver/codeaster-seq`, which the
+  README documents as unusable — 2019, no solver binary. That was also still
+  the built-in default; it is now `simvia/code_aster:17.4.22`.
+
+It now lists every engine and what each can run, and gives per-analysis
+blockers using the same rules the app uses — including a mesh that needs
+re-generating after the 0.17.2 fix.
+
+### Documentation
+
+- **[docs/INSTALL.md](docs/INSTALL.md)** — new. Per-platform install for the
+  app and both solvers, configuration, running, updating, troubleshooting.
+- **[docs/SOLVERS.md](docs/SOLVERS.md)**, **[docs/METHODS.md](docs/METHODS.md)** —
+  linked from the README and from the results panels.
+- The README described a code_aster-only tool that could not do contact or
+  random vibration and whose bolts stopped at M24. It now covers two solvers,
+  the bonded/separate-parts import choice, the full contact set, and bolt
+  grades including titanium and PEEK.
+- **Corrected: "Apple Silicon — use `--demo-solver` for the interface."** That
+  was true when Docker was the only route. CalculiX runs natively there, so
+  the advice was sending Mac users away from a working setup.
+- The startup overlay still read "on gmsh + code_aster".
+
+### Documentation is now tested
+
+`tests/test_docs.py` asserts the docs against the code: every internal link
+resolves, every `LATTICE_*` environment variable is documented, the documented
+defaults are the real defaults, the bolt-size range matches the table, the
+install guide covers each platform, and the Apple Silicon note points at
+CalculiX. Docs rot quietly; these fail loudly.
+
+
 ## 0.17.2
 
 Fixes the regression that broke code_aster, and makes a failed run say what
