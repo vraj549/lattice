@@ -34,6 +34,36 @@ def log(m):
     time.sleep(0.05)
 
 
+# The one piece of physics the mock does contain, and it is here because
+# without it the preload calibration loop cannot be tested at all: an imposed
+# strain does not deliver the force it was derived from. The clamped parts are
+# a spring in parallel with the bolt and take JOINT_SHARE of it back. A real
+# joint's share depends on its stiffness; a fixed value is enough to make the
+# calibration converge to something checkable.
+JOINT_SHARE = 0.18
+
+
+def mock_bolt_axial(comm: str) -> dict:
+    """{bolt index: axial force} implied by the deck's imposed strains.
+
+    F = |EPX| * E * A, less the share the clamped parts take back. Reads the
+    beam radius from AFFE_CARA_ELEM and E from the bolt's own DEFI_MATERIAU,
+    so a change to either shows up here rather than being silently ignored.
+    """
+    rad = {int(m.group(1)): float(m.group(2)) for m in re.finditer(
+        r"GROUP_MA=\('BOLT(\d+)',\), SECTION='CERCLE', CARA='R', VALE=([-\d.eE+]+)",
+        comm)}
+    mod = {int(m.group(1)): float(m.group(2)) for m in re.finditer(
+        r"matb(\d+) = DEFI_MATERIAU\(ELAS=_F\(E=([-\d.eE+]+)", comm)}
+    out = {}
+    for m in re.finditer(r"GROUP_MA=\('BOLT(\d+)',\), EPX=([-\d.eE+]+)", comm):
+        k, eps = int(m.group(1)), float(m.group(2))
+        r, E = rad.get(k), mod.get(k)
+        if r and E:
+            out[k] = round(abs(eps) * E * math.pi * r * r * (1.0 - JOINT_SHARE), 3)
+    return out
+
+
 def parse_export(path="run.export"):
     units = {}
     for line in open(path, errors="replace"):
@@ -199,10 +229,13 @@ def main():
         fh.write("TOUT,TOUT,0.5551\n")
 
     if "EFGE_ELNO" in comm:
+        axial = mock_bolt_axial(comm)
         with open("bolt_forces.csv", "w") as fh:
             fh.write("INTITULE,RESU,NOM_CHAM,NOEUD,N,VY,VZ,MT,MFY,MFZ\n")
             for i, bn in enumerate(re.findall(r"INTITULE='(BOLT\d+_[AB])'", comm)):
-                fh.write(f"{bn},1,EFGE_ELNO,{i + 1},{8000 + 120 * i}.0,"
+                k = int(re.match(r"BOLT(\d+)", bn).group(1))
+                N = float(axial.get(k, 8000 + 120 * i))
+                fh.write(f"{bn},1,EFGE_ELNO,{i + 1},{N},"
                          f"{45.0 + i},{12.0 + i},0.0,{300.0 + i},{80.0 + i}\n")
         log("IMPR_TABLE  bolt end forces -> unit 36")
 

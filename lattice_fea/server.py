@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 import hashlib
 
 from . import (__version__, bolt_sizing, ccx_writer, comm_writer, config,
-               random_vib, results)
+               preload as preload_mod, random_vib, results)
 from .materials import LIBRARY
 from .projects import ProjectStore
 from .solver import (JobManager, extract_errors, popen_isolated, reap,
@@ -236,6 +236,57 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                 "skin": store.read_json_gz(pid, "mesh/skin.json.gz")}
 
     # ---------------- solving ----------------
+    def _calibrate_preload(job, analysis, setup, geo, mesh_stats, run_dir,
+                           mesh_unv, targets) -> "dict|None":
+        """Measure what the requested preload actually produces, and correct.
+
+        Runs a stripped preload-only deck in `run_dir/calib` — same mesh,
+        supports, constraints and contact, no external load, no field output —
+        reads the bolt end forces, and returns the per-bolt strain scale.
+        Returns None if calibration could not be trusted; the caller then runs
+        uncorrected and warns, because a wrong preload the engineer is told
+        about beats a wrong preload they are not.
+        """
+        cdir = os.path.join(run_dir, "calib")
+        os.makedirs(cdir, exist_ok=True)
+        shutil.copyfile(mesh_unv, os.path.join(cdir, "mesh.unv"))
+        state = {"n": 0}
+
+        def measure(scale):
+            state["n"] += 1
+            comm, export = comm_writer.build_run(
+                analysis, setup, geo, mesh_stats, solver_cfg,
+                calibration=True, preload_scale=scale)
+            with open(os.path.join(cdir, "run.comm"), "w", encoding="utf-8") as f:
+                f.write(comm)
+            with open(os.path.join(cdir, "run.export"), "w", encoding="utf-8") as f:
+                f.write(export)
+            csv = os.path.join(cdir, "bolt_forces.csv")
+            if os.path.isfile(csv):
+                os.remove(csv)          # never read the previous pass's file
+            job.append(f"Calibrating bolt preload (pass {state['n']}) …")
+            rc = run_solver(solver_cfg, cdir, job)
+            if not os.path.isfile(csv):
+                raise preload_mod.CalibrationFailed(
+                    f"the calibration run produced no bolt forces (exit {rc})")
+            meta = {"tables": {"bolt_forces": results.parse_tableau(
+                open(csv, encoding="utf-8", errors="replace").read())}}
+            return {i: r["N"] for i, r in results.bolt_loads(meta).items()}
+
+        try:
+            out = preload_mod.calibrate(targets, measure)
+        except preload_mod.CalibrationFailed as e:
+            job.append(f"warning: preload calibration skipped — {e}")
+            return None
+        except Exception as e:  # noqa: BLE001
+            job.append(f"warning: preload calibration failed — {e}")
+            return None
+        for i, F in sorted(targets.items()):
+            job.append(f"  bolt {i}: requested {F:.6g} N, "
+                       f"model carries {out['achieved'][i]:.6g} N "
+                       f"(strain x{out['scale'][i]:.4g})")
+        return out
+
     @app.post("/api/projects/{pid}/solve/{aid}")
     def solve(pid: str, aid: str):
         proj = _project(pid)
@@ -303,6 +354,15 @@ def create_app(workspace: str = "workspace") -> FastAPI:
 
         geo = proj["geometry"]
 
+        # An imposed strain does not deliver the force it is derived from —
+        # the clamped parts take part of it back. Measure and correct, unless
+        # the analysis opts out (the calibration costs one extra solve).
+        cal_targets = {}
+        if (engine == "aster" and analysis.get("type") == "static"
+                and (analysis.get("config") or {}).get("preload_calibration", True)):
+            cal_targets = {b["index"]: b["F"] for b in
+                           comm_writer.preloaded_bolts(proj["setup"], mesh_stats)}
+
         def work(job):
             if engine == "ccx":
                 rc = run_ccx(solver_cfg, run_dir, job, "job")
@@ -313,10 +373,37 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                     support_frames=ccx_writer.support_frames(analysis, mesh_stats),
                     model_diag=geo.get("diag"))
             else:
+                cal = None
+                if cal_targets:
+                    cal = _calibrate_preload(
+                        job, analysis, proj["setup"], geo, mesh_stats, run_dir,
+                        store.path(pid, "mesh", "mesh.unv"), cal_targets)
+                    if cal:
+                        # rewrite the deck with the corrected strain; the copy
+                        # written before the job started is the uncorrected one
+                        comm2, _ = comm_writer.build_run(
+                            analysis, proj["setup"], geo, mesh_stats,
+                            solver_cfg, preload_scale=cal["scale"])
+                        with open(os.path.join(run_dir, "run.comm"), "w",
+                                  encoding="utf-8") as f:
+                            f.write(comm2)
                 rc = run_solver(solver_cfg, run_dir, job)
                 job.append("Parsing results …")
                 meta = results.build_results(run_dir, geo["bbox"],
                                              mesh_stats.get("geo_volume"))
+                if cal_targets:
+                    meta["preload"] = {
+                        "requested": {str(i): F for i, F in cal_targets.items()},
+                        "calibrated": bool(cal),
+                        **({"achieved": {str(i): v for i, v in cal["achieved"].items()},
+                            "passes": cal["passes"],
+                            "max_error": cal["max_error"]} if cal else {}),
+                    }
+                    if not cal:
+                        meta.setdefault("warnings", []).append(
+                            "Preload was not calibrated: the bolts carry less "
+                            "than the requested force by the joint's share of "
+                            "the imposed strain.")
             meta["engine"] = engine
             meta["exit_code"] = rc
             meta["signature"] = solve_signature(analysis, proj["setup"], mesh_stats)

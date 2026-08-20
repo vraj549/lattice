@@ -205,16 +205,27 @@ def run_solver(cfg: SolverConfig, jobdir: str, job: Job) -> int:
     return rc
 
 
+def ccx_env(cfg: SolverConfig, base: dict = None) -> dict:
+    """Environment CalculiX must be run under.
+
+    ccx reads its thread count from the environment, not a flag, and this is
+    deliberately NOT cfg.ncpus — see SolverConfig.ccx_threads. Multithreaded
+    SPOOLES returns wrong answers with exit code 0, so anything that runs ccx,
+    tests included, has to go through here rather than build its own env and
+    quietly drift onto the broken path.
+    """
+    env = dict(os.environ if base is None else base)
+    env["OMP_NUM_THREADS"] = str(max(1, int(cfg.ccx_threads)))
+    env["CCX_NPROC_STIFFNESS"] = env["OMP_NUM_THREADS"]
+    env["CCX_NPROC_EQUATION_SOLVER"] = env["OMP_NUM_THREADS"]
+    return env
+
+
 def run_ccx(cfg: SolverConfig, jobdir: str, job: Job, jobname: str = "job") -> int:
     """Run CalculiX in `jobdir`. ccx takes the deck name without .inp."""
     argv = shlex.split(cfg.ccx_cmd) + ["-i", jobname]
     job.append(f"$ {' '.join(argv)}  (in {jobdir})")
-    env = dict(os.environ)
-    # ccx reads its thread count from the environment, not a flag. This is
-    # deliberately NOT cfg.ncpus — see SolverConfig.ccx_threads.
-    env["OMP_NUM_THREADS"] = str(max(1, int(cfg.ccx_threads)))
-    env["CCX_NPROC_STIFFNESS"] = env["OMP_NUM_THREADS"]
-    env["CCX_NPROC_EQUATION_SOLVER"] = env["OMP_NUM_THREADS"]
+    env = ccx_env(cfg)
     # ccx APPENDS to an existing .frd, so a stale one from a previous attempt
     # would be read back as if it were this run's answer.
     for ext in ("frd", "dat", "sta", "cvg", "12d"):

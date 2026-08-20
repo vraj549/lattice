@@ -1691,6 +1691,33 @@ function secContours(S, A, a) {
 function secBolts(S, A, a) {
   const meta = S.results[a.id];
   const secs = [];
+  const P = meta.preload;
+  if (P) {
+    // An imposed strain does not deliver the force it is derived from; the
+    // clamped parts take part of it back. What the run actually contains is
+    // the number every margin below depends on, so it is reported, not assumed.
+    const bolts = S.project.setup.bolts;
+    const ids = Object.keys(P.requested).sort((x, y) => Number(x) - Number(y));
+    secs.push(sec("Preload in the model",
+      el("table", { class: "rtable" },
+        el("tr", {}, ["Bolt", "Requested", "In model", "Error"]
+          .map((h) => el("th", {}, h))),
+        ids.map((k) => {
+          const req = P.requested[k];
+          const got = P.achieved?.[k];
+          const err = got == null ? null : got / req - 1;
+          return el("tr", {},
+            el("td", {}, bolts[Number(k) - 1]?.name || `Bolt ${k}`),
+            el("td", {}, fmtVal(req)),
+            el("td", {}, got == null ? "\u2014" : fmtVal(got)),
+            el("td", { class: err != null && Math.abs(err) > 0.01 ? "bad" : "" },
+               err == null ? "\u2014" : `${(100 * err).toFixed(1)}%`));
+        })),
+      P.calibrated
+        ? null
+        : el("div", { class: "hint bad" },
+             "Not calibrated \u2014 the bolts carry less than the requested force.")));
+  }
   const boltBlocks = meta.tables?.bolt_forces || [];
   if (boltBlocks.length) {
     const rows = [];

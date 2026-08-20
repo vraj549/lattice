@@ -252,9 +252,37 @@ def _cara_arg(b: CommBuild) -> str:
     return " CARA_ELEM=cara," if getattr(b, "has_beams", False) else ""
 
 
-def _preload_charge(b: CommBuild) -> "str|None":
-    """PRE_EPSI axial pre-strain per preloaded bolt: EPX = -F / (E*A) puts the
-    shank in ~F of tension against a stiff joint."""
+def preloaded_bolts(setup: dict, mesh_stats: dict) -> list:
+    """[{index, name, F}] for every bolt carrying a preload.
+
+    The caller needs the targets to calibrate against; see `_preload_charge`
+    for why the requested force is not the force the model ends up with.
+    """
+    out = []
+    for br in _active_bolts(setup, mesh_stats):
+        F = float(br["cfg"].get("preload_N") or 0.0)
+        if F > 0:
+            out.append({"index": br["index"], "F": F,
+                        "name": br["cfg"].get("name") or f"Bolt {br['index']}"})
+    return out
+
+
+def _preload_charge(b: CommBuild, scale: dict = None) -> "str|None":
+    """PRE_EPSI axial pre-strain per preloaded bolt.
+
+    PRE_EPSI imposes a *shortening*, not a force. The bolt is a spring in
+    parallel with the clamped parts, so they take back part of it and the
+    shank settles at
+
+        F_achieved = F_requested * delta_S / (delta_S + delta_P)
+
+    which for a normal steel joint is 15% low and for an aluminium one 35%.
+    EPX = -F/(E*A) alone is therefore not the preload the engineer asked for.
+    `scale` carries the per-bolt correction measured by a calibration run
+    (see `server.calibrate_preload`); without it this writes the raw,
+    uncorrected strain.
+    """
+    scale = scale or {}
     items = []
     for br in getattr(b, "bolts", []):
         cfg = br["cfg"]
@@ -263,7 +291,7 @@ def _preload_charge(b: CommBuild) -> "str|None":
             continue
         E = float(cfg.get("E_GPa", 210.0)) * 1000.0
         A = bolt_area(cfg)
-        items.append((br["index"], -F / (E * A)))
+        items.append((br["index"], -F * float(scale.get(br["index"], 1.0)) / (E * A)))
     if not items:
         return None
     b.w("preload = AFFE_CHAR_MECA(MODELE=model, PRE_EPSI=(")
@@ -485,17 +513,22 @@ def _contact_defi(b: CommBuild, contacts: list) -> "str|None":
     return "contact"
 
 
-def _ramp(b: CommBuild, n_steps: int, preload: bool) -> None:
+def _ramp(b: CommBuild, n_steps: int, preload: bool, load: bool = True) -> None:
     """Time discretisation.
 
-    Two ramps when there is preload: the bolts are tightened first with no
-    external load, then the load is applied on top. Applying both at once
-    would let the joint be pushed open before it was ever clamped, which is
-    not the sequence the hardware sees and can fail to converge.
+    Two ramps when preload and an external load are both present: the bolts
+    are tightened first with nothing else applied, then the load is applied on
+    top. Applying both at once would let the joint be pushed open before it
+    was ever clamped, which is not the sequence the hardware sees and can fail
+    to converge.
+
+    With only one of the two there is nothing to sequence, so it stays a
+    single ramp — that is the preload calibration run, and it should not pay
+    for a second ramp that applies nothing.
     """
-    stops = "0.0, 1.0, 2.0" if preload else "0.0, 1.0"
+    two = preload and load
     b.w(f"tlist = DEFI_LIST_REEL(DEBUT=0.0, INTERVALLE=(")
-    if preload:
+    if two:
         b.w(f"    _F(JUSQU_A=1.0, NOMBRE={max(2, n_steps // 2)}),")
         b.w(f"    _F(JUSQU_A=2.0, NOMBRE={max(2, n_steps)}),")
     else:
@@ -505,26 +538,38 @@ def _ramp(b: CommBuild, n_steps: int, preload: bool) -> None:
     b.w("                       DEFI_LIST=_F(LIST_INST=tlist),")
     b.w("                       ECHEC=_F(SUBD_METHODE='MANUEL', SUBD_PAS=4,")
     b.w("                                SUBD_NIVEAU=4))")
-    if preload:
+    if two:
         b.w("# bolts tighten over [0,1] and hold; external load ramps over [1,2]")
         b.w("fpre = DEFI_FONCTION(NOM_PARA='INST', PROL_DROITE='CONSTANT',")
         b.w("                     VALE=(0.0, 0.0, 1.0, 1.0, 2.0, 1.0))")
         b.w("fext = DEFI_FONCTION(NOM_PARA='INST', PROL_DROITE='CONSTANT',")
         b.w("                     VALE=(0.0, 0.0, 1.0, 0.0, 2.0, 1.0))")
     else:
-        b.w("fext = DEFI_FONCTION(NOM_PARA='INST', PROL_DROITE='CONSTANT',")
+        name = "fpre" if preload else "fext"
+        b.w(f"{name} = DEFI_FONCTION(NOM_PARA='INST', PROL_DROITE='CONSTANT',")
         b.w("                     VALE=(0.0, 0.0, 1.0, 1.0))")
-    b.w(f"# ramp stops: {stops}")
+    b.w(f"# ramp stops: {'0.0, 1.0, 2.0' if two else '0.0, 1.0'}")
     b.w()
 
 
 def write_static(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
-                 analysis: dict = None, ai: int = 1) -> CommBuild:
+                 analysis: dict = None, ai: int = 1, **kw) -> CommBuild:
+    """Static solve.
+
+    `calibration=True` writes the preload-only deck that measures what the
+    requested preload actually produces in this joint: same mesh, supports,
+    constraints and contact, but no external load and no field output — the
+    bolt end forces are all it is read for, and skipping stress recovery and
+    the MED write is most of what makes the extra solve affordable.
+
+    `preload_scale` is the per-bolt correction that calibration returns.
+    """
+    calibration = bool(kw.get("calibration"))
     b = CommBuild()
     _prelude(b, setup, meta, mesh_stats, need_probes=False, analysis=analysis, ai=ai)
     fix = _supports(b, analysis, ai)
-    load = _loads(b, analysis, ai, meta)
-    preload = _preload_charge(b)
+    load = None if calibration else _loads(b, analysis, ai, meta)
+    preload = _preload_charge(b, kw.get("preload_scale"))
     if load is None and preload is None:
         raise ValueError("Static analysis needs at least one load (force, pressure, gravity, or bolt preload).")
 
@@ -540,6 +585,10 @@ def write_static(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
         b.w(f"                    EXCIT=({excit},),{_cara_arg(b)}")
         b.w("                    SOLVEUR=_F(METHODE='MUMPS'))")
         b.w()
+    if calibration:
+        _bolt_forces_out(b, "res")
+        b.w("FIN()")
+        return b
     vol_restrict = ""
     if getattr(b, "has_beams", False):
         # stress recovery is a solid-element concept; beams get EFGE below
@@ -632,7 +681,8 @@ def _write_nonlinear_static(b: CommBuild, fix, load, preload, contacts, analysis
     """
     cvar = _contact_defi(b, contacts)
     cfg = (analysis or {}).get("config", {}) or {}
-    _ramp(b, int(cfg.get("contact_steps") or 8), preload is not None)
+    _ramp(b, int(cfg.get("contact_steps") or 8),
+          preload is not None, load is not None)
 
     excit = [f"_F(CHARGE={fix})"] + [f"_F(CHARGE={c})" for c in b.constraint_charges]
     if preload:
@@ -654,7 +704,7 @@ def _write_nonlinear_static(b: CommBuild, fix, load, preload, contacts, analysis
     b.w()
 
 def write_modal(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
-                analysis: dict = None, ai: int = 1) -> CommBuild:
+                analysis: dict = None, ai: int = 1, **kw) -> CommBuild:
     b = CommBuild()
     _prelude(b, setup, meta, mesh_stats, need_probes=False, analysis=analysis, ai=ai)
     fix = _supports(b, analysis, ai)
@@ -692,7 +742,7 @@ def write_modal(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
 
 
 def write_harmonic(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
-                   analysis: dict = None, ai: int = 1) -> CommBuild:
+                   analysis: dict = None, ai: int = 1, **kw) -> CommBuild:
     """Modal-superposition harmonic response.
 
     The modal basis is sized automatically: band [0, 1.6 * f_max] so
@@ -802,7 +852,7 @@ def write_harmonic(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
 # --------------------------------------------------------------------------
 
 def write_random(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
-                 analysis: dict = None, ai: int = 1) -> CommBuild:
+                 analysis: dict = None, ai: int = 1, **kw) -> CommBuild:
     """Random vibration = a unit-g base sweep spanning the input spectrum.
 
     Driving with exactly 1 g makes the exported FRF read directly as
@@ -889,8 +939,12 @@ def check_mesh_current(analysis: dict, ai: int, mesh_stats: dict) -> None:
 
 
 def build_run(analysis: dict, setup: dict, meta: dict, mesh_stats: dict,
-              solver_cfg) -> "tuple[str, str]":
-    """Returns (comm_text, export_text)."""
+              solver_cfg, **kw) -> "tuple[str, str]":
+    """Returns (comm_text, export_text).
+
+    `calibration` / `preload_scale` are forwarded to the writer; only the
+    static writer acts on them (preload exists nowhere else).
+    """
     atype = analysis.get("type")
     if atype not in WRITERS:
         raise ValueError(f"Unknown analysis type: {atype}")
@@ -899,7 +953,8 @@ def build_run(analysis: dict, setup: dict, meta: dict, mesh_stats: dict,
     ai = 1 + next((i for i, a in enumerate(setup.get("analyses", []))
                    if a.get("id") == analysis.get("id")), 0)
     check_mesh_current(analysis, ai, mesh_stats)
-    b = WRITERS[atype](setup, meta, mesh_stats, analysis.get("config", {}), analysis, ai)
+    b = WRITERS[atype](setup, meta, mesh_stats, analysis.get("config", {}),
+                       analysis, ai, **kw)
 
     exp = [
         "P actions make_etude",

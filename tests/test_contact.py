@@ -123,3 +123,45 @@ def test_contact_pairs_are_found_on_coincident_faces():
     assert len(pairs) == 1
     assert sorted(pairs[0]["solids"]) == [1, 2]
     assert pairs[0]["faces_a"] == [2] and pairs[0]["faces_b"] == [3]
+
+
+BOLT = [{"id": "b1", "name": "Bolt 1", "d_mm": 6, "E_GPa": 210,
+         "preload_N": 8000, "side_a_faces": [3], "side_b_faces": [11]}]
+
+
+def build_kw(kind, bolts=None, **kw):
+    setup, meta, stats = base(kind, 0.15)
+    if bolts:
+        setup["bolts"] = bolts
+        stats["bolts"] = [{"index": 1, "id": "b1", "name": "b",
+                           "end_a": [0, 0, 8], "end_b": [0, 0, 0], "length": 8.0}]
+    comm, exp = comm_writer.build_run(setup["analyses"][0], setup, meta, stats,
+                                      SolverConfig(), **kw)
+    return comm, exp
+
+
+def test_calibration_run_is_a_single_ramp():
+    """With no external load there is nothing to sequence after tightening.
+    The second ramp would apply nothing and cost half the increments."""
+    full, _ = build_kw("friction", bolts=BOLT)
+    cal, _ = build_kw("friction", bolts=BOLT, calibration=True)
+    assert "# ramp stops: 0.0, 1.0, 2.0" in full
+    assert "# ramp stops: 0.0, 1.0" in cal
+    assert "fpre" in cal and "fext" not in cal
+    assert "FONC_MULT=fpre" in cal
+
+
+def test_calibration_keeps_the_contact_that_sets_the_joint_stiffness():
+    """Calibrating against a bonded stand-in would measure the wrong spring."""
+    cal, _ = build_kw("friction", bolts=BOLT, calibration=True)
+    assert "STAT_NON_LINE" in cal
+    assert "DEFI_CONTACT" in cal
+    assert "FROTTEMENT='COULOMB'" in cal
+
+
+def test_load_only_run_is_unchanged_by_the_ramp_rework():
+    """The no-preload path still ramps the external load over [0,1]."""
+    comm, _ = build_kw("friction")
+    assert "# ramp stops: 0.0, 1.0" in comm
+    assert "fext" in comm and "fpre" not in comm
+    assert "FONC_MULT=fext" in comm

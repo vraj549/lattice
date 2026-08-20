@@ -1,6 +1,8 @@
 """Bolted-joint pipeline: cylinder detection, beam creation, spiders, preload."""
+import json
 import math
 import os
+import re
 import sys
 
 import pytest
@@ -116,7 +118,10 @@ def test_bolt_section_uses_tensile_stress_area(meshed):
     off by the ratio — silently, and worst on the small screws where that
     ratio is largest.
     """
-    _, out, setup, meta = meshed
+    _, out, shared, meta = meshed
+    # `meshed` is module-scoped and handed out by reference: edit a copy, or
+    # this M1.6 becomes bolt 1 for every test that runs after this one.
+    setup = json.loads(json.dumps(shared))
     setup["materials"] = [{"id": "st", "name": "Steel", "E_GPa": 210, "nu": 0.3,
                            "rho_kgm3": 7850}]
     setup["assignments"] = {str(s["tag"]): "st" for s in meta["solids"]}
@@ -179,3 +184,65 @@ def test_tie_comm(meshed):
     assert "LIAISON_MAIL" in comm
     assert f"GROUP_MA_MAIT=('V{s1}',)" in comm
     assert "TYPE_RACCORD='MASSIF'" in comm
+
+# ---------------------------------------------------- preload calibration
+
+def test_preloaded_bolts_lists_targets(meshed):
+    _, out, setup, meta = meshed
+    got = comm_writer.preloaded_bolts(setup, out["stats"])
+    assert [b["F"] for b in got] == [8000.0, 8000.0]
+    assert {b["index"] for b in got} == {1, 2}
+
+
+def test_unpreloaded_bolts_are_not_listed(meshed):
+    """Nothing to calibrate on a sizing run, so it must not cost a solve."""
+    _, out, setup, meta = meshed
+    s2 = json.loads(json.dumps(setup))
+    for b in s2["bolts"]:
+        b["preload_N"] = 0
+    assert comm_writer.preloaded_bolts(s2, out["stats"]) == []
+
+
+def test_preload_scale_multiplies_the_imposed_strain(meshed):
+    _, out, setup, meta = meshed
+    a = setup["analyses"][0]
+    base, _ = comm_writer.build_run(a, setup, meta, out["stats"], SolverConfig())
+    scaled, _ = comm_writer.build_run(a, setup, meta, out["stats"], SolverConfig(),
+                                      preload_scale={1: 1.25, 2: 1.0})
+
+    def epx(text):
+        return {int(m.group(1)): float(m.group(2)) for m in re.finditer(
+            r"GROUP_MA=\('BOLT(\d+)',\), EPX=([-\d.eE+]+)", text)}
+
+    b, s = epx(base), epx(scaled)
+    assert set(b) == {1, 2}
+    assert s[1] == pytest.approx(b[1] * 1.25, rel=1e-9)
+    assert s[2] == pytest.approx(b[2], rel=1e-9)
+
+
+def test_calibration_deck_drops_the_external_load_and_field_output(meshed):
+    """It exists to measure bolt force under preload alone. Anything else in
+    it is either wrong (the external load) or wasted (the MED write)."""
+    _, out, setup, meta = meshed
+    a = setup["analyses"][0]
+    full, _ = comm_writer.build_run(a, setup, meta, out["stats"], SolverConfig())
+    cal, _ = comm_writer.build_run(a, setup, meta, out["stats"], SolverConfig(),
+                                   calibration=True)
+    assert "PRE_EPSI" in cal
+    assert "FORCE_FACE" in full and "FORCE_FACE" not in cal
+    assert "IMPR_RESU" in full and "IMPR_RESU" not in cal
+    assert "SIEQ_NOEU" in full and "SIEQ_NOEU" not in cal
+    assert "EFGE_ELNO" in cal
+    # same model: the constraints that set the joint stiffness must survive
+    for keep in ("LIAISON_RBE3", "AFFE_CARA_ELEM", "DDL_IMPO"):
+        assert keep in cal, keep
+
+
+def test_calibration_export_asks_only_for_the_bolt_forces(meshed):
+    _, out, setup, meta = meshed
+    a = setup["analyses"][0]
+    _, exp = comm_writer.build_run(a, setup, meta, out["stats"], SolverConfig(),
+                                   calibration=True)
+    units = [ln for ln in exp.splitlines() if ln.startswith("F libr")]
+    assert any("bolt_forces.csv" in u for u in units)
+    assert not any("result.med" in u for u in units)

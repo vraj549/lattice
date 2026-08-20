@@ -1,5 +1,6 @@
 """CalculiX backend: deck generation, and a solve checked against theory."""
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -11,7 +12,8 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from lattice_fea import ccx_writer, geometry, meshing, results  # noqa: E402
-from lattice_fea.config import find_ccx  # noqa: E402
+from lattice_fea.config import SolverConfig, find_ccx  # noqa: E402
+from lattice_fea.solver import ccx_env  # noqa: E402
 from lattice_fea.frd_reader import FrdFile  # noqa: E402
 from lattice_fea.projects import default_setup  # noqa: E402
 
@@ -94,7 +96,7 @@ def test_cantilever_matches_beam_theory(tmp_path):
     with open(os.path.join(run, "job.inp"), "w") as f:
         f.write(deck)
 
-    env = dict(os.environ, OMP_NUM_THREADS="4")
+    env = ccx_env(SolverConfig())
     p = subprocess.run([CCX, "-i", "job"], cwd=run, capture_output=True,
                        text=True, env=env, timeout=900)
     assert p.returncode == 0, p.stdout[-2000:]
@@ -133,7 +135,7 @@ def test_modal_frequencies_match_theory(tmp_path):
     with open(os.path.join(run, "job.inp"), "w") as f:
         f.write(ccx_writer.build_deck(setup["analyses"][0], setup, meta, stats))
 
-    env = dict(os.environ, OMP_NUM_THREADS="4")
+    env = ccx_env(SolverConfig())
     p = subprocess.run([CCX, "-i", "job"], cwd=run, capture_output=True,
                        text=True, env=env, timeout=900)
     assert p.returncode == 0, p.stdout[-2000:]
@@ -195,7 +197,7 @@ def test_frictional_contact_solves(tmp_path):
     with open(os.path.join(run, "job.inp"), "w") as f:
         f.write(deck)
 
-    env = dict(os.environ, OMP_NUM_THREADS="4")
+    env = ccx_env(SolverConfig())
     p = subprocess.run([CCX, "-i", "job"], cwd=run, capture_output=True,
                        text=True, env=env, timeout=1800)
     assert p.returncode == 0, p.stdout[-2000:]
@@ -271,3 +273,31 @@ def test_solution_checks_flag_a_corrupted_result(tmp_path):
 
     drifted = check(bad_disp, good_forc)
     assert any("FIXED SUPPORTS" in w for w in drifted["warnings"])
+
+
+def test_ccx_runs_single_threaded():
+    """Multithreaded SPOOLES returns wrong answers and exits 0 — measured at
+    1/14 results wrong on two threads and 4/14 on three. Nothing may raise
+    the thread count without deliberately editing this.
+
+    A test that set its own thread count to four is what put a 38%
+    cantilever error into the suite as an intermittent failure.
+    """
+    env = ccx_env(SolverConfig(), base={})
+    assert env["OMP_NUM_THREADS"] == "1"
+    assert env["CCX_NPROC_STIFFNESS"] == "1"
+    assert env["CCX_NPROC_EQUATION_SOLVER"] == "1"
+
+
+def test_no_test_builds_its_own_ccx_environment():
+    """The production env builder is the only way to launch ccx.
+
+    Matches assignment, not mention, so this docstring does not trip it.
+    """
+    assign = re.compile(r'OMP_NUM_THREADS"?\s*\]?\s*=[^=]')
+    here = os.path.dirname(__file__)
+    for name in sorted(os.listdir(here)):
+        if not name.endswith(".py"):
+            continue
+        for line in open(os.path.join(here, name), encoding="utf-8"):
+            assert not assign.search(line), f"{name}: {line.strip()}"
