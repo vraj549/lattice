@@ -159,3 +159,64 @@ def test_calibration_is_skipped_without_preload(client):
     assert wait(c, r.json()["job"])["status"] == "done"
     m = c.get(f"/api/projects/{pid}/results/a1").json()
     assert "preload" not in m
+
+
+def _bolted_project(c, preload_N):
+    """A two-plate bolted joint set up through the API, meshed and solved."""
+    proj = make_project(c)
+    pid = proj["id"]
+    p = c.get(f"/api/projects/{pid}").json()
+    meta = p["geometry"]
+    cyls = sorted((f for f in meta["faces"]
+                   if (f.get("fit") or {}).get("kind") == "cylinder"),
+                  key=lambda f: f["com"][2])
+    flat = sorted((f for f in meta["faces"]
+                   if (f.get("fit") or {}).get("kind") == "plane"),
+                  key=lambda f: -f["area"])
+    setup = p["setup"]
+    setup["materials"] = [{"id": "st", "name": "Steel", "E_GPa": 210.0,
+                           "nu": 0.3, "rho_kgm3": 7850}]
+    setup["assignments"] = {str(s["tag"]): "st" for s in meta["solids"]}
+    setup["bolts"] = [{
+        "id": "b1", "name": "Bolt 1", "size": "M6", "d_mm": 6, "E_GPa": 210,
+        "yield_MPa": 640, "preload_N": preload_N,
+        "side_a_faces": [cyls[-1]["tag"]], "side_b_faces": [cyls[0]["tag"]]}]
+    setup["analyses"] = [{
+        "id": "a1", "type": "static", "name": "Static", "config": {},
+        "supports": [{"id": "s1", "name": "fix", "type": "fixed",
+                      "faces": [flat[0]["tag"]]}],
+        "loads": [{"id": "l1", "name": "pull", "type": "force",
+                   "faces": [flat[1]["tag"]], "fx": 0, "fy": 0, "fz": 500}],
+    }]
+    assert c.put(f"/api/projects/{pid}/setup", json=setup).status_code == 200
+    r = c.post(f"/api/projects/{pid}/mesh")
+    assert wait(c, r.json()["job"])["status"] == "done"
+    r = c.post(f"/api/projects/{pid}/solve/a1")
+    assert wait(c, r.json()["job"])["status"] == "done"
+    return pid, meta
+
+
+def test_sizing_uses_the_measured_clamped_length(client):
+    """The grip the sizing calculates with is the one the mesh measured, and
+    for two 8 mm plates that is 16 mm — not the 8 mm the centroids gave."""
+    c = client
+    pid, meta = _bolted_project(c, preload_N=0)
+    r = c.get(f"/api/projects/{pid}/results/a1/bolt-sizing")
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert not out.get("blocked"), out
+    assert out["rows"], out
+    row = out["rows"][0]
+    zs = [f["com"][2] for f in meta["faces"]]
+    assert row["grip_mm"] == pytest.approx(max(zs) - min(zs), abs=0.05)
+
+
+def test_sizing_is_refused_once_preload_is_applied(client):
+    """The beam force in a preloaded run is the bolt force; feeding it back
+    would count the preload twice."""
+    c = client
+    pid, _ = _bolted_project(c, preload_N=8000)
+    out = c.get(f"/api/projects/{pid}/results/a1/bolt-sizing").json()
+    assert out["blocked"] is True
+    assert out["rows"] == []
+    assert out["warnings"]
