@@ -89,7 +89,11 @@ class SolverConfig:
     mode: str = "none"              # native | wsl | docker | none
     cmd: str = "run_aster"
     wsl_distro: str = ""
-    docker_image: str = "codeastersolver/codeaster-seq:latest"
+    # simvia/code_aster tracks current code_aster (v17/v18) and ships
+    # run_aster. codeastersolver/codeaster-seq was the old default and is not
+    # usable: last built in 2019, legacy as_run launcher, dependencies only —
+    # no solver binary. Recommending it sent people down a dead end.
+    docker_image: str = "simvia/code_aster:17.4.22"
     memory_mb: int = 6000
     time_limit_s: int = 14400
     ncpus: int = max(1, (os.cpu_count() or 4) - 2)
@@ -264,8 +268,9 @@ def detect(workspace: str = ".") -> SolverConfig:
             cfg.detail = f"docker image `{cfg.docker_image}` present"
             return _probe_resources(cfg)
         cfg.notes.append(
-            f"Docker is installed but image `{cfg.docker_image}` is not pulled. "
-            f"Run: docker pull {cfg.docker_image}  (then restart Lattice)")
+            f"Docker is installed but `{cfg.docker_image}` is not pulled. "
+            f"To use it: docker pull {cfg.docker_image}, then restart Lattice. "
+            "On Apple Silicon this image will not run — see docs/INSTALL.md.")
 
     cfg.mode = "none"
     cfg.detail = "no code_aster found — running in geometry/mesh-only demo mode"

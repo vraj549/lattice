@@ -1,170 +1,112 @@
 # Lattice
 
-**Browser-based FEA workbench.** Import STEP parts or assemblies, mesh them, and run
-**static structural**, **modal**, and **harmonic (frequency response)** analyses on
-[code_aster](https://code-aster.org) — from a SimScale-style UI in your browser.
+**Browser-based FEA workbench.** Import STEP parts or assemblies, mesh them,
+and run **static**, **modal**, **harmonic** and **random vibration** analyses
+on [code_aster](https://code-aster.org) or
+[CalculiX](http://www.dhondt.de/) — from a workbench UI in your browser.
 Everything runs locally; nothing leaves your machine.
 
 ```
-STEP  ─▶  OCCT/gmsh import  ─▶  tet10 mesh  ─▶  code_aster (MUMPS)  ─▶  contours · modes · FRF
-              (fragment = bonded assemblies)         static / modal / harmonic
+STEP ─▶ OCCT/gmsh import ─▶ tet10 mesh ─▶ code_aster or CalculiX ─▶ contours · modes · FRF
+          bonded or                          static / modal /
+          separate parts                     harmonic / random
 ```
 
 | | |
 |---|---|
-| Geometry | STEP (AP203/AP214) parts and assemblies; shared faces become bonded interfaces automatically |
-| Mesh | quadratic tetrahedra (Tet10), curvature-adaptive, per-face refinement, quality report |
+| Geometry | STEP (AP203/AP214) parts and assemblies. Import bonded (coincident faces merged, conformal) or as separate parts with contact between them |
+| Mesh | quadratic tetrahedra (Tet10), curvature-adaptive, per-face refinement, quality and memory report |
 | Static | force, pressure, remote force/moment, gravity, rotational velocity; fixed / frictionless / prescribed supports; von Mises, principal, displacement, reactions |
-| Modal | Sorensen/ARPACK via `CALC_MODES`; frequencies, animated mode shapes, effective-mass participation |
-| Harmonic | modal superposition `DYNA_VIBRA`; log/linear sweep, modal damping ζ, FRF (module + phase) at probes, optional full fields at chosen frequencies |
-| Bolts | preloaded beam bolts: Timoshenko shank + RBE3 spiders onto picked hole/bearing faces, `PRE_EPSI` preload, per-bolt axial/shear/bending force table |
-| Ties | `LIAISON_MAIL` glued face-to-volume constraints for non-conformal interfaces |
-| Units | mm / N / MPa / tonne·mm⁻³ / Hz (STEP files in mm) |
+| Modal | frequencies, animated mode shapes, effective-mass participation |
+| Harmonic | force- or base-driven sweep, modal damping ζ, FRF at probes with annotated peaks and Q |
+| Random | PSD breakpoint table in g²/Hz, response PSD, g RMS and 3σ, Miles' cross-check, modal-truncation check |
+| Contacts | bonded, no-separation, frictionless, frictional (μ) |
+| Bolts | beam shank + RBE3 spiders, preload as axial pre-strain, per-bolt force **and stress** vs yield, pattern one joint onto every other hole |
+| Solvers | code_aster (everything) or CalculiX (static, modal), chosen per analysis |
+| Units | mm / N / MPa / tonne·mm⁻³ / Hz |
 
 ---
 
-## Install (all platforms)
-
-Requires **Python 3.9+**. No Node, no build step.
+## Quick start
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/vraj549/lattice.git
 cd lattice
-python -m venv .venv
-# Windows:  .venv\Scripts\activate      macOS/Linux:  source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
+python -m pip install --upgrade pip                   # needed: see below
 pip install -e .
-python -m lattice_fea        # opens http://127.0.0.1:8765
+python -m lattice_fea                                 # http://127.0.0.1:8765
 ```
 
-Without a solver installed, import, setup, and meshing all work — only *Run
-analysis* is disabled. Check your environment any time with:
+> The `pip` bundled with a Python 3.9 virtual environment is too old for an
+> editable install of a `pyproject.toml`-only package and fails with *"editable
+> mode currently requires a setuptools-based build"*. Upgrading pip first is
+> the fix; `pip install .` (no `-e`) also works if you would rather not.
+
+Import, setup and meshing work with no solver installed — only **Run analysis**
+is disabled. Add one:
+
+```bash
+# macOS / Linux — one command, covers static and modal
+brew install costerwi/homebrew-calculix/calculix-ccx
+
+# Windows — code_aster via WSL2, covers everything
+# see docs/INSTALL.md
+```
+
+Then check what you have:
 
 ```bash
 python -m lattice_fea doctor
 ```
 
-`doctor` lists every project and states exactly what is blocking a run
-("not meshed", "no solver", "solids without material", or "nothing — should be
-clickable").
+**[docs/INSTALL.md](docs/INSTALL.md)** has the full per-platform detail,
+configuration, and troubleshooting.
 
-### Trying the interface without a solver
+Try it immediately with `examples/bracket_assembly.step` (regenerate the
+examples with `python examples/make_examples.py`).
 
-```bash
-python -m lattice_fea --demo-solver
-```
+## Documentation
 
-Runs with a stand-in that fabricates plausible results so the whole workflow —
-solve, contours, mode animation, FRF curves, bolt tables — can be exercised
-with no code_aster present. **Results are invented, not computed**; the UI says
-so in a banner you cannot miss. Useful for demos, for UI development, and for
-telling "the tool is broken" apart from "my solver isn't set up".
+- **[docs/INSTALL.md](docs/INSTALL.md)** — installing the app and a solver on
+  each platform, configuration, updating, troubleshooting.
+- **[docs/SOLVERS.md](docs/SOLVERS.md)** — code_aster vs CalculiX: what each
+  covers, how to choose, and why CalculiX runs single-threaded.
+- **[docs/METHODS.md](docs/METHODS.md)** — what each result is, how it is
+  computed, and where it stops being valid.
 
-> **After a `git pull`, restart the server.** The Python process holds the code
-> in memory, so pulling alone changes nothing. The UI shows a red banner when
-> its build and the server's version disagree.
-
-### Stopping it
-
-`Ctrl+C` once shuts down and kills any running mesh/solve. **A second `Ctrl+C`
-force-quits** regardless of what a child process is doing. On Windows
-`Ctrl+Break` also works, and if the console is wedged entirely:
-
-```
-taskkill /F /IM python.exe
-```
-
-## Solver setup (code_aster)
-
-Lattice looks for `run_aster` in this order: native `PATH` → WSL2 distros → docker
-image. Auto-detection is printed at startup; override with env vars or `lattice.toml`
-(see below).
-
-### Windows — WSL2 (recommended)
-
-The Salome-Meca / code_aster team publishes a ready-made WSL2 distribution
-([forum post](https://forum.code-aster.org/public/d/28014-salome-meca-20241-on-wsl2-ready-to-use-distribution)):
-
-```powershell
-wsl --install --no-distribution        # if WSL2 is not set up yet, then reboot
-# download smeca-2024.1-wsl2-verified.tar.gz from the forum post, then:
-wsl --import smeca-2024 C:\smeca C:\Downloads\smeca-2024.1-wsl2-verified.tar.gz
-wsl -d smeca-2024 bash -lc "run_aster --version"   # sanity check
-```
-
-Restart Lattice — it scans WSL distros for `run_aster` automatically. If your distro
-uses a wrapper script, point Lattice at it:
-
-```powershell
-set LATTICE_ASTER_MODE=wsl
-set LATTICE_WSL_DISTRO=smeca-2024
-set LATTICE_ASTER_CMD=run_aster
-```
-
-> **RAM note:** WSL2 takes 50 % of system RAM by default. On a 16 GB machine, create
-> `%UserProfile%\.wslconfig` with `[wsl2]` / `memory=10GB`, and set
-> `LATTICE_MEMORY_MB=8000` so code_aster's limit fits inside it.
-
-### Linux — native
-
-```bash
-conda install -c conda-forge code-aster     # linux-64
-# or a distro package / source build that puts run_aster on PATH
-```
-
-### Any platform — docker
-
-```bash
-docker pull simvia/code_aster:17.4.22
-export LATTICE_ASTER_MODE=docker
-export LATTICE_DOCKER_IMAGE=simvia/code_aster:17.4.22
-```
-
-`simvia/code_aster` tracks current code_aster (v17/v18) and ships `run_aster`.
-Note `codeastersolver/codeaster-seq` is **not** usable: it was last built in
-2019, ships the legacy `as_run` launcher, and contains only dependencies — no
-solver binary.
-
-> **Apple Silicon: verified not to work.** These images are amd64-only, and
-> under Docker's Rosetta emulation the v17 binaries die with `Illegal
-> instruction` — the containers require AVX, which Rosetta-for-Linux does not
-> provide. Forcing QEMU instead prevented the Docker daemon from starting.
-> On an M-series Mac use `--demo-solver` for the interface and run real solves
-> on x86 (WSL2 or Linux).
-
-### `lattice.toml` (optional, next to where you launch)
-
-```toml
-[solver]
-mode = "wsl"                  # native | wsl | docker | none
-wsl_distro = "smeca-2024"
-cmd = "run_aster"
-memory_mb = 8000
-time_limit_s = 14400
-ncpus = 6
-```
+---
 
 ## Using it
 
-1. **New project** → name it and upload a STEP. Assemblies are *fragmented* on import:
-   coincident faces between parts are merged, so the mesh is continuous and parts are
-   bonded — no contact setup needed. The Connections tree entry lists what got bonded.
-2. **Materials** — click each solid, pick from the library (or note the checks panel
-   nagging you).
-3. **Analyses** — *+ add* opens a dialog: static, modal, harmonic or random.
+1. **New project** → name it, upload a STEP, and choose how the assembly is
+   treated. **Bonded** merges coincident faces so parts share nodes and are
+   welded together — right for a weldment, and cheapest. **Separate parts**
+   keeps both surfaces so you can define contact between them, which is what a
+   bolted joint needs if it has to be able to slip or open. This cannot be
+   changed later without re-importing.
+2. **Materials** — click each solid and pick from the library, or define your
+   own with *New custom material*.
+3. **Connections** — *Detect contacts* finds the interfaces between separate
+   parts. Each starts bonded; change any that can slide or separate. Bolts and
+   ties are added here too.
+4. **Analyses** — *+ add* opens a dialog: static, modal, harmonic or random.
    Each analysis owns its own supports and loads, so only what that study needs
    appears beneath it. A base-driven harmonic or a random study is driven
    through its supports, so it offers no loads at all.
-4. **Supports / Loads / Probes** — add one under an analysis, then click faces
+5. **Supports / Loads / Probes** — add one under an analysis, then click faces
    (or a point) in the viewport and press *Done*. Faces stay tinted violet
    (supports) / amber (loads).
-5. **Mesh** — set a target size or take the default, *Generate mesh*. Watch the
+6. **Mesh** — set a target size or take the default, *Generate mesh*. Watch the
    node/DOF count and the memory estimate against your solver limit.
-6. **Run analysis** — the job log streams the real code_aster output.
-7. **Results** appear as their own branch under the analysis: contours with
+7. **Run analysis** — pick the solver on the analysis itself. Anything the
+   chosen engine cannot do is listed *before* you run, with a one-click switch
+   to one that can. The job log streams the solver's real output.
+8. **Results** appear as their own branch under the analysis: contours with
    deformation scaling and banded colour, mode shapes with the effective-mass
    table, FRF curves with annotated peaks and Q, random-vibration g RMS with a
-   Miles' cross-check, bolt end forces, reactions. Every panel exports to CSV,
-   and *Export nodal values* dumps the whole field on screen.
+   Miles' cross-check, bolt forces and stresses, reactions. Every panel exports
+   to CSV, and *Export nodal values* dumps the whole field on screen.
 
 The tree is one hierarchy you work top to bottom — geometry, connections,
 probes and mesh are shared by the model; each analysis owns its settings, its
@@ -194,17 +136,6 @@ Lattice fingerprints all of it and re-checks as you edit, so results that no
 longer describe the model on screen say so instead of being presented as
 current.
 
-Try it immediately with `examples/bracket_assembly.step` (regenerate with
-`python examples/make_examples.py`).
-
-## Documentation
-
-- [docs/METHODS.md](docs/METHODS.md) — what each result is, how it is computed,
-  and where it stops being valid. The results panels show numbers and anything
-  that needs acting on; the reasoning lives here.
-- [docs/SOLVERS.md](docs/SOLVERS.md) — code_aster vs CalculiX, what each covers,
-  and why CalculiX runs single-threaded.
-
 ## Bolted joints
 
 Lattice implements the standard linear bolt idealization used by Ansys beam
@@ -218,10 +149,12 @@ connections and Nastran spider models:
 
 1. **Bolts → + add**, then pick the hole cylinder (or bearing face) on each
    side. Cylindrical faces are auto-detected — the panel shows the hole ⌀ and
-   suggests a nominal size. Sizes run **M1.6–M24** (ISO coarse) and
+   suggests a nominal size. Sizes run **M1.6–M8** (ISO coarse) and
    **#0-80, #2-56, #4-40, #6-32** (unified inch).
 2. Pick a **grade** — ISO class 8.8 / 10.9 / 12.9, ASTM A574 alloy socket head,
-   or A2-70 / 18-8 stainless — or type a yield stress directly. Set the
+   A2-70 / 18-8 stainless, titanium Grade 5, PEEK or PEEK GF30 — or type a
+   yield stress directly. Modulus travels with the grade, so a PEEK screw is
+   not silently modelled as steel. Set the
    **preload**; *Suggest* proposes 65 % of yield on the tensile stress area.
    Preload is applied as an axial pre-strain (`PRE_EPSI`, ε = −F/EA) in static
    runs, which returns the beam force as exactly −F.
@@ -248,74 +181,126 @@ side of the joint is not created at all. Everything skipped is named in the job
 log. Bolt beams are built at mesh time, so re-mesh after patterning — the Mesh
 row will tell you.
 
-Physics honesty: the joint interface itself is *bonded* (fragment or ties), so
-gapping/separation under load is not modeled — that needs nonlinear contact.
-Preload does not stiffen modal/harmonic results (linear analyses have no
-stress stiffening); bolt beams do contribute stiffness and mass everywhere.
+**Preload only does work if the interface can move.** In a bonded model the
+parts can neither separate nor slip, so the clamp load has no job — the bolt
+carries preload plus its share of the external load and that is all you learn.
+To see gapping or joint slip, import the assembly as *separate parts* and give
+the interface a frictionless or frictional contact. That makes the static solve
+nonlinear, and the run applies preload first, then the external load.
+
+Preload does not stiffen modal or harmonic results — those are linear and have
+no stress stiffening. Bolt beams do contribute stiffness and mass everywhere.
 
 ## Boundary conditions and loads
 
 The linear-analysis set that Ansys / Abaqus / SimScale share:
 
-| Industry name | Lattice | code_aster |
-|---|---|---|
-| Fixed support / ENCASTRE | ✅ | `DDL_IMPO` DX=DY=DZ=0 |
-| Frictionless support / symmetry | ✅ | `FACE_IMPO` `DNOR=0` |
-| Displacement | ✅ per-DOF, blank = free | `DDL_IMPO` |
-| Force (total N on faces) | ✅ | `FORCE_FACE` (÷ area → traction) |
-| Pressure | ✅ | `PRES_REP` |
-| **Remote force / moment** | ✅ RBE3 to a remote point | `FORCE_NODALE` + `LIAISON_RBE3` |
-| Standard earth gravity | ✅ | `PESANTEUR` |
-| **Rotational velocity** | ✅ rpm + axis + center | `ROTATION` |
-| Bolt pretension | ✅ see above | `PRE_EPSI` |
-| Bearing load, thermal, moment-on-face | ❌ roadmap | — |
+| Industry name | code_aster | CalculiX | Emitted as |
+|---|---|---|---|
+| Fixed support / ENCASTRE | ✅ | ✅ | `DDL_IMPO` / `*BOUNDARY` |
+| Frictionless support / symmetry | ✅ any face | ✅ planar only | `FACE_IMPO DNOR=0` / `*TRANSFORM` |
+| Prescribed displacement | ✅ per-DOF, blank = free | ✅ | `DDL_IMPO` / `*BOUNDARY` |
+| Force (total N on faces) | ✅ | ✅ | `FORCE_FACE` / consistent `*CLOAD` |
+| Pressure | ✅ | ✅ | `PRES_REP` / `*DLOAD` on element faces |
+| Standard earth gravity | ✅ | ✅ | `PESANTEUR` / `*DLOAD GRAV` |
+| Rotational velocity | ✅ rpm + axis + centre | ✅ | `ROTATION` / `*DLOAD CENTRIF` |
+| **Remote force / moment** | ✅ RBE3 to a remote point | ❌ | `FORCE_NODALE` + `LIAISON_RBE3` |
+| Bolt pretension | ✅ | ❌ | `PRE_EPSI` |
+| Bearing load, thermal, moment-on-face | ❌ | ❌ | — |
 
 Remote loads are the only way to apply a **moment** — solid elements have no
-rotational DOF, so a moment needs a coupling node, exactly as in Ansys. Note
-that adding or moving a remote load invalidates the mesh (its coupling node is
-created during meshing); Lattice refuses to solve a stale mesh rather than
-silently using the old one.
+rotational DOF, so a moment needs a coupling node, exactly as in Ansys. Adding
+or moving a remote load invalidates the mesh (its coupling node is created
+during meshing); Lattice refuses a stale mesh rather than silently using it.
 
 Rotational velocity is a static body load and is deliberately excluded from
 harmonic sweeps.
 
-### Contact / connection types, and where Lattice stands
+### Connections and contact
 
-| Type (industry name) | Lattice v0.2 | Notes |
+| Type (industry name) | Lattice | Notes |
 |---|---|---|
-| Bonded, conformal | ✅ automatic | assemblies are fragmented on import; coincident faces share mesh |
-| Bonded/tied, non-conformal (MPC) | ✅ Ties | `LIAISON_MAIL` face→volume gluing |
-| Preloaded fastener (beam + spider) | ✅ Bolts | RBE3 distributing couplings, like Ansys "Deformable" |
-| No-separation, frictionless, frictional | ❌ roadmap | nonlinear (`DEFI_CONTACT`/`STAT_NON_LINE`) |
-| Point fasteners (CBUSH/CFAST, Huth) | ❌ roadmap | relevant for sheet stacks |
+| Bonded, conformal | ✅ automatic | import as *bonded*: coincident faces merge, parts share nodes |
+| Bonded, non-conformal (MPC) | ✅ | `LIAISON_MAIL` face→volume gluing, stays linear |
+| No separation | ✅ | cannot gap, free to slide — nonlinear |
+| Frictionless | ✅ | can gap and slide freely — nonlinear |
+| Frictional (Coulomb μ) | ✅ | can gap, slides above μN — nonlinear |
+| Preloaded fastener (beam + spider) | ✅ | RBE3 distributing couplings, like Ansys "Deformable" |
+| Point fasteners (CBUSH/CFAST, Huth) | ❌ | relevant for sheet stacks |
+
+Anything that can slide or separate makes the static solve **nonlinear** —
+`STAT_NON_LINE` + `DEFI_CONTACT` on code_aster, `*CONTACT PAIR` on CalculiX —
+because whether the surfaces touch is part of the answer. Modal and harmonic
+are linear by definition and use the bonded state.
+
+To use contact at all, import the assembly as **separate parts**. A bonded
+import merges the coincident faces into one, so there is no second surface left
+to slide against.
 
 ## What to know before trusting it
 
-- **v0.1 scope:** linear statics, real modes, modal-superposition harmonic. No
-  nonlinear contact, no thermal, no shells/midsurfacing (thin parts: use 2–3 solid
-  elements through thickness), no buckling, no PSD/random vibration yet.
-- **Assemblies bond by shared geometry.** Parts that merely *touch* without
-  coincident faces are not connected — the mesh step warns about disconnected groups.
-  Interference fits and frictional contact are out of scope for now.
-- **Force loads** are applied as uniform traction (total force ÷ face area).
-  Moments and remote loads are not implemented yet.
-- **Sanity-check your results** the way you would with any solver: reaction sums are
-  printed for statics; mode 1 of a healthy constrained model should not be ~0 Hz.
-- The generated `run.comm` for every analysis is kept in
-  `workspace/projects/<id>/runs/<analysis>/` — it is a plain code_aster command file
-  you can read, edit, and rerun by hand with `run_aster run.export`.
+**Scope.** Linear elastic, small displacement, small strain. Static, modal,
+modal-superposition harmonic, and random vibration derived from a base sweep.
+The one nonlinearity is contact status; the material is always linear elastic.
+
+Not modelled: plasticity, creep, large rotation, buckling, thermal, shells or
+midsurfacing (for thin parts use 2–3 solid elements through the thickness).
+
+**A wrong answer looks exactly like a right one.** The arithmetic does not stop
+working when the physics does — a load ten times too large returns a deflection
+ten times too large. Lattice checks what it can and says so:
+
+- Results are fingerprinted against the model and marked **out of date** the
+  moment anything they depend on changes.
+- Reactions must balance the applied load; nodes held to zero must not move;
+  peak displacement is compared against the size of the part.
+- Modal truncation below 90 % effective mass, and sweeps too coarse to resolve
+  a peak, are reported — both make a result low without looking wrong.
+
+None of that judges whether the *model* is right. Sanity-check the way you would
+with any solver: mode 1 of a healthy constrained model is not ~0 Hz, and
+reaction sums should match what you applied.
+
+**Assemblies bond by shared geometry.** Parts that merely touch without
+coincident faces are not connected — the mesh step warns about disconnected
+groups. Interference fits are out of scope.
+
+**Everything is readable.** The generated `run.comm` / `job.inp` for every
+analysis is kept in `workspace/projects/<id>/runs/<analysis>/`, next to the
+solver's full log. They are plain solver input files you can read, edit and
+rerun by hand.
 
 ## Development
 
 ```bash
-pip install -e .[dev]
+pip install -e ".[dev]"
 python examples/make_examples.py
-pytest                        # geometry → mesh → comm pipeline, no solver needed
+pytest                    # geometry → mesh → deck, plus solver checks
+node tests/test_pattern.mjs   # bolt-pattern geometry
 ```
 
-Backend: FastAPI + gmsh (subprocess-isolated) + h5py MED reader.
+`pytest` needs no solver for most of it. The CalculiX tests run the real binary
+when one is on `PATH` and skip when it is not — they check a cantilever against
+`PL³/3EI` and the first bending frequency against beam theory, so they fail if
+the toolchain starts producing wrong numbers rather than merely crashing.
+
+Backend: FastAPI + gmsh (subprocess-isolated) + h5py MED reader + a `.frd`
+reader for CalculiX.
 Frontend: vanilla ES modules + three.js (vendored, no build step).
 `window.lattice` in the browser console exposes app state for debugging.
+
+Layout:
+
+```
+lattice_fea/
+  geometry.py    STEP import, fragmenting, contact-pair detection, tessellation
+  meshing.py     tet10 meshing, physical groups, UNV + Abaqus export
+  comm_writer.py code_aster decks          ccx_writer.py  CalculiX decks
+  med_reader.py  code_aster results        frd_reader.py  CalculiX results
+  results.py     one results shape for both engines
+  server.py      REST API                  solver.py      job running
+  ui/js/         tree.js · ui.js · viewer.js · pattern.js · charts.js
+```
 
 ## License
 

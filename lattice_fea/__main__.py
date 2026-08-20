@@ -77,68 +77,139 @@ def main() -> None:
 
 
 def doctor(workspace: str) -> None:
+    """Environment check. Everything installation-related should be visible
+    here, and nothing here may disagree with what the app itself decides."""
     from . import __version__
+    from .ccx_writer import CAPABILITIES
     from .config import detect
 
     print(f"Lattice {__version__} — environment check\n")
 
+    ok = True
     try:
         import gmsh  # noqa: F401
         print(f"  gmsh          OK  ({gmsh.GMSH_API_VERSION})")
     except Exception as e:  # noqa: BLE001
+        ok = False
         print(f"  gmsh          MISSING — pip install gmsh   ({e})")
     for mod in ("fastapi", "uvicorn", "numpy", "h5py"):
         try:
             __import__(mod)
             print(f"  {mod:<13} OK")
         except Exception:  # noqa: BLE001
+            ok = False
             print(f"  {mod:<13} MISSING — pip install {mod}")
 
     cfg = detect(workspace)
-    print(f"\n  solver mode   {cfg.mode}")
-    print(f"  detail        {cfg.detail}")
+    engines = cfg.engines()
+    print("\n  Solvers")
+    if engines:
+        for e in engines:
+            types = ", ".join(e["types"])
+            print(f"    {e['label']:<12} {e['detail']}")
+            print(f"    {'':<12} runs: {types}")
+        if cfg.ccx_cmd:
+            print(f"    {'':<12} CalculiX threads: {cfg.ccx_threads}"
+                  + ("  (multithreaded ccx can return wrong results)"
+                     if cfg.ccx_threads == 1 else "  — see docs/SOLVERS.md"))
+    else:
+        print("    none found — import, setup and meshing work; Run is disabled")
+        print("    macOS / Linux:  brew install costerwi/homebrew-calculix/calculix-ccx")
+        print("    Windows:        install the Salome-Meca WSL2 distribution")
+        print("    See docs/INSTALL.md")
     for n in cfg.notes:
-        print(f"  note          {n}")
+        print(f"    note: {n}")
 
-    # what the UI would use to decide whether a run is possible
+    missing_types = sorted(
+        {"static", "modal", "harmonic", "random"}
+        - {t for e in engines for t in e["types"]})
+    if engines and missing_types:
+        print(f"    not runnable here: {', '.join(missing_types)} "
+              "(needs code_aster)")
+
+    _doctor_projects(workspace, engines)
+
+    if not engines:
+        print("\n  Lattice runs in geometry/mesh-only mode until a solver is set up.")
+    elif ok:
+        print("\n  Environment OK. Per-project blockers, if any, are listed above.")
+
+
+def _doctor_projects(workspace: str, engines: list) -> None:
+    """Per project, exactly what is stopping a run — using the same rules the
+    UI uses, so the two cannot disagree."""
     import json as _json
     import os as _os
+
+    from .meshing import MESH_FORMAT
+
     proj_root = _os.path.join(workspace, "projects")
-    if _os.path.isdir(proj_root):
-        print("\n  projects in this workspace:")
-        for pid in sorted(_os.listdir(proj_root)):
-            pj = _os.path.join(proj_root, pid, "project.json")
-            if not _os.path.isfile(pj):
-                continue
+    if not _os.path.isdir(proj_root):
+        return
+    names = sorted(d for d in _os.listdir(proj_root)
+                   if _os.path.isfile(_os.path.join(proj_root, d, "project.json")))
+    if not names:
+        return
+    print("\n  Projects")
+    for pid in names:
+        try:
+            with open(_os.path.join(proj_root, pid, "project.json"),
+                      encoding="utf-8") as f:
+                p = _json.load(f)
+        except Exception:  # noqa: BLE001
+            print(f"    {pid}: unreadable project.json")
+            continue
+        s = p.get("setup", {})
+        geo = p.get("geometry") or {}
+        analyses = s.get("analyses", [])
+        stats = {}
+        sp = _os.path.join(proj_root, pid, "mesh", "stats.json")
+        if _os.path.isfile(sp):
             try:
-                with open(pj, encoding="utf-8") as f:
-                    p = _json.load(f)
+                with open(sp, encoding="utf-8") as f:
+                    stats = _json.load(f)
             except Exception:  # noqa: BLE001
-                continue
-            s = p.get("setup", {})
-            geo = p.get("geometry") or {}
-            meshed = _os.path.isfile(_os.path.join(proj_root, pid, "mesh", "stats.json"))
-            missing = [str(x["tag"]) for x in geo.get("solids", [])
-                       if not s.get("assignments", {}).get(str(x["tag"]))]
-            blockers = []
-            if not meshed:
-                blockers.append("not meshed")
-            if missing:
-                blockers.append(f"solids without material: {', '.join(missing)}")
-            if not any(x.get("faces") for x in s.get("supports", [])):
-                blockers.append("no support with faces")
-            if not cfg.available():
-                blockers.append("no solver")
-            print(f"    {p.get('name', pid)}  [{pid}]")
-            print(f"      analyses={len(s.get('analyses', []))} "
-                  f"loads={len(s.get('loads', []))} bolts={len(s.get('bolts', []))} "
-                  f"meshed={'yes' if meshed else 'no'}")
-            print(f"      run blocked by: {'; '.join(blockers) if blockers else 'nothing — should be clickable'}")
-        print("\n  To start clean, delete the workspace directory:")
-        print(f"    {_os.path.abspath(workspace)}")
-    if not cfg.available():
-        print("\n  Lattice will run in geometry/mesh-only demo mode until a solver is set up.")
-        print("  See README → 'Solver setup' for the WSL2 / docker / native options.")
+                pass
+
+        print(f"    {p.get('name', pid)}  [{pid}]")
+        print(f"      {len(geo.get('solids', []))} solid(s), "
+              f"{len(analyses)} analysis(es), "
+              f"{len(s.get('bolts', []))} bolt(s), "
+              f"{len(s.get('contacts', []))} contact(s)")
+
+        model_blockers = []
+        if not geo:
+            model_blockers.append("geometry not imported")
+        for x in geo.get("solids", []):
+            if not s.get("assignments", {}).get(str(x["tag"])):
+                model_blockers.append(f"solid {x['tag']} has no material")
+        if not stats:
+            model_blockers.append("not meshed")
+        elif (stats.get("mesh_format") or 0) < MESH_FORMAT:
+            model_blockers.append("mesh was written by an older version — re-mesh")
+
+        if not analyses:
+            print("      no analyses yet")
+        for a in analyses:
+            # supports and loads belong to the ANALYSIS, not the model — this
+            # check read them off the model for several releases and so
+            # reported "no support with faces" for every project.
+            issues = list(model_blockers)
+            if not any(x.get("faces") for x in a.get("supports", [])):
+                issues.append("no support with faces")
+            eng = (a.get("config") or {}).get("engine") or (
+                "aster" if any(e["id"] == "aster" for e in engines) else
+                (engines[0]["id"] if engines else "aster"))
+            match = next((e for e in engines if e["id"] == eng), None)
+            if not engines:
+                issues.append("no solver installed")
+            elif match is None:
+                issues.append(f"solver '{eng}' is not installed here")
+            elif a.get("type") not in match["types"]:
+                issues.append(f"{match['label']} cannot run {a.get('type')}")
+            label = a.get("name") or a.get("type")
+            print(f"      · {label} ({a.get('type')}, {eng}): "
+                  + ("; ".join(issues) if issues else "ready to run"))
 
 
 if __name__ == "__main__":
