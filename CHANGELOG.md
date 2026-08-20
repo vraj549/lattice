@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.21.0
+
+**Shock.** Specified either way a shock is specified: as an **SRS** in (Hz, g),
+or as a **classical pulse** — half-sine, terminal-peak sawtooth or trapezoid,
+MIL-STD-810 Method 516. A pulse's spectrum is computed and applied, so both
+inputs meet in the same place.
+
+It reports the peak load into the supports, the peak load in every bolt, and
+the peak displacement at every probe, with the per-mode contributions that
+produced them.
+
+### There is no time history, on purpose
+
+An SRS carries a peak per frequency with no phase and no time. There is nothing
+to integrate: the answer is a combination over the modal basis. So the solve is
+exactly the modal one, already proven, and the spectrum arithmetic lives in
+`shock.py` where it is unit-tested — the same division random vibration uses.
+
+The consequence is stated in the panel and the docs rather than buried: **every
+number here is a magnitude with no sign, and two of them need not happen at the
+same instant.** A combined stress and a combined displacement are each
+defensible; their ratio is not.
+
+### Three rules, all sign-blind
+
+SRSS (modes independent), NRL (largest at full value, SRSS the rest — written
+for shock), ABS (upper bound). Sign-blindness is deliberate: the sign of a
+participation factor is not recoverable from effective mass, so CQC and an
+algebraic sum could not be computed honestly and are not offered.
+
+The participation factor is taken as `sqrt(m_eff/m_gene)` from the mass table,
+which makes it **normalisation-invariant** — the response is `φ·Γ·S_d`, and
+scaling the mode shape scales `m_gene` by the square. Whatever normalisation
+the solver used, this stays consistent with the mode shapes it wrote.
+
+### The pulse spectrum
+
+Smallwood's ramp-invariant filter, validated three ways rather than trusted:
+
+- against a **direct RK4 integration** of the same oscillator — a different
+  algorithm, not a rearrangement of the same one — agreeing to 0.2%
+- against both asymptotes every SRS has: the pulse peak at high frequency, and
+  `2πf·ΔV` at low frequency. The second is the sharp one, because `ΔV` is the
+  area under the pulse and every shape here has a different one.
+- an undamped half-sine peaks at 1.766× near `f·τ = 0.8`, the classical result
+
+An **initial-peak sawtooth is not offered**. Writing the test for it showed why:
+it starts with a step, so its spectrum never settles to the pulse amplitude —
+an oscillator hit with a step overshoots to `1 + exp(-ζπ/√(1-ζ²))`, about 1.85
+at Q = 10. The ZPA drives the missing-mass correction, so that would have been
+wrong by 85%. ZPA is now **measured off the pulse's own spectrum** rather than
+assumed equal to its amplitude, and the shape no shock machine can produce is
+gone.
+
+### Also
+
+- **Effective mass was shown as a percentage of itself.** The modal panel
+  divided `MASS_EFFE_UN_D*` — code_aster's *unitary* effective mass, already a
+  fraction — by the model mass again, printing over 100% for any model lighter
+  than a tonne. The random-vibration truncation check read the same column as a
+  fraction, so the two disagreed inside one build.
+- **Every generated deck is now parsed as Python in the test suite.** A `.comm`
+  is executed as Python by code_aster, so a syntax error is a guaranteed
+  failure, and the nearest solver that would catch it is on another machine.
+  Cheap, and it covers a whole class of deck bugs — bad indentation inside an
+  optional block, most of all.
+
+
 ## 0.20.0
 
 **The bolt model.** Two errors sat between the sizing calculation and what the

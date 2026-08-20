@@ -138,7 +138,8 @@ class SolverConfig:
         if self.available():
             out.append({"id": "aster", "label": "code_aster",
                         "detail": self.detail,
-                        "types": ["static", "modal", "harmonic", "random"]})
+                        "types": ["static", "modal", "harmonic", "random",
+                                  "shock"]})
         if self.ccx_cmd:
             out.append({"id": "ccx", "label": "CalculiX",
                         "detail": self.ccx_cmd,

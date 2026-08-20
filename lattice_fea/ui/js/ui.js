@@ -34,7 +34,8 @@ const uid = () => Math.random().toString(36).slice(2, 8);
 
 
 export const TYPE_SHORT = { static: "static", modal: "modal",
-                     harmonic: "harmonic", random: "random" };
+                     harmonic: "harmonic", random: "random",
+                     shock: "shock" };
 
 /** Does this analysis take applied loads?
  *
@@ -53,6 +54,12 @@ export function excitationMeta(a) {
   const d = c.base_dir || [0, 0, 1];
   const ax = ["X", "Y", "Z"][d.map(Math.abs).indexOf(Math.max(...d.map(Math.abs)))] || "Z";
   if (a.type === "random") return `PSD ${gramsOf(c.spec || [])} g · ${ax}`;
+  if (a.type === "shock") {
+    const axis = ["X", "Y", "Z"][c.axis ?? 2];
+    return (c.input || "spectrum") === "pulse"
+      ? `${fmtVal(c.pulse_g ?? 20)} g / ${fmtVal(c.pulse_ms ?? 11)} ms · ${axis}`
+      : `SRS ${fmtVal((c.spec || []).reduce((m, r) => Math.max(m, r[1]), 0))} g · ${axis}`;
+  }
   return `${fmtVal(c.base_g ?? 1)} g · ${ax}`;
 }
 
@@ -102,6 +109,9 @@ export function solutionItems(S, a) {
   }
   if (a.type === "random") {
     out.push({ what: "random", label: "Random response", meta: "g RMS" });
+  }
+  if (a.type === "shock") {
+    out.push({ what: "shock", label: "Shock response", meta: "peak" });
   }
   if (meta.tables?.bolt_forces?.length) {
     out.push({ what: "bolts", label: "Bolt forces", meta: "N" });
@@ -996,6 +1006,16 @@ export function defaultAnalysis(type) {
                        base_dir: [0, 0, 1], damping: 0.02, n_steps: 600,
                        field_freqs: [] } };
   }
+  if (type === "shock") {
+    // Q = 10 (zeta = 0.05) is the damping nearly every shock spec is written
+    // at; a spectrum read at one Q and applied at another is a different
+    // spectrum. 20 g / 11 ms half-sine is the MIL-STD-810 workhorse.
+    return { ...base, name: "Shock",
+             config: { input: "pulse", pulse: "half_sine",
+                       pulse_g: 20, pulse_ms: 11,
+                       spec: [[100, 20], [1000, 200], [10000, 200]],
+                       axis: 2, rule: "srss", damping: 0.05, n_modes: 30 } };
+  }
   return { ...base, name: "Harmonic response",
            config: { f_min: 20, f_max: 2000, n_steps: 150, spacing: "log",
                      damping: 0.02, excitation: "force", base_dir: [0, 0, 1],
@@ -1275,6 +1295,87 @@ function panelSettings(S, A, put, id) {
         "⚠ Add at least one probe — response is extracted there.")));
     }
   }
+  if (a.type === "shock") {
+    const pulse = (c.input || "spectrum") === "pulse";
+    secs.push(sec("Input",
+      selInput("Specified as", c.input || "spectrum",
+        [["pulse", "Classical pulse"], ["spectrum", "SRS table"]],
+        (v) => A.mutate(() => { c.input = v; }))));
+
+    if (pulse) {
+      secs.push(sec("Pulse",
+        selInput("Shape", c.pulse || "half_sine",
+          [["half_sine", "Half-sine"], ["sawtooth", "Terminal-peak sawtooth"],
+           ["trapezoid", "Trapezoid"]],
+          (v) => A.mutate(() => { c.pulse = v; })),
+        el("div", { class: "frm-row2" },
+          numInput("Amplitude (g)", c.pulse_g,
+            (v) => A.mutate(() => { c.pulse_g = v ?? 20; }), { step: 1 }),
+          numInput("Duration (ms)", c.pulse_ms,
+            (v) => A.mutate(() => { c.pulse_ms = v ?? 11; }), { step: 0.5 })),
+        el("div", { class: "hint" },
+          "Its spectrum is computed and applied — the pulse is not integrated " +
+          "in time. MIL-STD-810 Method 516 shapes.")));
+    } else {
+      // An analysis can reach here without a spec — created through the API,
+      // or switched over from a pulse. Show the table anyway; "Typical SRS"
+      // is the way back from empty.
+      const spec = c.spec || (c.spec = []);
+      secs.push(sec("Input spectrum",
+        el("table", { class: "rtable psd" },
+          el("tr", {}, el("th", {}, "Hz"), el("th", {}, "g"), el("th", {}, "")),
+          spec.map((rowv, i) => el("tr", {},
+            el("td", {}, el("input", {
+              type: "number", step: "any", value: rowv[0],
+              oninput: (e) => { spec[i][0] = Number(e.target.value) || 0; A.saveOnly(); } })),
+            el("td", {}, el("input", {
+              type: "number", step: "any", value: rowv[1],
+              oninput: (e) => { spec[i][1] = Number(e.target.value) || 0; A.saveOnly(); } })),
+            el("td", {}, el("button", {
+              class: "btn btn-small btn-danger",
+              onclick: () => A.mutate(() => { spec.splice(i, 1); }) }, "\u2715"))))),
+        el("div", { class: "btnrow" },
+          el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
+            const last = spec[spec.length - 1] || [100, 20];
+            spec.push([Math.round(last[0] * 2), last[1]]);
+          }) }, "+ row"),
+          el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
+            c.spec = [[100, 20], [1000, 200], [10000, 200]];
+          }) }, "Typical SRS"),
+          el("button", { class: "btn btn-small", onclick: () => A.pasteSpec(c) }, "Paste\u2026")),
+        el("div", { class: "hint" },
+          "Log-log between rows. Outside the table the end value is HELD, not " +
+          "zeroed \u2014 an SRS ends at its plateau, and every stiffer mode sees it.")));
+    }
+
+    secs.push(sec("Direction and combination",
+      selInput("Axis", String(c.axis ?? 2),
+        [["0", "X"], ["1", "Y"], ["2", "Z"]],
+        (v) => A.mutate(() => { c.axis = Number(v); })),
+      selInput("Mode combination", c.rule || "srss",
+        [["srss", "SRSS \u2014 modes independent"],
+         ["nrl", "NRL \u2014 largest at full value"],
+         ["abs", "Absolute sum \u2014 upper bound"]],
+        (v) => A.mutate(() => { c.rule = v; })),
+      el("div", { class: "frm-row2" },
+        numInput("Spectrum damping \u03b6", c.damping,
+          (v) => A.mutate(() => { c.damping = v ?? 0.05; }),
+          { min: 0, max: 1, step: 0.005 }),
+        numInput("Modes", c.n_modes,
+          (v) => A.mutate(() => { c.n_modes = v || 30; }), { min: 1, step: 1 })),
+      el("div", { class: "hint" },
+        `\u03b6 = ${c.damping ?? 0.05} is Q = ${(1 / (2 * (c.damping || 0.05))).toFixed(0)}. ` +
+        "A spectrum read at one Q and applied at another is a different spectrum."),
+      el("div", { class: "hint" },
+        "Extract enough modes to carry the effective mass in the driven axis. " +
+        "What the basis misses is added back at the ZPA, but a large residual " +
+        "means the shape of the response is not resolved.")));
+    if (!S.project.setup.probes.length) {
+      secs.push(sec(null, el("div", { class: "hint" },
+        "Add probes to get peak response at specific points. Interface load " +
+        "and bolt loads do not need them.")));
+    }
+  }
   if (a.type === "static") {
     secs.push(sec("Output", el("div", { class: "hint" },
       "Displacement, von Mises / principal stresses, stress tensor, and reaction " +
@@ -1309,7 +1410,7 @@ function runBlockers(S, a) {
     // Same check the backend makes, plus the elements that are built at mesh
     // time (bolt beams, probe nodes) — the solver would otherwise abort
     // minutes in, or worse, run without a joint that is in the tree.
-    const vib = ["harmonic", "random"].includes(a.type);
+    const vib = ["harmonic", "random", "shock"].includes(a.type);
     for (const i of meshIssues(S)) {
       if (i.scope === "all" || vib) blockers.push(`Re-mesh needed — ${i.text}.`);
     }
@@ -1334,6 +1435,22 @@ function runBlockers(S, a) {
   }
   if (a.type === "random" && ((a.config || {}).spec || []).length < 2) {
     blockers.push("The input spectrum needs at least two breakpoints.");
+  }
+  if (a.type === "shock") {
+    const c = a.config || {};
+    if ((c.input || "spectrum") === "spectrum" && (c.spec || []).length < 2) {
+      blockers.push("The shock spectrum needs at least two breakpoints.");
+    }
+    if ((c.input || "spectrum") === "pulse" && !(c.pulse_g > 0 && c.pulse_ms > 0)) {
+      blockers.push("The pulse needs an amplitude and a duration.");
+    }
+    if (!(a.supports || []).length) {
+      // The spectrum is applied AT the base. With nothing restrained there is
+      // no base, and the modes are free-free — the answer would be nonsense
+      // rather than merely inaccurate.
+      blockers.push("Add a support — a shock spectrum is applied at the "
+                    + "restrained base.");
+    }
   }
   return blockers;
 }
@@ -1391,6 +1508,7 @@ function panelAnalysis(S, A, put, id) {
 }
 
 const TYPE_NAMES = { static: "Static structural", modal: "Modal",
+                     shock: "Shock response spectrum",
                      harmonic: "Harmonic response", random: "Random vibration" };
 
 function drivenBy(a) {
@@ -1486,6 +1604,7 @@ function statusHead(S, A, a) {
 const RESULT_TITLES = {
   contours: "Contours", modes: "Modes", frf: "Frequency response",
   random: "Random response", bolts: "Bolt forces", reactions: "Reactions",
+  shock: "Shock response",
   warnings: "Solver messages", sizing: "Bolt sizing",
 };
 
@@ -1513,15 +1632,17 @@ function panelResult(S, A, put, id) {
     modes: () => secModes(S, A, a),
     frf: () => secFRF(S, A, a),
     random: () => randomSections(S, A, a),
+    shock: () => shockSections(S, A, a),
     bolts: () => secBolts(S, A, a),
     sizing: () => secSizing(S, A, a),
     reactions: () => secReactions(S, A, a),
     warnings: () => secWarnings(S, A, a),
   }[what]?.() || [];
 
-  const exportWhat = { frf: "frf", random: "random" }[what] || "tables";
+  const exportWhat = { frf: "frf", random: "random", shock: "shock" }[what] || "tables";
   const anchor = { contours: "contours", modes: "modes", frf: "frequency-response",
                    random: "random-vibration", bolts: "bolt-forces-and-stress",
+                   shock: "shock",
                    sizing: "bolt-sizing", reactions: "reactions" }[what];
   const tail = sec(null,
     anchor ? methodRef(anchor) : null,
@@ -1569,7 +1690,7 @@ function secModes(S, A, a) {
           el("span", { class: "mi" }, String(r.n).padStart(2, "0")),
           el("span", { class: "mbar" }, el("i", { style: `width:${8 + (r.f / fmax) * 88}%` })),
           el("span", { class: "mf" }, `${fmtVal(r.f)} Hz`)))),
-      part ? partTable(part, meta.tables?.tables) : null));
+      part ? partTable(part) : null));
   }
   return secs;
 }
@@ -1898,6 +2019,97 @@ function secWarnings(S, A, a) {
     ...meta.warnings.map((w) => el("div", { class: "hint warn" }, w)))];
 }
 
+/**
+ * Shock response.
+ *
+ * Every number here is a PEAK with no sign and no time attached — an SRS
+ * carries neither. Two of them are each defensible on their own; their ratio
+ * is not, because they do not have to happen at the same instant.
+ */
+function shockSections(S, A, a) {
+  const R = S.shockResults?.[a.id];
+  if (!R) {
+    A.loadShock(a.id);
+    return [sec("Shock response", el("div", { class: "hint" }, "Computing\u2026"))];
+  }
+  const secs = [];
+  for (const w of R.warnings || []) {
+    secs.push(sec(null, el("div", { class: "hint warn" }, "\u26a0 " + w)));
+  }
+
+  secs.push(sec("Peak interface load",
+    dl([["Along", R.axis],
+        ["Total", `${fmtVal(R.force_N)} N`],
+        ["Modal part", `${fmtVal(R.force_modal_N)} N`],
+        ["Missing mass", `${(100 * R.missing_mass).toFixed(1)} % \u2192 ` +
+                         `${fmtVal(R.missing_force_N)} N at ZPA`],
+        ["Effective mass captured", `${(100 * R.mass_captured).toFixed(1)} %`],
+        ["Combination", (R.rule || "srss").toUpperCase()],
+        ["Input", R.input?.source || "\u2014"],
+        ["ZPA", `${fmtVal(R.input?.zpa ?? 0)} g`]])));
+
+  if (R.bolts?.length) {
+    secs.push(sec("Peak bolt loads",
+      el("table", { class: "rtable" },
+        el("tr", {}, ["Bolt", "End", "Axial N", "Shear N", "Moment N\u00b7mm"]
+          .map((h) => el("th", {}, h))),
+        R.bolts.map((b) => el("tr", {},
+          el("td", {}, b.name || `Bolt ${b.bolt}`),
+          el("td", {}, b.end),
+          el("td", {}, fmtVal(b.N)),
+          el("td", {}, fmtVal(b.V)),
+          el("td", {}, fmtVal(b.M)))))));
+  }
+
+  if (R.probes?.length) {
+    const names = S.project.setup.probes || [];
+    secs.push(sec("Peak displacement at probes",
+      el("table", { class: "rtable" },
+        el("tr", {}, ["Probe", "|u| mm", "X", "Y", "Z"].map((h) => el("th", {}, h))),
+        R.probes.map((p) => {
+          const n = Number((p.probe.match(/\d+/) || [])[0]);
+          return el("tr", {},
+            el("td", {}, names[n - 1]?.name || p.probe),
+            el("td", {}, fmtVal(p.mag)),
+            el("td", {}, fmtVal(p.dx)),
+            el("td", {}, fmtVal(p.dy)),
+            el("td", {}, fmtVal(p.dz)));
+        }))));
+  }
+
+  if (R.curve?.freq?.length) {
+    const canvas = el("canvas", { class: "frfbig" });
+    secs.push(sec("Input spectrum (g)", canvas));
+    requestAnimationFrame(() => {
+      if (!canvas.isConnected) return;
+      const curves = [{ label: "input SRS", freq: R.curve.freq,
+                        module: R.curve.srs, color: seriesColor(0) }];
+      if (R.rows?.length) {
+        // where the modes actually land on it — the whole answer comes from
+        // these points, not from the curve between them
+        curves.push({ label: "modes", freq: R.rows.map((r) => r.f),
+                      module: R.rows.map((r) => r.srs_g),
+                      color: "#e0803c", dots: true });
+      }
+      frfPlot(canvas, curves, { annotate: false });
+    });
+  }
+
+  if (R.rows?.length) {
+    secs.push(sec("Per-mode contribution",
+      el("table", { class: "rtable" },
+        el("tr", {}, ["#", "Hz", `m_eff ${R.axis}`, "SRS g", "Force N"]
+          .map((h) => el("th", {}, h))),
+        R.rows.map((r) => el("tr", {},
+          el("td", {}, String(r.mode)),
+          el("td", {}, fmtVal(r.f)),
+          el("td", {}, `${(100 * r.eff_frac).toFixed(1)}%`),
+          el("td", {}, fmtVal(r.srs_g)),
+          el("td", {}, fmtVal(r.force_N)))))));
+  }
+  return secs;
+}
+
 function randomSections(S, A, a) {
   const R = S.randomResults?.[a.id];
   if (!R) {
@@ -2021,16 +2233,16 @@ function compOptions(f) {
   return f.comps.filter((c) => c).map((c) => [c, nice[c] || c]);
 }
 
-function partTable(part, massBlocks) {
+function partTable(part) {
   const cols = part.columns;
   const fi = cols.indexOf("FREQ");
   const dx = cols.indexOf("MASS_EFFE_UN_DX");
   if (fi < 0 || dx < 0) return null;
-  let total = null;
-  for (const b of massBlocks || []) {
-    const mi = b.columns.indexOf("MASSE");
-    if (mi >= 0 && b.rows.length) total = b.rows[0][mi];
-  }
+  // MASS_EFFE_UN_D* is code_aster's UNITARY effective mass: already a
+  // fraction of the model's mass. Dividing it by the total mass again — which
+  // this did — printed percentages over 100 whenever the model weighed less
+  // than a tonne. The cumulative-participation check elsewhere reads the same
+  // column as a fraction, so the two disagreed.
   const th = ["#", "Hz", "mX", "mY", "mZ"];
   const t = el("table", { class: "rtable" },
     el("tr", {}, th.map((h) => el("th", {}, h))),
@@ -2039,8 +2251,7 @@ function partTable(part, massBlocks) {
       el("td", {}, fmtVal(r[fi] ?? 0)),
       ...[0, 1, 2].map((k) => {
         const v = r[dx + k];
-        const pct = total && v != null ? ` (${(100 * v / total).toFixed(0)}%)` : "";
-        return el("td", {}, v != null ? fmtVal(v) + pct : "—");
+        return el("td", {}, v != null ? `${(100 * v).toFixed(1)}%` : "—");
       }))));
   return el("div", { style: "margin-top:9px" },
     el("span", { class: "lbl" }, "Effective mass"), t);

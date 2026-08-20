@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 import hashlib
 
 from . import (__version__, bolt_sizing, ccx_writer, comm_writer, config,
-               preload as preload_mod, random_vib, results)
+               preload as preload_mod, random_vib, results, shock)
 from .materials import LIBRARY
 from .projects import ProjectStore
 from .solver import (JobManager, extract_errors, popen_isolated, reap,
@@ -547,6 +547,37 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                     out.append(f"{c['probe']},{c['comp']},{r['grms']:.6g},{r['three_sigma']:.6g}")
                 out.append("")
 
+        if what in ("all", "shock") and analysis and analysis.get("type") == "shock":
+            r = shock.response(meta, analysis.get("config", {}) or {})
+            if r.get("rows"):
+                out.append("# shock summary")
+                out.append("axis,rule,peak_interface_force_N,modal_part_N,"
+                           "missing_mass_frac,missing_force_N,mass_captured_frac")
+                out.append(f"{r['axis']},{r['rule']},{r['force_N']:.6g},"
+                           f"{r['force_modal_N']:.6g},{r['missing_mass']:.6g},"
+                           f"{r['missing_force_N']:.6g},{r['mass_captured']:.6g}")
+                out.append("")
+                out.append("# shock per mode")
+                out.append("mode,freq_Hz,eff_mass_frac,srs_g,modal_coord_mm,force_N")
+                for m in r["rows"]:
+                    out.append(f"{m['mode']},{m['f']:.6g},{m['eff_frac']:.6g},"
+                               f"{m['srs_g']:.6g},{m['q']:.6g},{m['force_N']:.6g}")
+                out.append("")
+                if r.get("bolts"):
+                    out.append("# shock peak bolt loads")
+                    out.append("bolt,end,axial_N,shear_N,moment_Nmm")
+                    for bl in r["bolts"]:
+                        out.append(f"{bl['bolt']},{bl['end']},{bl['N']:.6g},"
+                                   f"{bl['V']:.6g},{bl['M']:.6g}")
+                    out.append("")
+                if r.get("probes"):
+                    out.append("# shock peak displacement at probes")
+                    out.append("probe,mag_mm,dx_mm,dy_mm,dz_mm")
+                    for pr in r["probes"]:
+                        out.append(f"{pr['probe']},{pr['mag']:.6g},{pr['dx']:.6g},"
+                                   f"{pr['dy']:.6g},{pr['dz']:.6g}")
+                    out.append("")
+
         if what == "nodes":
             raise HTTPException(422, "per-node export: request a specific field via /field")
 
@@ -673,6 +704,38 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         return {"curves": out, "miles": checks,
                 "participation": random_vib.cumulative_participation(part),
                 "grms_in": random_vib.grms_input(spec)}
+
+    @app.get("/api/projects/{pid}/results/{aid}/shock")
+    def shock_response(pid: str, aid: str):
+        """Peak response from the shock spectrum and the modal basis.
+
+        Computed here, not in the solver: an SRS has no phase and no time, so
+        there is nothing to integrate — the answer is a combination over the
+        modes, and the arithmetic is unit-tested in tests/test_shock.py.
+        """
+        proj = _project(pid)
+        analysis = next((a for a in proj["setup"].get("analyses", [])
+                         if a["id"] == aid), None)
+        if analysis is None:
+            raise HTTPException(404, "analysis not found")
+        if not store.exists(pid, f"runs/{aid}/meta.json"):
+            raise HTTPException(404, "no results for this analysis")
+        meta = store.read_json(pid, f"runs/{aid}/meta.json")
+        cfg = analysis.get("config", {}) or {}
+        if (cfg.get("input") or "spectrum") == "spectrum" and len(cfg.get("spec") or []) < 2:
+            raise HTTPException(422, "analysis has no shock spectrum")
+        out = shock.response(meta, cfg)
+        # the input curve itself, for the chart and to check the table was
+        # entered as intended
+        fs = [10.0 * (10000.0 / 10.0) ** (i / 119.0) for i in range(120)]
+        curve = shock.spectrum_for(cfg, fs)
+        out["curve"] = {"freq": fs, "srs": curve["srs"]}
+        bolts = {b["index"]: b for b in
+                 [{"index": i, "name": b.get("name") or f"Bolt {i}"}
+                  for i, b in enumerate(proj["setup"].get("bolts", []), 1)]}
+        for r in out.get("bolts", []):
+            r["name"] = (bolts.get(r["bolt"]) or {}).get("name", f"Bolt {r['bolt']}")
+        return out
 
     @app.get("/api/projects/{pid}/results/{aid}/field")
     def result_field(pid: str, aid: str, name: str, step: str, comp: str = "MAG"):

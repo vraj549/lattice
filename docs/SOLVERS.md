@@ -10,6 +10,7 @@ loads and contacts are shared; only the deck written at the end differs.
 | Modal | yes | yes |
 | Harmonic (sine sweep) | yes | — |
 | Random vibration | yes | — |
+| Shock (SRS / classical pulse) | yes | — |
 | Contacts | yes | yes |
 | Bolts (beam + spider + preload) | yes | — |
 | Ties | yes | — |

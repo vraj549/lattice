@@ -217,9 +217,13 @@ def main():
                 fh.write(f"{i + 1},{fq}\n")
         with open("participation.csv", "w") as fh:
             fh.write("NUME_ORDRE,FREQ,MASS_GENE,MASS_EFFE_UN_DX,MASS_EFFE_UN_DY,MASS_EFFE_UN_DZ\n")
+            # MASS_EFFE_UN_* is UNITARY: a fraction of the model's mass, so
+            # the column has to sum to at most 1. A decaying geometric series
+            # summing to ~0.92 leaves a visible missing-mass term, which is
+            # what a real truncated basis looks like.
             for i, fq in enumerate(freqs):
-                d = 0.62 / (i + 1)
-                fh.write(f"{i + 1},{fq},1.0,{d:.4f},{d * 0.4:.4f},{d * 0.2:.4f}\n")
+                fh.write(f"{i + 1},{fq},1.0,{0.55 * 0.4 ** i:.5f},"
+                         f"{0.30 * 0.5 ** i:.5f},{0.62 * 0.35 ** i:.5f}\n")
 
     with open("tables.txt", "w") as fh:
         fh.write("INTITULE,RESU,NOM_CHAM,DX,DY,DZ\n")
@@ -228,7 +232,29 @@ def main():
         fh.write("LIEU,ENTITE,MASSE\n")
         fh.write("TOUT,TOUT,0.5551\n")
 
-    if "EFGE_ELNO" in comm:
+    # Per-mode extractions for a shock run. Deterministic but mode-dependent,
+    # so a combination rule that ignored a mode would show up.
+    if units.get(36) == "mode_probes.csv":
+        with open("mode_probes.csv", "w") as fh:
+            fh.write("INTITULE,RESU,NOM_CHAM,NUME_ORDRE,NOEUD,DX,DY,DZ\n")
+            for pn in sorted(set(re.findall(r"INTITULE='(PROBE\d+)'", comm))):
+                for i, _fq in enumerate(freqs):
+                    a = 1.0 / (i + 1)
+                    fh.write(f"{pn},1,DEPL,{i + 1},N1,{0.3 * a},{0.2 * a},{a}\n")
+        log("IMPR_TABLE  mode shapes at probes -> unit 36")
+
+    if units.get(35) == "mode_bolts.csv":
+        with open("mode_bolts.csv", "w") as fh:
+            fh.write("INTITULE,RESU,NOM_CHAM,NUME_ORDRE,NOEUD,N,VY,VZ,MT,MFY,MFZ\n")
+            for bn in sorted(set(re.findall(r"INTITULE='(BOLT\d+_[AB])'", comm))):
+                end = 1.0 if bn.endswith("A") else 0.8
+                for i, _fq in enumerate(freqs):
+                    a = end / (i + 1)
+                    fh.write(f"{bn},1,EFGE_ELNO,{i + 1},N1,{900 * a},{40 * a},"
+                             f"{15 * a},0.0,{120 * a},{60 * a}\n")
+        log("IMPR_TABLE  bolt forces per mode -> unit 35")
+
+    if units.get(36) == "bolt_forces.csv":
         axial = mock_bolt_axial(comm)
         with open("bolt_forces.csv", "w") as fh:
             fh.write("INTITULE,RESU,NOM_CHAM,NOEUD,N,VY,VZ,MT,MFY,MFZ\n")

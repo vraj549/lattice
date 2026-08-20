@@ -1,4 +1,5 @@
 """Bolted-joint pipeline: cylinder detection, beam creation, spiders, preload."""
+import ast
 import json
 import math
 import os
@@ -75,6 +76,11 @@ def meshed(model):
          "side_a_faces": [top_cyls[1]["tag"]], "side_b_faces": [bot_cyls[1]["tag"]],
          "d_mm": 6, "E_GPa": 210, "preload_N": 8000},
     ]
+    # a probe as well, so the vibration decks (which extract response there)
+    # are exercised by the deck tests rather than skipped
+    com = faces[1]["com"]
+    setup["probes"] = [{"id": "p1", "name": "tip",
+                        "x": com[0], "y": com[1], "z": com[2]}]
     unv = str(d / "mesh.unv")
     out = meshing.mesh_project(brep, unv, meta, setup)
     return unv, out, setup, meta
@@ -285,3 +291,40 @@ def test_grip_is_the_same_whichever_faces_are_picked(model):
     by_face = grip([top_face["tag"]], [bot_face["tag"]], "face")
     assert by_hole == pytest.approx(zmax - zmin, abs=0.05)
     assert by_face == pytest.approx(by_hole, abs=0.05)
+
+
+ALL_TYPES = {
+    "static": {},
+    "modal": {"n_modes": 6},
+    "harmonic": {"f_min": 20, "f_max": 2000, "n_steps": 50, "damping": 0.02,
+                 "excitation": "base", "base_dir": [0, 0, 1], "base_g": 1.0},
+    "random": {"spec": [[20, 0.01], [2000, 0.007]], "damping": 0.02,
+               "n_steps": 60},
+    "shock": {"input": "pulse", "pulse": "half_sine", "pulse_g": 20,
+              "pulse_ms": 11, "axis": 2, "rule": "srss", "damping": 0.05,
+              "n_modes": 6},
+}
+
+
+@pytest.mark.parametrize("atype", sorted(ALL_TYPES))
+def test_every_deck_is_valid_python(meshed, atype):
+    """A .comm is executed as Python by code_aster, so a syntax error in one
+    is a guaranteed failure — and the nearest solver that would catch it is on
+    another machine. Parsing every deck here catches the whole class for free.
+
+    It is not a check that code_aster ACCEPTS the deck; only that Python can
+    read it. Bad indentation inside an `_optional` block is exactly the kind
+    of thing this stops.
+    """
+    _, out, shared, meta = meshed
+    setup = json.loads(json.dumps(shared))
+    setup["materials"] = [{"id": "st", "name": "Steel", "E_GPa": 210,
+                           "nu": 0.3, "rho_kgm3": 7850}]
+    setup["assignments"] = {str(s["tag"]): "st" for s in meta["solids"]}
+    a = setup["analyses"][0]
+    a["type"] = atype
+    a["config"] = dict(ALL_TYPES[atype])
+    if atype in ("harmonic", "random", "shock"):
+        assert out["stats"].get("probes"), "fixture must provide a probe"
+    comm, _ = comm_writer.build_run(a, setup, meta, out["stats"], SolverConfig())
+    ast.parse(comm.replace("DEBUT(LANG='EN')", "pass").replace("FIN()", "pass"))

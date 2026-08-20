@@ -68,7 +68,9 @@ def build_results(run_dir: str, expect_bbox=None, expect_volume=None) -> dict:
             meta["warnings"].append(f"MED parse failed: {e}")
 
     for fname, key in [("modes.csv", "modes"), ("participation.csv", "participation"),
-                       ("tables.txt", "tables"), ("bolt_forces.csv", "bolt_forces")]:
+                       ("tables.txt", "tables"), ("bolt_forces.csv", "bolt_forces"),
+                       ("mode_probes.csv", "mode_probes"),
+                       ("mode_bolts.csv", "mode_bolts")]:
         p = os.path.join(run_dir, fname)
         if os.path.isfile(p):
             try:

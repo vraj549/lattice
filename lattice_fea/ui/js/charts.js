@@ -207,6 +207,18 @@ function drawFrf(canvas, curves, opts = {}) {
   const allPeaks = [];
   pts.forEach((c, ci) => {
     const col = c.color || SERIES[ci % SERIES.length];
+    if (c.dots) {
+      // A scatter, not a curve. Modal frequencies are samples ON another
+      // curve; joining them with a line would draw a shape that does not
+      // exist and invite reading a trend between modes.
+      x.fillStyle = col;
+      for (let i = 0; i < c.freq.length; i++) {
+        x.beginPath();
+        x.arc(X(c.freq[i]), Y(c.module[i]), 3, 0, Math.PI * 2);
+        x.fill();
+      }
+      return;
+    }
     x.beginPath();
     for (let i = 0; i < c.freq.length; i++) {
       const px = X(c.freq[i]), py = Y(c.module[i]);

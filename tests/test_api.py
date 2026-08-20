@@ -220,3 +220,104 @@ def test_sizing_is_refused_once_preload_is_applied(client):
     assert out["blocked"] is True
     assert out["rows"] == []
     assert out["warnings"]
+
+
+def _shock_project(c, cfg_extra=None, with_probe=True):
+    """A bolted joint with a shock analysis, meshed and solved."""
+    proj = make_project(c)
+    pid = proj["id"]
+    p = c.get(f"/api/projects/{pid}").json()
+    meta = p["geometry"]
+    cyls = sorted((f for f in meta["faces"]
+                   if (f.get("fit") or {}).get("kind") == "cylinder"),
+                  key=lambda f: f["com"][2])
+    flat = sorted((f for f in meta["faces"]
+                   if (f.get("fit") or {}).get("kind") == "plane"),
+                  key=lambda f: -f["area"])
+    setup = p["setup"]
+    setup["materials"] = [{"id": "st", "name": "Steel", "E_GPa": 210.0,
+                           "nu": 0.3, "rho_kgm3": 7850}]
+    setup["assignments"] = {str(s["tag"]): "st" for s in meta["solids"]}
+    setup["bolts"] = [{
+        "id": "b1", "name": "Bolt 1", "size": "M6", "d_mm": 6, "E_GPa": 210,
+        "yield_MPa": 640, "preload_N": 0,
+        "side_a_faces": [cyls[-1]["tag"]], "side_b_faces": [cyls[0]["tag"]]}]
+    if with_probe:
+        com = flat[1]["com"]
+        setup["probes"] = [{"id": "p1", "name": "tip",
+                            "x": com[0], "y": com[1], "z": com[2]}]
+    setup["analyses"] = [{
+        "id": "a1", "type": "shock", "name": "Shock",
+        "config": {"input": "pulse", "pulse": "half_sine", "pulse_g": 20,
+                   "pulse_ms": 11, "axis": 2, "rule": "srss",
+                   "damping": 0.05, "n_modes": 8, **(cfg_extra or {})},
+        "supports": [{"id": "s1", "name": "fix", "type": "fixed",
+                      "faces": [flat[0]["tag"]]}],
+        "loads": []}]
+    assert c.put(f"/api/projects/{pid}/setup", json=setup).status_code == 200
+    r = c.post(f"/api/projects/{pid}/mesh")
+    m = wait(c, r.json()["job"])
+    assert m["status"] == "done", json.dumps(m)[:3000]
+    r = c.post(f"/api/projects/{pid}/solve/a1")
+    assert r.status_code == 200, r.text
+    st = wait(c, r.json()["job"])
+    assert st["status"] == "done", json.dumps(st)[:3000]
+    return pid
+
+
+def test_shock_run_reports_interface_load_and_bolt_loads(client):
+    c = client
+    pid = _shock_project(c)
+    r = c.get(f"/api/projects/{pid}/results/a1/shock")
+    assert r.status_code == 200, r.text
+    out = r.json()
+
+    assert out["axis"] == "Z"
+    assert out["rows"], out
+    # every mode gets a spectrum value, and the pulse's peak bounds none of
+    # them from above — an SRS amplifies
+    assert all(m["srs_g"] > 0 for m in out["rows"])
+    assert max(m["srs_g"] for m in out["rows"]) > 20.0
+
+    # interface load is a real force, and the missing mass is carried
+    assert out["force_N"] > out["force_modal_N"] > 0
+    assert 0.0 < out["missing_mass"] < 0.5
+    assert out["missing_force_N"] > 0
+    assert out["bolts"], "a bolted model must report peak bolt loads"
+    assert out["bolts"][0]["N"] > 0
+    assert out["probes"], "a probed model must report peak displacement"
+
+
+def test_shock_combination_rule_changes_the_answer(client):
+    """The rule is a real choice, not a label: SRSS < NRL < ABS."""
+    c = client
+    pid = _shock_project(c)
+    got = {}
+    for rule in ("srss", "nrl", "abs"):
+        p = c.get(f"/api/projects/{pid}").json()
+        p["setup"]["analyses"][0]["config"]["rule"] = rule
+        assert c.put(f"/api/projects/{pid}/setup", json=p["setup"]).status_code == 200
+        got[rule] = c.get(f"/api/projects/{pid}/results/a1/shock").json()["force_N"]
+    assert got["srss"] < got["nrl"] < got["abs"]
+
+
+def test_shock_spectrum_and_pulse_inputs_both_run(client):
+    c = client
+    pid = _shock_project(c, {"input": "spectrum",
+                             "spec": [[100, 20], [1000, 200], [10000, 200]]})
+    out = c.get(f"/api/projects/{pid}/results/a1/shock").json()
+    assert out["input"]["source"] == "SRS table"
+    assert out["input"]["zpa"] == 200.0
+    assert out["force_N"] > 0
+
+
+def test_shock_export_carries_the_numbers(client):
+    c = client
+    pid = _shock_project(c)
+    r = c.get(f"/api/projects/{pid}/results/a1/export?what=shock")
+    assert r.status_code == 200
+    body = r.text
+    for header in ("# shock summary", "# shock per mode",
+                   "# shock peak bolt loads",
+                   "# shock peak displacement at probes"):
+        assert header in body, body[:1500]

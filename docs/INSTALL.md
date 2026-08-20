@@ -69,7 +69,7 @@ Lattice drives two. You do not need both.
 | | code_aster | CalculiX |
 |---|---|---|
 | Static, modal | yes | yes |
-| Harmonic sweep, random vibration | yes | — |
+| Harmonic sweep, random vibration, shock | yes | — |
 | Bolts, ties, remote loads | yes | — |
 | Contacts | yes | yes |
 | Effort to install | moderate (WSL2 / Docker / Linux) | one command |

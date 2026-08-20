@@ -878,8 +878,101 @@ def write_random(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
     return write_harmonic(setup, meta, mesh_stats, hcfg, analysis, ai)
 
 
+def write_shock(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
+                analysis: dict = None, ai: int = 1, **kw) -> CommBuild:
+    """Shock response spectrum — the modal deck, plus what the spectrum needs.
+
+    An SRS gives peak response per frequency with no phase and no time, so
+    there is nothing for the solver to integrate: the answer is a combination
+    over the modal basis. The solve is therefore exactly the modal one, which
+    is already proven, and the spectrum arithmetic happens in `shock.py` where
+    it is unit-tested — the same division `random_vib` uses, and for the same
+    reason.
+
+    What is added over `write_modal` is per-mode extraction at the probes and
+    at the bolt beams, so mode shapes can be weighted and combined into peak
+    displacements and peak bolt loads. Both are optional blocks: neither may
+    cost the run its modes.
+    """
+    n_modes = int(cfg.get("n_modes") or 0)
+    band = cfg.get("band")
+    mcfg = {"band": band} if band else {"n_modes": n_modes or 30}
+    probes = mesh_stats.get("probes", [])
+
+    b = CommBuild()
+    _prelude(b, setup, meta, mesh_stats, need_probes=bool(probes),
+             analysis=analysis, ai=ai)
+    fix = _supports(b, analysis, ai)
+    if not fix:
+        raise ValueError("Shock analysis needs a support — the spectrum is "
+                         "applied at the restrained base.")
+    _modal_core(b, setup, mcfg, fix)
+
+    b.w("IMPR_RESU(FORMAT='MED', UNITE=80, RESU=_F(RESULTAT=modes, NOM_CHAM='DEPL'))")
+    b.result_files.append((80, "result.med"))
+    b.w()
+
+    def freqs(x):
+        x.w("ftab = RECU_TABLE(CO=modes, NOM_PARA=('NUME_MODE', 'FREQ'))")
+        x.w("IMPR_TABLE(TABLE=ftab, UNITE=38, FORMAT='TABLEAU', SEPARATEUR=',')")
+        x.result_files.append((38, "modes.csv"))
+    _optional(b, "frequency table", freqs)
+
+    # Total mass turns the unitary effective masses into real ones, which is
+    # what makes the interface force a force. Without it there is no shock
+    # answer at all, only fractions.
+    def mass(x):
+        x.w("mtab = POST_ELEM(MODELE=model, CHAM_MATER=chmat, MASS_INER=_F(TOUT='OUI'))")
+        x.w("IMPR_TABLE(TABLE=mtab, UNITE=37, FORMAT='TABLEAU', SEPARATEUR=',')")
+        x.result_files.append((37, "tables.txt"))
+    _optional(b, "model mass", mass)
+
+    def part(x):
+        x.w("ptab = RECU_TABLE(CO=modes, NOM_PARA=('NUME_MODE', 'FREQ', 'MASS_GENE',")
+        x.w("                  'MASS_EFFE_UN_DX', 'MASS_EFFE_UN_DY', 'MASS_EFFE_UN_DZ'))")
+        x.w("IMPR_TABLE(TABLE=ptab, UNITE=39, FORMAT='TABLEAU', SEPARATEUR=',')")
+        x.result_files.append((39, "participation.csv"))
+    _optional(b, "effective mass table", part)
+
+    if probes:
+        def probe_shapes(x):
+            for i, _p in enumerate(probes):
+                x.w(f"sp{i} = POST_RELEVE_T(ACTION=_F(")
+                x.w(f"    INTITULE='PROBE{i + 1}', OPERATION='EXTRACTION',")
+                x.w(f"    RESULTAT=modes, NOM_CHAM='DEPL', TOUT_ORDRE='OUI',")
+                x.w(f"    GROUP_NO='PROBE{i + 1}', NOM_CMP=('DX', 'DY', 'DZ')))")
+                x.w(f"IMPR_TABLE(TABLE=sp{i}, UNITE=36, FORMAT='TABLEAU', "
+                    f"SEPARATEUR=',')")
+            x.result_files.append((36, "mode_probes.csv"))
+        _optional(b, "mode shapes at probes", probe_shapes)
+
+    if getattr(b, "has_bolts", False):
+        beam_groups = _group_tuple([f"BOLT{br['index']}" for br in b.bolts])
+
+        def bolt_modes(x):
+            x.w("modes = CALC_CHAMP(reuse=modes, RESULTAT=modes,")
+            x.w(f"                   CARA_ELEM=cara, GROUP_MA={beam_groups},")
+            x.w("                   CONTRAINTE=('EFGE_ELNO',))")
+            for br in b.bolts:
+                for side in ("A", "B"):
+                    x.w(f"mb{br['index']}{side} = POST_RELEVE_T(ACTION=_F(")
+                    x.w(f"    INTITULE='BOLT{br['index']}_{side}', "
+                        f"OPERATION='EXTRACTION',")
+                    x.w(f"    RESULTAT=modes, NOM_CHAM='EFGE_ELNO', "
+                        f"TOUT_ORDRE='OUI',")
+                    x.w(f"    GROUP_NO='BN{br['index']}{side}', TOUT_CMP='OUI'))")
+                    x.w(f"IMPR_TABLE(TABLE=mb{br['index']}{side}, UNITE=35, "
+                        f"FORMAT='TABLEAU', SEPARATEUR=',')")
+            x.result_files.append((35, "mode_bolts.csv"))
+        _optional(b, "bolt forces per mode", bolt_modes)
+
+    b.w("FIN()")
+    return b
+
+
 WRITERS = {"static": write_static, "modal": write_modal,
-           "harmonic": write_harmonic, "random": write_random}
+           "harmonic": write_harmonic, "random": write_random,
+           "shock": write_shock}
 
 
 def bolt_area(cfg: dict) -> float:

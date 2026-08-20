@@ -476,6 +476,18 @@ const A = {
     A.loadSizing(aid);
   },
 
+  async loadShock(aid) {
+    if (S.shockPending?.[aid]) return;
+    (S.shockPending ||= {})[aid] = true;
+    try {
+      const r = await api.get(`/api/projects/${S.project.id}/results/${aid}/shock`);
+      (S.shockResults ||= {})[aid] = r;
+      refresh();
+    } catch (e) {
+      logLine(`shock response: ${e.message}`, "badln");
+    } finally { S.shockPending[aid] = false; }
+  },
+
   async loadRandom(aid) {
     if (S.randomPending?.[aid]) return;
     (S.randomPending ||= {})[aid] = true;
@@ -594,6 +606,9 @@ const ANALYSIS_TYPES = [
            "acceleration the way a shaker test is run." },
   { type: "random", name: "Random vibration",
     blurb: "PSD in g²/Hz, response in g RMS and 3σ. Base-driven; needs a probe." },
+  { type: "shock", name: "Shock",
+    blurb: "SRS or a classical pulse — half-sine, sawtooth, trapezoid. " +
+           "Peak interface load, bolt loads and probe response." },
 ];
 
 function showAnalysisDialog() {
@@ -1328,7 +1343,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.20.0";
+const UI_BUILD = "0.21.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;

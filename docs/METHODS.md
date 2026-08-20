@@ -119,6 +119,98 @@ input the sweep actually covered.
 
 ---
 
+## Shock
+
+A shock is specified one of two ways, and Lattice takes both.
+
+**An SRS** — for each frequency, the peak acceleration a single-degree-of-freedom
+oscillator of that frequency reaches when its base is driven by the event.
+Written as breakpoints in (Hz, g) at a stated Q. Pyroshock and most spacecraft
+specs look like this.
+
+**A classical pulse** — half-sine, terminal-peak sawtooth or trapezoid of a
+stated amplitude and duration, as MIL-STD-810 Method 516 defines them. Its SRS
+is computed and applied, so both inputs meet in the same place.
+
+### Why there is no time history
+
+An SRS carries a peak per frequency, with no phase and no time. There is
+nothing to integrate. The answer is a combination over the modal basis, which
+is the standard method for a linear structure and reuses the modal solve
+unchanged — the same division of labour as random vibration, and for the same
+reason: the solver does only what it is already proven to do.
+
+The consequence is worth stating plainly: **every number a shock run reports is
+a magnitude with no sign, and two of them need not occur at the same instant.**
+A combined stress and a combined displacement are each defensible; their ratio
+is not.
+
+### The chain
+
+| | |
+|---|---|
+| `Γ` | participation factor, taken as `sqrt(m_eff / m_gene)`. Doing it from the mass table rather than reading a separate one makes it **normalisation-invariant**: the response is `φ·Γ·S_d`, and scaling the mode shape scales `m_gene` by the square, so the product does not move. Whatever normalisation the solver used, this stays consistent with the mode shapes it wrote. |
+| `q = Γ·S_a/ω²` | peak modal coordinate — the spectral displacement of that mode |
+| response | `φ·q` per mode, then combined. Bolt end forces and probe displacements are both mode shapes, so both go through unchanged. |
+| interface load | `Σ m_eff,i · S_a(f_i)`, combined — the load into the supports |
+
+### Combining modes
+
+Three rules, all of them sign-blind:
+
+- **SRSS** — peaks independent. Right when modes are well separated; the default.
+- **NRL** — largest contributor at full value, SRSS for the rest. Written for
+  shock, and the safer choice when one mode dominates.
+- **ABS** — every mode peaking at once. A true upper bound, usually a loose one.
+
+Sign-blindness is deliberate. The sign of a participation factor is not
+recoverable from effective mass, so a rule that needed it — CQC, or an
+algebraic sum — could not be computed honestly here, and is not offered.
+
+### Missing mass
+
+A modal basis truncated at some frequency has lost the stiffer modes, which do
+not resonate: they ride with the base. Their share is the residual effective
+mass at the **ZPA**, the spectrum's high-frequency value, and it is added in
+with the periodic terms. The results panel reports the effective mass the basis
+captured, because a large residual means the *shape* of the response is not
+resolved even though the total force is corrected.
+
+### The pulse spectrum
+
+Computed with Smallwood's ramp-invariant recursive filter — the exact response
+of an oscillator to an input taken as piecewise linear between samples, which
+is what a sampled history is. The history is padded well past the end of the
+pulse: an oscillator softer than the pulse keeps ringing once it stops, and
+that residual is the entire low-frequency half of the spectrum.
+
+Checked against a direct RK4 integration of the same oscillator (agreement
+better than 0.2%), and against the two asymptotes every SRS has: it tends to
+the pulse peak at high frequency, and to `2πf·ΔV` at low frequency, where `ΔV`
+is the area under the pulse. An undamped half-sine peaks at 1.766 times the
+pulse near `f·τ = 0.8`.
+
+An **initial-peak sawtooth is not offered**. It starts with a step, no shock
+machine can produce one, and its spectrum never settles to the pulse
+amplitude — an oscillator hit with a step overshoots to
+`1 + exp(-ζπ/√(1-ζ²))`, about 1.85 at Q = 10. The ZPA used for the missing-mass
+term would have been wrong by that factor, so the shape is excluded rather than
+special-cased.
+
+### Limits, stated
+
+- **Q matters.** A spectrum read at one Q and applied at another is a different
+  spectrum. The damping entered here is the spectrum's, and it should be the
+  one the spec was written at.
+- Linear and single-axis. Simultaneous axes would need their own directional
+  combination; run them separately and combine outside.
+- No stress field. Combining per-mode stress components would be sound, but
+  what is combined here is what the modal tables carry: interface load, bolt
+  end forces, and displacement at probes.
+- The spectrum is applied at the restrained base, so the model needs a support.
+  With nothing restrained the modes are free-free and the answer is not merely
+  inaccurate, it is meaningless.
+
 ## Bolted joints — sizing and preload
 
 ### The question, and what the FE can answer

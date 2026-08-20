@@ -1,7 +1,8 @@
 # Lattice
 
 **Browser-based FEA workbench.** Import STEP parts or assemblies, mesh them,
-and run **static**, **modal**, **harmonic** and **random vibration** analyses
+and run **static**, **modal**, **harmonic**, **random vibration** and
+**shock** analyses
 on [code_aster](https://code-aster.org) or
 [CalculiX](http://www.dhondt.de/) — from a workbench UI in your browser.
 Everything runs locally; nothing leaves your machine.
@@ -90,7 +91,8 @@ examples with `python examples/make_examples.py`).
 3. **Connections** — *Detect contacts* finds the interfaces between separate
    parts. Each starts bonded; change any that can slide or separate. Bolts and
    ties are added here too.
-4. **Analyses** — *+ add* opens a dialog: static, modal, harmonic or random.
+4. **Analyses** — *+ add* opens a dialog: static, modal, harmonic, random or
+   shock.
    Each analysis owns its own supports and loads, so only what that study needs
    appears beneath it. A base-driven harmonic or a random study is driven
    through its supports, so it offers no loads at all.
@@ -263,7 +265,8 @@ to slide against.
 ## What to know before trusting it
 
 **Scope.** Linear elastic, small displacement, small strain. Static, modal,
-modal-superposition harmonic, and random vibration derived from a base sweep.
+modal-superposition harmonic, random vibration derived from a base sweep, and
+shock as a spectrum combination over the modal basis.
 The one nonlinearity is contact status; the material is always linear elastic.
 
 Not modelled: plasticity, creep, large rotation, buckling, thermal, shells or
