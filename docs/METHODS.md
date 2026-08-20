@@ -160,9 +160,52 @@ to the bolt. That is the entire reason preload works, and why a longer bolt is
 better under fatigue — more compliance in the bolt, less alternating load
 reaching it.
 
-The grip length comes from the mesh: the bolt beam spans exactly the clamped
-length, so it is measured, not typed. Hole diameter comes from the detected
-cylinder, and the clamped material's modulus from its assigned material.
+The grip length comes from the mesh: the bolt beam spans the outer extreme of
+the faces you picked on each side, so it is the clamped length whether you
+picked the hole cylinders or the bearing faces under head and nut. Hole
+diameter comes from the detected cylinder, and the clamped material's modulus
+from its assigned material.
+
+### How the bolt is modelled
+
+A **Timoshenko beam** on the hole axis, section = the tensile stress area,
+each end coupled to that side's picked faces by an **RBE3 distributing**
+constraint. Preload is an imposed axial strain, calibrated against the
+measured beam force (below).
+
+Distributing, not rigid: the coupled faces are not made into a rigid body, so
+the parts still deform. Two places where the beam is not the fastener:
+
+| | |
+|---|---|
+| **Axial stiffness** | A prismatic bar of the grip length is stiffer than a real bolt, which also flexes in the head, the engaged thread and the nut. For an M6 through 16 mm of steel the real bolt is 16% more compliant, so the model gives Φ = 0.19 where the compliance chain above gives 0.168. The beam therefore sends slightly **more** external load to the bolt than reality — the conservative direction for bolt stress. The sizing panel uses the full compliance chain, not the beam, so the two numbers differ by about that much. |
+| **Shear** | Coupling to the hole wall makes the bolt a zero-clearance pin. A real clearance bolt carries no shear until the joint has slipped by the clearance, so the model under-predicts slip. Treat the slip margin in the sizing panel, which is a friction calculation, as the authority — not the fact that the FE joint did not slide. |
+
+For a tapped blind hole, pick the bearing face at the first engaged thread
+rather than the tapped cylinder: the cylinder's far end is the bottom of the
+hole, which is past the clamped length.
+
+### Preload is calibrated, not assumed
+
+An imposed strain does not deliver the force it was derived from. The bolt is
+a spring in parallel with the clamped parts, and they take part of the imposed
+shortening back:
+
+```
+F_achieved = F_requested · δ_S/(δ_S+δ_P) = F_requested · (1 − Φ)
+```
+
+which is **15% low on a steel joint and 35% low on aluminium**. So Lattice
+measures it: a preload-only solve reads the axial force the beams ended up
+with, the imposed strain is rescaled, and it solves again — proportionally on
+the first correction, then by a secant step, since several bolts in one joint
+pull on each other. It stops within 1%, and the results panel reports what the
+run actually contains rather than what was asked for.
+
+This costs one to three extra solves, each stripped to the bolt forces (no
+stress recovery, no field output). Set `preload_calibration: false` in the
+analysis config to skip it; the run is then low by the amount above and says
+so.
 
 ### What sets the preload
 
@@ -216,6 +259,10 @@ governs before the bolt does.
 - **Concentric** clamping and load introduction. Eccentricity raises the
   bolt's share and can dominate a flange; it is not modelled, so `Φ` here is
   VDI 2230's `Φ_K`.
+- Clamp load enters through the picked faces. Picking the hole cylinders — the
+  usual choice, since most CAD has no separate washer footprint — spreads it
+  over the hole wall rather than the bearing annulus, which makes the clamped
+  parts look slightly stiffer than they are.
 - Static, plus a simple alternating check. No fatigue life curve.
 - The cone model approximates real flange behaviour. Where a contact run has
   measured the bolt's load increase directly, that measurement is used instead.

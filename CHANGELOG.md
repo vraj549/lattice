@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.20.0
+
+**The bolt model.** Two errors sat between the sizing calculation and what the
+solver was actually asked to compute. Both are on the number this tool exists
+to produce.
+
+### The bolt was half as long as the bolt
+
+The beam spanned the two picked faces' **centroids**. Pick the hole cylinders —
+the documented way to define a bolt — and the centroid of a hole through an
+8 mm plate sits at 4 mm, so a bolt through two 8 mm plates came out **8 mm
+long instead of 16**.
+
+That length is the bolt's elastic length. It sets the bolt's stiffness, so it
+sets how much of an external load reaches the bolt, and the sizing panel reads
+it straight back as `l_K`:
+
+```
+                     bolt's share of an external load, Φ
+  before (8 mm beam)                0.319
+  after  (16 mm beam)               0.190
+  compliance chain (reference)      0.168
+```
+
+The beam now spans the **outer extreme** of the picked faces. That gives the
+clamped length, and gives the *same* answer whether you picked the hole
+cylinders or the bearing faces under head and nut — which is the property that
+makes it right rather than merely bigger. Meshes written before this are
+refused and re-generated.
+
+### The preload was not the preload
+
+`PRE_EPSI` imposes a shortening, not a force. The clamped parts push back, so
+the bolt settles at `F_requested · (1 − Φ)` — **15% low on a steel joint, 35%
+on aluminium**. Ask for 10 kN, get 8.4 kN, and every margin computed from it
+is wrong.
+
+Lattice now measures it. A preload-only solve reads the axial force the beams
+ended up with, the imposed strain is rescaled, and it solves again. One
+correction is exact for a single bolt; bolts in one joint pull on each other,
+so after the first pass the step becomes a secant one. It stops within 1%, and
+the results panel reports **what the run contains**, never an extrapolation.
+
+The correction is applied by rewriting the deck between solves, not by a loop
+inside the `.comm`: the solver input uses no command or API call it did not
+already use. Cost is one to three extra solves, each stripped to the bolt
+forces — no stress recovery, no field output.
+
+### Also
+
+- **An intermittent 38% error in the CalculiX suite.** Three tests set their
+  own `OMP_NUM_THREADS=4` — the exact condition the solver pins to 1 because
+  multithreaded SPOOLES returns wrong answers and exits 0. It passed in
+  isolation and failed in the full run. Tests now use the production
+  environment builder, and a test enforces that nothing sets that variable
+  itself.
+- **The server layer had no tests.** It is where the run is orchestrated, and
+  it now has end-to-end coverage through the real HTTP API against the mock
+  solver — which had to learn the one piece of physics that makes the
+  calibration loop testable.
+- A module-scoped fixture handed out by reference: one test rewrote bolt 1
+  into an M1.6 for every test that ran after it.
+- A spurious `divide by zero` warning from macOS Accelerate on a `matmul` of
+  finite values, which only appeared on faces large enough to leave numpy's
+  naive path.
+
+### What the beam still is not
+
+Documented rather than papered over, in
+[docs/METHODS.md](docs/METHODS.md#how-the-bolt-is-modelled): a prismatic beam
+has no head, thread or nut flexibility, so it sends ~13% more external load to
+the bolt than the compliance chain does — the conservative direction. And
+coupling to the hole wall makes the bolt a zero-clearance pin, so the model
+under-predicts slip; the friction margin in the sizing panel is the authority
+there, not the fact that the FE joint did not slide.
+
+
 ## 0.19.0
 
 **Bolt sizing.** The tool answers the question it was being used for: *how much

@@ -20,7 +20,11 @@ from .geometry import GMSH_LOCK, _gmsh, _fresh_model, _b64
 # 2: UNV groups could contain node entities (a leaked gmsh write option),
 #    which made code_aster fail on a duplicate GROUP_NO. Meshes written before
 #    this are re-generated rather than silently reused.
-MESH_FORMAT = 2
+# 3: bolt beams spanned the picked faces' centroids, which is half the clamped
+#    length whenever the hole cylinders were picked. The recorded grip is read
+#    back as l_K by the sizing calculation and sets the bolt's stiffness, so a
+#    mesh written before this reports the wrong bolt entirely.
+MESH_FORMAT = 3
 
 
 def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
@@ -274,6 +278,33 @@ def _bolt_axis(faces: dict, bolt: dict, ca, cb) -> np.ndarray:
     return d / n if n > 1e-12 else np.array([0.0, 0.0, 1.0])
 
 
+def _face_set_stations(gmsh, ftags, axis, origin) -> "tuple|None":
+    """(min, max) of the picked faces' mesh nodes projected on the bolt axis.
+
+    Measured from the mesh rather than the geometry so it is exact whatever
+    the axis orientation, and so a picked bearing plane (all nodes at one
+    station) and a picked hole cylinder (nodes spread over the plate
+    thickness) go through the same code.
+    """
+    lo, hi = None, None
+    for t in ftags:
+        try:
+            tags, coords, _ = gmsh.model.mesh.getNodes(2, int(t), True)
+        except Exception:                       # noqa: BLE001
+            continue
+        if not len(tags):
+            continue
+        p = np.asarray(coords, dtype=float).reshape(-1, 3) - origin
+        # elementwise, not matmul: numpy hands a matmul of this size to the
+        # platform BLAS, which on macOS/Accelerate raises a spurious
+        # divide-by-zero warning on finite input. Small faces took the naive
+        # path and stayed quiet, so it only appeared on the big ones.
+        sv = (p * axis).sum(axis=1)
+        lo = sv.min() if lo is None else min(lo, float(sv.min()))
+        hi = sv.max() if hi is None else max(hi, float(sv.max()))
+    return None if lo is None else (float(lo), float(hi))
+
+
 def _add_bolt_beams(gmsh, meta: dict, setup: dict, progress) -> list:
     """Create one SEG2 beam per bolt as a discrete curve (added after
     setOrder, so beams stay linear — POU_D_T wants SEG2). End nodes land at
@@ -298,8 +329,33 @@ def _add_bolt_beams(gmsh, meta: dict, setup: dict, progress) -> list:
             continue
         axis = _bolt_axis(faces, b, ca, cb)
         mid = (ca + cb) / 2.0
-        pa = mid + axis * float((ca - mid) @ axis)
-        pb = mid + axis * float((cb - mid) @ axis)
+
+        # The beam has to span the CLAMPED LENGTH — head bearing face to nut
+        # bearing face — because that length is the bolt's elastic length. It
+        # sets the bolt's stiffness, so it sets how much of an external load
+        # the bolt takes, and the sizing calculation reads it back as l_K.
+        #
+        # Projecting the picked faces' centroids gave half of it whenever the
+        # user picked the hole cylinders, which is the documented way to pick
+        # a bolt: the centroid of a hole through an 8 mm plate sits at 4 mm,
+        # so a bolt through two 8 mm plates came out 8 mm long instead of 16.
+        # Taking the OUTER extreme of the picked faces instead gives the true
+        # grip, and gives the same answer whether the user picked the hole
+        # cylinders or the bearing faces under head and nut.
+        sa = _face_set_stations(gmsh, b.get("side_a_faces", []), axis, mid)
+        sb = _face_set_stations(gmsh, b.get("side_b_faces", []), axis, mid)
+        ta = float((ca - mid) @ axis)
+        tb = float((cb - mid) @ axis)
+        if sa and sb:
+            if ta >= tb:                       # A is the +axis side
+                ta, tb = sa[1], sb[0]
+            else:
+                ta, tb = sa[0], sb[1]
+        else:
+            progress(f"bolt {i + 1}: could not measure the picked faces; "
+                     "grip falls back to the face centroids")
+        pa = mid + axis * ta
+        pb = mid + axis * tb
         if np.linalg.norm(pb - pa) < 1e-9:
             progress(f"bolt {i + 1} ({b.get('name', '')}): zero grip length — "
                      "both face sets are on the same feature; skipped")

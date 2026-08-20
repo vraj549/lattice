@@ -84,9 +84,18 @@ def test_bolt_beams_in_mesh(meshed):
     unv, out, setup, meta = meshed
     stats = out["stats"]
     assert len(stats["bolts"]) == 2
+    # The grip is the CLAMPED LENGTH — head bearing face to nut bearing face.
+    # Two 8 mm plates stacked from z=0 to z=16, so it is 16 mm. It used to be
+    # measured between the two hole centroids, which gave 8: half the bolt.
+    # That length is the bolt's elastic length, so it sets how much of an
+    # external load the bolt takes, and the sizing reads it back as l_K.
+    zs = [f["com"][2] for f in meta["faces"]]
+    stack = max(zs) - min(zs)
     for br in stats["bolts"]:
-        # grip spans the two hole midpoints: plates are 8 mm each -> ~8 mm
-        assert 2.0 < br["length"] < 15.0
+        assert br["length"] == pytest.approx(stack, abs=0.05), br
+        # and it spans the outer surfaces, not something inside the material
+        assert min(br["end_a"][2], br["end_b"][2]) == pytest.approx(min(zs), abs=0.05)
+        assert max(br["end_a"][2], br["end_b"][2]) == pytest.approx(max(zs), abs=0.05)
     txt = open(unv, errors="ignore").read()
     for g in ("BOLT1", "BOLT2", "BFA1", "BFB1", "BFA2", "BFB2"):
         assert g in txt, f"group {g} missing from UNV"
@@ -246,3 +255,33 @@ def test_calibration_export_asks_only_for_the_bolt_forces(meshed):
     units = [ln for ln in exp.splitlines() if ln.startswith("F libr")]
     assert any("bolt_forces.csv" in u for u in units)
     assert not any("result.med" in u for u in units)
+
+
+def test_grip_is_the_same_whichever_faces_are_picked(model):
+    """The UI accepts either the hole cylinders or the bearing faces under
+    head and nut. Both describe the same bolt, so both must give the same
+    clamped length — that equivalence is what taking the outer extreme of the
+    picked faces buys, and it is why the fix is not just "add the thickness".
+    """
+    brep, meta, d = model
+    s1, s2 = (s["tag"] for s in meta["solids"])
+    top_cyls, bot_cyls = hole_cylinders(meta, s2), hole_cylinders(meta, s1)
+    zs = [f["com"][2] for f in meta["faces"]]
+    zmin, zmax = min(zs), max(zs)
+    planes = [f for f in meta["faces"] if (f.get("fit") or {}).get("kind") == "plane"]
+    top_face = max((f for f in planes if abs(f["com"][2] - zmax) < 1e-6),
+                   key=lambda f: f["area"])
+    bot_face = max((f for f in planes if abs(f["com"][2] - zmin) < 1e-6),
+                   key=lambda f: f["area"])
+
+    def grip(a_faces, b_faces, name):
+        setup = default_setup()
+        setup["bolts"] = [{"id": "b1", "name": "B1", "d_mm": 6, "E_GPa": 210,
+                           "side_a_faces": a_faces, "side_b_faces": b_faces}]
+        out = meshing.mesh_project(brep, str(d / f"{name}.unv"), meta, setup)
+        return out["stats"]["bolts"][0]["length"]
+
+    by_hole = grip([top_cyls[0]["tag"]], [bot_cyls[0]["tag"]], "hole")
+    by_face = grip([top_face["tag"]], [bot_face["tag"]], "face")
+    assert by_hole == pytest.approx(zmax - zmin, abs=0.05)
+    assert by_face == pytest.approx(by_hole, abs=0.05)
