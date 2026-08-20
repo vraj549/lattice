@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.19.0
+
+**Bolt sizing.** The tool answers the question it was being used for: *how much
+preload does each bolt need, and will the bolt survive it?*
+
+### The methodology
+
+An FE model does not give you a required preload. It gives each bolt's share of
+the load path; turning that into a preload needs the joint's spring behaviour,
+the losses between tightening and service, and the scatter of the tightening
+method. Both halves are now there, kept separate so every number is traceable.
+
+**Workflow**
+
+1. Run with **preload set to zero**. With no preload the beam carries exactly
+   the external load `F_A` and `F_Q` the joint must be preloaded against.
+2. **Solution → Bolt sizing** reports, per bolt: load factor Φ, clamp force
+   needed against slip and against opening, embedding loss, required assembly
+   preload and its torque, what the bolt can take, and the margins.
+3. Enter that preload and run again to verify — as separate parts with a
+   frictional contact, so the interface can genuinely open or slip.
+
+Sizing from a run that already has preload applied is **refused**, not
+approximated: the beam force there is the bolt force, and feeding it back
+counts the preload twice. It asked for roughly three times the real preload
+before this was caught.
+
+### What it computes
+
+```
+Φ = n·δ_P/(δ_S+δ_P)     the share of an external load that reaches the bolt
+F_KR                     clamp needed:  slip  S·F_Q/(μ·n)
+                                        gap   S·(1−Φ)·F_A
+F_Mmin = F_KR + (1−Φ)F_A + F_Z          F_Z = embedding/(δ_S+δ_P)
+F_Mmax = α_A · F_Mmin                   α_A = 1.1 … 1.6 by method
+F_Mzul = ν·A_s·R_p0.2/√(1+3k_τ²)        what is left after tightening torsion
+```
+
+Grip length is **measured from the mesh** — the beam spans exactly the clamped
+length. Hole diameter comes from the detected cylinder, the clamped modulus
+from the assigned material. Head bearing diameter, available material and
+friction are editable assumptions.
+
+If `F_Mmax > F_Mzul` it reports **no feasible preload** rather than a smaller
+number: the joint needs a bigger bolt, more bolts, or less tightening scatter.
+Surface pressure under the head is checked too — on aluminium or a polymer that
+often governs first.
+
+### Two things found while building it
+
+- **The clamped-member model disagreed with itself by 40 %** across its own
+  case boundary: the same joint came out materially stiffer or softer depending
+  which branch of a three-case substitute-area formula it fell into. Replaced
+  with Rötscher pressure cones (Shigley's frustum result), which is one
+  continuous expression. Continuity is now tested by refining the step and
+  checking the largest jump falls with it — a fixed tolerance would only have
+  tested that the function is not steep, which near the cutoff it legitimately
+  is.
+- Validated on identities rather than remembered table values: stress areas
+  reproduce ISO 898-1 to 0.1 %, compliances are springs in series, the members
+  come out several times stiffer than the bolt so Φ lands in 0.05–0.35, load
+  splits sum to the applied load, and a longer bolt takes less of it — which is
+  why a fatigue joint wants one.
+
+The absolute preload a standard tabulates depends on which cross-section is
+taken to govern and what utilisation is assumed, so every intermediate value is
+reported for reconciliation against your own bolt standard.
+
+Method in [docs/METHODS.md](docs/METHODS.md#bolted-joints--sizing-and-preload).
+
+
 ## 0.18.0
 
 Documentation rewritten, and the installation path fixed — it was broken.

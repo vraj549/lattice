@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import math
 import glob
 import os
 import re
@@ -475,3 +476,33 @@ def field_payload_ccx(run_dir: str, field: str, step_key: str, comp: str,
 
 def _vec(v) -> str:
     return "(" + ", ".join(f"{x:.4g}" for x in v) + ")"
+
+
+def bolt_loads(meta: dict) -> dict:
+    """{bolt index: {N, V, M}} — worst end of each bolt.
+
+    Both beam ends are reported; the governing one is the larger axial force,
+    which is the end that decides the joint.
+    """
+    out = {}
+    for blk in (meta.get("tables") or {}).get("bolt_forces", []) or []:
+        cols = blk.get("columns", [])
+        ii = cols.index("INTITULE") if "INTITULE" in cols else -1
+        idx = {c: cols.index(c) for c in ("N", "VY", "VZ", "MFY", "MFZ")
+               if c in cols}
+        if "N" not in idx:
+            continue
+        for row in blk.get("rows", []):
+            label = str(row[ii]) if ii >= 0 else ""
+            m = re.search(r"BOLT(\d+)", label)
+            if not m:
+                continue
+            k = int(m.group(1))
+            num = lambda c: (row[idx[c]] if c in idx
+                             and isinstance(row[idx[c]], (int, float)) else 0.0)
+            rec = {"N": num("N"),
+                   "V": math.hypot(num("VY"), num("VZ")),
+                   "M": math.hypot(num("MFY"), num("MFZ"))}
+            if k not in out or abs(rec["N"]) > abs(out[k]["N"]):
+                out[k] = rec
+    return out

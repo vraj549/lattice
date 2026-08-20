@@ -148,6 +148,19 @@ def default_setup() -> dict:
         # [{id, name, kind, mu, faces_a:[], faces_b:[], solids:[a,b], suppressed}]
         # kind: bonded | noseparation | frictionless | friction
         "contacts": [],
+        # Assumptions for VDI 2230 bolt sizing. Not solver inputs — they are
+        # what turns an FE bolt load into a required preload.
+        "bolt_sizing": {
+            "mu_joint": 0.15,       # faying-surface friction
+            "n_friction": 1,        # interfaces carrying transverse load
+            "mu_thread": 0.14, "mu_head": 0.14,
+            "tightening": "torque_wrench",
+            "embedding_um": 6.0,    # bedding-in loss across the joint
+            "n_intro": 0.5,         # where the load enters the clamped parts
+            "S_slip": 1.2, "S_gap": 1.2,
+            "nu_yield": 0.9,        # utilisation of yield at assembly
+            "p_G": None,            # clamped-material bearing limit, MPa
+        },
         "probes": [],           # [{id, name, x,y,z}]  (mm)
         "mesh": {"size_mm": None, "curvature": 16, "order": 2, "local": []},
         "analyses": [],         # each: {id, type, name, config, supports[], loads[]}

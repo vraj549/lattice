@@ -163,9 +163,32 @@ The beam is sized on the **tensile stress area**, not the major diameter — a
 bolt carries axial load through its thread, and an M1.6 modelled on its ⌀1.6
 shank comes out 58 % stiffer than the real screw. The panel shows the
 equivalent diameter it uses.
-3. After solving, the **Bolt forces** table lists per-bolt axial force
-   (preload + working load), resultant shear, and bending from `EFGE_ELNO` —
-   the inputs a VDI 2230-style margin calc needs.
+3. After solving, **Bolt forces** lists per-bolt axial, shear and bending with
+   the resulting stresses against yield.
+
+### Sizing: how much preload does each bolt need?
+
+**Solution → Bolt sizing** answers that, per bolt, following VDI 2230:
+
+1. Run the model with **preload set to zero**. With no preload each bolt beam
+   carries exactly its share of the load path — the external load the joint
+   has to be preloaded against.
+2. Bolt sizing reports, for every bolt: the load factor Φ, the clamp force
+   needed against slip and against opening, embedding loss, the **required
+   assembly preload** and its tightening torque, what the bolt can actually
+   take, and the margins. Grip length is measured from the mesh, hole diameter
+   from the detected cylinder.
+3. Enter the preload it gives you and run again to verify — with the assembly
+   imported as *separate parts* and a frictional contact, so the interface can
+   genuinely open or slip if the preload is short.
+
+If the required preload exceeds what the bolt can hold, it says **no feasible
+preload** rather than rounding down: the joint needs a bigger bolt, more bolts,
+or a tightening method that scatters less. Sizing from a run that already has
+preload applied is refused — the beam force there is the bolt force, and
+feeding it back would count the preload twice.
+
+Full method in [docs/METHODS.md](docs/METHODS.md#bolted-joints--sizing-and-preload).
 
 **Patterning.** Build one joint, then use **Copy to other holes…** in its
 Pattern section: pick each target hole and Lattice creates a bolt there with

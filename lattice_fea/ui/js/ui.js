@@ -105,6 +105,7 @@ export function solutionItems(S, a) {
   }
   if (meta.tables?.bolt_forces?.length) {
     out.push({ what: "bolts", label: "Bolt forces", meta: "N" });
+    out.push({ what: "sizing", label: "Bolt sizing", meta: "preload" });
   }
   if (a.type === "static" && reactionRow(meta)) {
     out.push({ what: "reactions", label: "Reactions", meta: "N" });
@@ -1485,7 +1486,7 @@ function statusHead(S, A, a) {
 const RESULT_TITLES = {
   contours: "Contours", modes: "Modes", frf: "Frequency response",
   random: "Random response", bolts: "Bolt forces", reactions: "Reactions",
-  warnings: "Solver messages",
+  warnings: "Solver messages", sizing: "Bolt sizing",
 };
 
 /** Pointer to the reference for this result, for when it is wanted.
@@ -1513,6 +1514,7 @@ function panelResult(S, A, put, id) {
     frf: () => secFRF(S, A, a),
     random: () => randomSections(S, A, a),
     bolts: () => secBolts(S, A, a),
+    sizing: () => secSizing(S, A, a),
     reactions: () => secReactions(S, A, a),
     warnings: () => secWarnings(S, A, a),
   }[what]?.() || [];
@@ -1520,7 +1522,7 @@ function panelResult(S, A, put, id) {
   const exportWhat = { frf: "frf", random: "random" }[what] || "tables";
   const anchor = { contours: "contours", modes: "modes", frf: "frequency-response",
                    random: "random-vibration", bolts: "bolt-forces-and-stress",
-                   reactions: "reactions" }[what];
+                   sizing: "bolt-sizing", reactions: "reactions" }[what];
   const tail = sec(null,
     anchor ? methodRef(anchor) : null,
     el("div", { class: "btnrow" },
@@ -1762,6 +1764,90 @@ function boltStress(cfg, r) {
   const eqv = Math.sqrt((axial + bend) ** 2 + 3 * shear ** 2);
   const sy = boltYield(cfg);
   return { axial, shear, bend, eqv, pct: sy > 0 ? (100 * eqv) / sy : 0 };
+}
+
+/**
+ * Required preload per bolt.
+ *
+ * The FE gives each bolt its share of the external load; VDI 2230 turns that
+ * into the preload the joint has to be assembled with. Computed on the server,
+ * where the arithmetic is unit-tested.
+ */
+function secSizing(S, A, a) {
+  const R = S.sizing?.[a.id];
+  if (!R) {
+    A.loadSizing(a.id);
+    return [sec(null, el("div", { class: "hint" }, "Sizing\u2026"))];
+  }
+  const cfg = R.assumptions || {};
+  const secs = [];
+
+  for (const w of R.warnings || []) {
+    secs.push(sec(null, el("div", { class: "hint bad" }, "\u26a0 " + w)));
+  }
+
+  if (R.blocked) return secs;
+  secs.push(sec("Assumptions",
+    el("div", { class: "frm-row2" },
+      numInput("Faying friction \u03bc", cfg.mu_joint,
+        (v) => A.setSizing(a.id, { mu_joint: v ?? 0.15 }), { step: 0.01 }),
+      numInput("Friction interfaces", cfg.n_friction,
+        (v) => A.setSizing(a.id, { n_friction: v ?? 1 }), { min: 1, step: 1 })),
+    selInput("Tightening method", cfg.tightening,
+      (R.tightening_options || []).map((t) => [t.id, `${t.label} (\u00d7${t.alpha_A})`]),
+      (v) => A.setSizing(a.id, { tightening: v })),
+    el("div", { class: "frm-row2" },
+      numInput("Thread \u03bc", cfg.mu_thread,
+        (v) => A.setSizing(a.id, { mu_thread: v ?? 0.14 }), { step: 0.01 }),
+      numInput("Embedding (\u00b5m)", cfg.embedding_um,
+        (v) => A.setSizing(a.id, { embedding_um: v ?? 6 }), { step: 1 })),
+    el("div", { class: "frm-row2" },
+      numInput("Slip factor", cfg.S_slip,
+        (v) => A.setSizing(a.id, { S_slip: v ?? 1.2 }), { step: 0.05 }),
+      numInput("Bearing limit (MPa)", cfg.p_G,
+        (v) => A.setSizing(a.id, { p_G: v }), { step: 10 }))));
+
+  const rows = R.rows || [];
+  if (R.blocked) return secs;              // the warning above says why
+  if (!rows.length) {
+    secs.push(sec(null, el("div", { class: "hint" },
+      "No bolts with mesh records in this run.")));
+    return secs;
+  }
+
+  secs.push(sec("Required preload",
+    el("table", { class: "rtable" },
+      el("tr", {}, ["Bolt", "F_A N", "F_Q N", "\u03a6", "clamp N",
+                    "preload N", "max N", "limit N"].map((h) => el("th", {}, h))),
+      rows.map((r) => el("tr", {},
+        el("td", {}, r.name),
+        el("td", {}, fmtVal(r.F_A ?? 0)),
+        el("td", {}, fmtVal(r.F_Q ?? 0)),
+        el("td", {}, r.phi.toFixed(3)),
+        el("td", {}, fmtVal(r.F_KR)),
+        el("td", {}, fmtVal(r.F_Mmin)),
+        el("td", { class: r.feasible ? "" : "bad" }, fmtVal(r.F_Mmax)),
+        el("td", {}, fmtVal(r.F_Mzul)))))));
+
+  secs.push(sec("Tightening and margins",
+    el("table", { class: "rtable" },
+      el("tr", {}, ["Bolt", "torque N\u00b7m", "% yield", "head MPa",
+                    "slip", "verdict"].map((h) => el("th", {}, h))),
+      rows.map((r) => el("tr", {},
+        el("td", {}, r.name),
+        el("td", {}, r.M_A_Nm.toFixed(1)),
+        el("td", { class: r.utilisation > 1 ? "bad" : "" },
+           (r.utilisation * 100).toFixed(0)),
+        el("td", {}, fmtVal(r.p_max)),
+        el("td", {}, r.slip_margin == null ? "\u2014" : r.slip_margin.toFixed(2)),
+        el("td", { class: r.feasible ? "" : "bad" },
+           r.feasible ? "ok" : "no window"))))));
+
+  const problems = rows.flatMap((r) => (r.checks || []).map((c) => `${r.name}: ${c}`));
+  if (problems.length) {
+    secs.push(sec(null, ...problems.map((t) => el("div", { class: "hint bad" }, "\u26a0 " + t))));
+  }
+  return secs;
 }
 
 function secReactions(S, A, a) {

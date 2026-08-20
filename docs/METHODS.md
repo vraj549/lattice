@@ -119,6 +119,111 @@ input the sweep actually covered.
 
 ---
 
+## Bolted joints — sizing and preload
+
+### The question, and what the FE can answer
+
+An FE model does not tell you what preload a bolt needs. It tells you the
+**load each bolt carries**; turning that into a required preload needs the
+joint's spring behaviour, the losses between tightening and service, and the
+scatter of the tightening method. Lattice does both halves, and keeps them
+separate so you can see where each number came from.
+
+### Workflow
+
+1. **Model the joint with preload set to zero** and run the working load.
+   With no preload the bolt beam carries exactly its share of the load path,
+   which is the external load `F_A` (axial) and `F_Q` (transverse) the joint
+   must be preloaded *against*.
+2. Open **Solution → Bolt sizing**. It reports the required preload per bolt.
+3. **Enter that preload and run again** to verify — ideally with the assembly
+   imported as separate parts and a frictional contact, so the interface can
+   actually open or slip if the preload is not enough.
+
+Sizing from a run that already has preload applied is refused, not
+approximated: the beam force there is the *bolt* force, and feeding it back in
+counts the preload twice.
+
+### The chain
+
+Two springs in parallel — the bolt and the material it clamps:
+
+| | |
+|---|---|
+| `δ_S` | bolt compliance, mm/N: head, shank, free thread, engaged thread and nut in series, using VDI 2230's substitute lengths (0.5 d, 0.5 d, 0.4 d) for the parts that have no prismatic length of their own |
+| `δ_P` | clamped-member compliance: two Rötscher pressure cones of 30° half-angle, one from each end of the grip, capped where the cone runs past the free edge |
+| `Φ = n·δ_P/(δ_S+δ_P)` | **load factor** — the share of an external axial load that reaches the bolt. `n` is where the load enters the clamped parts (0.5 default; 1.0 is the conservative extreme, right under the head) |
+
+A metal joint has `δ_P` several times smaller than `δ_S`, so Φ lands around
+0.1–0.2: most of an external load *unloads the interface* rather than adding
+to the bolt. That is the entire reason preload works, and why a longer bolt is
+better under fatigue — more compliance in the bolt, less alternating load
+reaching it.
+
+The grip length comes from the mesh: the bolt beam spans exactly the clamped
+length, so it is measured, not typed. Hole diameter comes from the detected
+cylinder, and the clamped material's modulus from its assigned material.
+
+### What sets the preload
+
+The joint must retain enough clamp force `F_KR` for whichever governs:
+
+```
+no slip      F_KR ≥ S_slip · F_Q / (μ · n_friction)
+no opening   F_KR ≥ S_gap · (1 − Φ) · F_A
+```
+
+Then the assembly preload has to cover that, plus what is lost on the way:
+
+```
+F_Mmin = F_KR + (1 − Φ)·F_A + F_Z          F_Z = embedding / (δ_S + δ_P)
+F_Mmax = α_A · F_Mmin
+```
+
+`F_Z` is embedding: surface asperities flatten after tightening and the joint
+relaxes by a few microns, which at joint stiffness is a real loss of preload.
+`α_A` is the tightening factor — how badly the method scatters, from 1.1 for
+measured elongation to 1.6 for a bare torque wrench. The scatter is why the
+*maximum* is what the bolt must survive while the *minimum* is what the joint
+must have.
+
+### What the bolt can take
+
+Tightening leaves torsion in the shank, so the usable tensile capacity is what
+is left of yield after it:
+
+```
+F_Mzul = ν · A_s · R_p0.2 / √(1 + 3 k_τ²)
+k_τ = 1.5 (d_2/d_S) (P/(π d_2) + 1.155 μ_thread)
+```
+
+If `F_Mmax > F_Mzul` there is **no feasible preload** — the joint needs more
+than the bolt can give. The answer is a bigger or stronger bolt, more bolts, or
+a tightening method that scatters less; not a smaller number.
+
+Tightening torque, for reference:
+
+```
+M_A = F_Mmax (0.16 P + 0.58 d_2 μ_thread + 0.5 D_Km μ_head)
+```
+
+Surface pressure under the head is checked against the clamped material's
+bearing limit. On aluminium, and certainly on a polymer, this frequently
+governs before the bolt does.
+
+### Limits, stated
+
+- **Concentric** clamping and load introduction. Eccentricity raises the
+  bolt's share and can dominate a flange; it is not modelled, so `Φ` here is
+  VDI 2230's `Φ_K`.
+- Static, plus a simple alternating check. No fatigue life curve.
+- The cone model approximates real flange behaviour. Where a contact run has
+  measured the bolt's load increase directly, that measurement is used instead.
+- The absolute preload a standard tabulates depends on which cross-section is
+  taken to govern and what utilisation is assumed. Every intermediate value is
+  reported so you can reconcile it with your own bolt standard rather than
+  taking this one on faith.
+
 ## Bolt forces and stress
 
 Beam end forces from `EFGE_ELNO`, converted on the **tensile stress area** Aₛ —

@@ -454,6 +454,28 @@ const A = {
     logLine(`PSD spec: ${rows.length} breakpoints loaded.`);
   },
 
+  async loadSizing(aid) {
+    if (S.sizingPending?.[aid]) return;
+    (S.sizingPending ||= {})[aid] = true;
+    try {
+      (S.sizing ||= {})[aid] =
+        await api.get(`/api/projects/${S.project.id}/results/${aid}/bolt-sizing`);
+      refresh();
+    } catch (e) {
+      logLine(`bolt sizing: ${e.message}`, "badln");
+    } finally { S.sizingPending[aid] = false; }
+  },
+
+  /** Sizing assumptions live with the model, not the run — they are how you
+   *  read the result, and they should survive a re-solve. */
+  setSizing(aid, patch) {
+    const cfg = (S.project.setup.bolt_sizing ||= {});
+    Object.assign(cfg, patch);
+    scheduleSave();
+    delete (S.sizing || {})[aid];
+    A.loadSizing(aid);
+  },
+
   async loadRandom(aid) {
     if (S.randomPending?.[aid]) return;
     (S.randomPending ||= {})[aid] = true;
@@ -1306,7 +1328,7 @@ clipPos.addEventListener("input", () => {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.18.0";
+const UI_BUILD = "0.19.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;

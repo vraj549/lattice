@@ -16,8 +16,8 @@ from fastapi.staticfiles import StaticFiles
 
 import hashlib
 
-from . import (__version__, ccx_writer, comm_writer, config, random_vib,
-               results)
+from . import (__version__, bolt_sizing, ccx_writer, comm_writer, config,
+               random_vib, results)
 from .materials import LIBRARY
 from .projects import ProjectStore
 from .solver import (JobManager, extract_errors, popen_isolated, reap,
@@ -467,6 +467,81 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         fn = f"{proj.get('name', 'lattice')}-{name}".replace(" ", "_")
         return Response(content=body, media_type="text/csv",
                         headers={"Content-Disposition": f'attachment; filename="{fn}.csv"'})
+
+    @app.get("/api/projects/{pid}/results/{aid}/bolt-sizing")
+    def bolt_sizing_table(pid: str, aid: str):
+        """Required preload per bolt, from the loads this run reported.
+
+        The FE gives each bolt's share of the external load; VDI 2230 turns
+        that into the preload the joint needs. Kept on the server because the
+        arithmetic is unit-tested there.
+        """
+        proj = _project(pid)
+        setup = proj["setup"]
+        if not store.exists(pid, f"runs/{aid}/meta.json"):
+            raise HTTPException(404, "no results for this analysis")
+        meta_r = store.read_json(pid, f"runs/{aid}/meta.json")
+        mesh_stats = (store.read_json(pid, "mesh/stats.json")
+                      if store.exists(pid, "mesh/stats.json") else {})
+        records = {r.get("id"): r for r in mesh_stats.get("bolts", [])}
+        loads = results.bolt_loads(meta_r)
+        cfg = bolt_sizing.assumptions(setup.get("bolt_sizing"))
+
+        rows, warnings = [], []
+        preloaded = [b.get("name") or f"Bolt {i}"
+                     for i, b in enumerate(setup.get("bolts", []), 1)
+                     if (b.get("preload_N") or 0) > 0]
+        if preloaded:
+            # Refuse rather than tabulate. With preload applied the beam force
+            # is preload PLUS the bolt's share of the load; feeding that back
+            # in as the external load counts the preload twice and asks for a
+            # preload several times what the joint needs. A table computed
+            # from the wrong input is worse than no table.
+            return {"rows": [], "blocked": True,
+                    "warnings": [
+                        "Sizing needs the EXTERNAL load on each bolt, and this "
+                        "run has preload applied — so the beam force is the "
+                        "bolt force, not the load the joint is preloaded "
+                        f"against ({', '.join(preloaded)}). Set preload to 0, "
+                        "re-run, and size from that. Then enter the preload "
+                        "this gives you and run again to verify the joint "
+                        "neither slips nor opens."],
+                    "assumptions": cfg,
+                    "tightening_options": [
+                        {"id": k, "alpha_A": v[0], "label": v[1]}
+                        for k, v in bolt_sizing.TIGHTENING.items()]}
+        for i, b in enumerate(setup.get("bolts", []), start=1):
+            rec = records.get(b.get("id"))
+            if rec is None:
+                continue
+            load = loads.get(i) or {}
+            try:
+                r = bolt_sizing.size_from_run(
+                    b, rec, setup, proj["geometry"],
+                    F_A=float(load.get("N") or 0.0),
+                    F_Q=float(load.get("V") or 0.0),
+                    M_b=float(load.get("M") or 0.0), **cfg)
+            except Exception as e:  # noqa: BLE001
+                warnings.append(f"{b.get('name', i)}: {e}")
+                continue
+            rows.append({
+                "index": i, "name": b.get("name") or f"Bolt {i}",
+                "size": b.get("size"), "grip_mm": rec.get("length"),
+                "F_A": load.get("N"), "F_Q": load.get("V"),
+                "phi": r["phi"], "phi_source": r["phi_source"],
+                "F_KR": r["F_KR"], "F_K_slip": r["F_K_slip"],
+                "F_K_gap": r["F_K_gap"], "F_Z": r["F_Z"],
+                "F_Mmin": r["F_Mmin"], "F_Mmax": r["F_Mmax"],
+                "F_Mzul": r["F_Mzul"], "M_A_Nm": r["M_A_Nm"],
+                "utilisation": r["utilisation"], "p_max": r["p_max"],
+                "slip_margin": r["slip_margin"], "feasible": r["feasible"],
+                "checks": r["checks"], "case": r["member"]["case"],
+                "alpha_A": r["alpha_A"],
+            })
+        return {"rows": rows, "warnings": warnings, "assumptions": cfg,
+                "tightening_options": [
+                    {"id": k, "alpha_A": v[0], "label": v[1]}
+                    for k, v in bolt_sizing.TIGHTENING.items()]}
 
     @app.get("/api/projects/{pid}/results/{aid}/random")
     def random_response(pid: str, aid: str):
