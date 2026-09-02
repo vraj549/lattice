@@ -372,6 +372,23 @@ def _box(g):
     g.model.occ.addBox(0, 0, 0, 100, 40, 2)
 
 
+def _lshape(g):
+    """An L-SECTION extruded along Y — which is a prism, and does sweep.
+    Kept because that is a useful thing to know: 'not a box' is not the same
+    as 'not sweepable'."""
+    a = g.model.occ.addBox(0, 0, 0, 100, 40, 3)
+    b = g.model.occ.addBox(0, 0, 0, 3, 40, 40)
+    g.model.occ.fuse([(3, a)], [(3, b)])
+
+
+def _blind_pocket(g):
+    """A pocket that does not go through. The cross-section changes along Z,
+    and along X and Y as well, so this is a prism about nothing."""
+    b = g.model.occ.addBox(0, 0, 0, 100, 40, 10)
+    c = g.model.occ.addCylinder(50, 20, 5, 0, 0, 6, 8)
+    g.model.occ.cut([(3, b)], [(3, c)])
+
+
 def _box_with_hole(g):
     b = g.model.occ.addBox(0, 0, 0, 100, 40, 2)
     c = g.model.occ.addCylinder(50, 20, -1, 0, 0, 4, 5)
@@ -386,15 +403,44 @@ def test_hex_meshing_works_where_the_shape_sweeps(tmp_path):
     assert any("hexahedra:" in n for n in notes), notes
 
 
-def test_hex_request_falls_back_rather_than_shipping_a_worse_mesh(tmp_path):
-    """Put a hole in it and gmsh produces no hexes at all — just tets and
-    pyramids, of worse quality than plain tets. That is rejected, not
-    shipped, and the log says why."""
-    out, notes = _mesh_shape(str(tmp_path), _box_with_hole, elements="hex")
+def test_a_hole_does_not_stop_the_sweep(tmp_path):
+    """The claim this replaces was that a hole defeats hex meshing. It defeats
+    `setTransfiniteAutomatic`, which needs a four-sided face — and that is not
+    the tool for the job. A swept plate does not care what its cross-section
+    looks like, because the section is quad-meshed in 2D where a hole is
+    nothing special.
+    """
+    hexed, notes = _mesh_shape(str(tmp_path), _box_with_hole, elements="hex")
+    tets, _ = _mesh_shape(str(tmp_path), _box_with_hole, elements="tet")
+    assert all("Hex" in k for k in hexed["stats"]["element_kinds"])
+    assert any("sweeping" in n for n in notes), notes
+    # and it is the better mesh, not merely a different one
+    assert hexed["stats"]["nodes"] < tets["stats"]["nodes"]
+    assert hexed["stats"]["quality_min"] > tets["stats"]["quality_min"]
+
+
+def test_quadratic_hexes_have_twenty_nodes_not_twenty_seven(tmp_path):
+    """HEXA20 / C3D20 is what code_aster and CalculiX both read. The interior
+    nodes of a complete HEX27 buy nothing here and CalculiX will not take it."""
+    out, _ = _mesh_shape(str(tmp_path), _box_with_hole, elements="hex")
+    assert list(out["stats"]["element_kinds"]) == ["Hexahedron 20"]
+
+
+def test_an_l_section_still_sweeps(tmp_path):
+    """"Not a box" is not the same as "not sweepable" — an L-section extruded
+    along its length is a prism, and a bracket like that hex-meshes fine."""
+    out, _ = _mesh_shape(str(tmp_path), _lshape, elements="hex")
+    assert all("Hex" in k for k in out["stats"]["element_kinds"])
+
+
+def test_a_shape_that_does_not_sweep_falls_back(tmp_path):
+    """A blind pocket changes the cross-section along every axis, so there is
+    no sweep. Tetrahedra, and the log says why rather than leaving the user to
+    notice."""
+    out, notes = _mesh_shape(str(tmp_path), _blind_pocket, elements="hex")
     kinds = out["stats"]["element_kinds"]
-    assert not any("Hex" in k for k in kinds), kinds
-    assert not any("Pyramid" in k for k in kinds), kinds
-    assert any("not usable here" in n for n in notes), notes
+    assert all("Tetra" in k for k in kinds), kinds
+    assert any("no sweep" in n for n in notes), notes
 
 
 def test_the_default_is_still_tetrahedra(tmp_path):
@@ -407,6 +453,85 @@ def test_recombine_does_not_leak_into_the_next_mesh(tmp_path):
     would put quad faces into every mesh after it — which is exactly how the
     SaveGroupsOfNodes regression happened."""
     _mesh_shape(str(tmp_path), _box, elements="hex")
-    out, _ = _mesh_shape(str(tmp_path), _box_with_hole, elements="tet")
+    out, _ = _mesh_shape(str(tmp_path), _blind_pocket, elements="tet")
     kinds = out["stats"]["element_kinds"]
     assert all("Tetra" in k for k in kinds), kinds
+
+
+@pytest.mark.skipif(not os.path.isfile(os.path.join(
+    os.path.dirname(__file__), "..", "examples", "bolted_plates.step")),
+    reason="run examples/make_examples.py first")
+def test_a_bolted_stack_sweeps_conformally(tmp_path):
+    """The case this exists for, end to end.
+
+    Two plates with bolt holes, sharing an interface. Both sweep along Z, and
+    the chain is extruded through the shared face so the interface stays ONE
+    face — a hex volume next to a tet one cannot share a conformal boundary,
+    and gmsh refuses to mesh that at all.
+
+    Everything downstream is keyed to the original tags, so the rebuild has to
+    be invisible: the face groups, the bolt beam and the material volumes all
+    have to come out the same as they do for tetrahedra.
+    """
+    tmp = str(tmp_path)
+    step = os.path.join(os.path.dirname(__file__), "..", "examples",
+                        "bolted_plates.step")
+    brep = os.path.join(tmp, "g.brep")
+    meta = geometry.import_step(step, brep)
+    tess = geometry.tessellate(brep, meta["diag"])
+    fits = {f["tag"]: f.get("fit") for f in tess["faces"]}
+    for f in meta["faces"]:
+        if fits.get(f["tag"]):
+            f["fit"] = fits[f["tag"]]
+
+    def holes(solid_tag):
+        sd = next(x for x in meta["solids"] if x["tag"] == solid_tag)
+        return [f for f in meta["faces"] if f["tag"] in sd["faces"]
+                and (f.get("fit") or {}).get("kind") == "cylinder"]
+
+    s1, s2 = (x["tag"] for x in meta["solids"])
+    flat = sorted((f for f in meta["faces"]
+                   if (f.get("fit") or {}).get("kind") == "plane"),
+                  key=lambda f: -f["area"])
+
+    def build(elements):
+        setup = default_setup()
+        setup["mesh"] = {"size_mm": 4.0, "order": 2, "elements": elements,
+                         "local": []}
+        setup["materials"] = [{"id": "lib-steel", "name": "Steel", "E_GPa": 210,
+                               "nu": 0.3, "rho_kgm3": 7850, "lib": "steel"}]
+        setup["assignments"] = {str(x["tag"]): "lib-steel" for x in meta["solids"]}
+        setup["bolts"] = [{"id": "b1", "name": "B1", "d_mm": 6, "E_GPa": 210,
+                           "preload_N": 8000,
+                           "side_a_faces": [holes(s2)[0]["tag"]],
+                           "side_b_faces": [holes(s1)[0]["tag"]]}]
+        setup["analyses"] = [{
+            "id": "a1", "type": "static", "name": "S", "config": {},
+            "supports": [{"id": "s1", "name": "fix", "type": "fixed",
+                          "faces": [flat[0]["tag"]]}],
+            "loads": [{"id": "l1", "name": "pull", "type": "force",
+                       "faces": [flat[1]["tag"]], "fx": 0, "fy": 0, "fz": 500}]}]
+        notes = []
+        unv = os.path.join(tmp, f"{elements}.unv")
+        out = meshing.mesh_project(brep, unv, meta, setup, progress=notes.append)
+        comm, _ = comm_writer.build_run(setup["analyses"][0], setup, meta,
+                                        out["stats"], SolverConfig())
+        return out["stats"], notes, open(unv, errors="ignore").read(), comm
+
+    hexed, hnotes, hunv, hcomm = build("hex")
+    tets, _, tunv, tcomm = build("tet")
+
+    assert list(hexed["element_kinds"]) == ["Hexahedron 20"], hexed["element_kinds"]
+    assert any("sweeping 2 solid" in n for n in hnotes), hnotes
+
+    # the rebuild is invisible: same groups, same bolt, same material volumes
+    for g in ("BOLT1", "BFA1", "BFB1", "SUP1_1", "LOA1_1"):
+        assert g in hunv, f"{g} missing from the swept mesh"
+        assert g in tunv
+    assert [b["length"] for b in hexed["bolts"]] == pytest.approx(
+        [b["length"] for b in tets["bolts"]], abs=0.01)
+    assert "'V1'" in hcomm and "'V2'" in hcomm
+
+    # and it is worth doing
+    assert hexed["dof"] < 0.6 * tets["dof"]
+    assert hexed["quality_min"] > tets["quality_min"]

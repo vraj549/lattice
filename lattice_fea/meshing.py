@@ -37,6 +37,7 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
     order = int(mcfg.get("order") or 2)
 
     face_sets = _collect_face_sets(setup)
+    setup_orig = setup
 
     t0 = time.time()
     with GMSH_LOCK:
@@ -51,59 +52,68 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
         gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", curvdiv)
         gmsh.option.setNumber("Mesh.Optimize", 1)
 
-        # local refinement via Restrict(MathEval) fields
-        fields = []
-        for loc in mcfg.get("local", []):
-            ftags = [int(t) for t in loc.get("faces", [])]
-            lsize = float(loc.get("size_mm") or size)
-            if not ftags or lsize <= 0:
-                continue
-            fm = gmsh.model.mesh.field.add("MathEval")
-            gmsh.model.mesh.field.setString(fm, "F", str(lsize))
-            fr = gmsh.model.mesh.field.add("Restrict")
-            gmsh.model.mesh.field.setNumber(fr, "InField", fm)
-            gmsh.model.mesh.field.setNumbers(fr, "SurfacesList", ftags)
-            # pull volumes adjacent to those faces so refinement has depth
-            vt = set()
-            for t in ftags:
-                up, _ = gmsh.model.getAdjacencies(2, t)
-                vt.update(int(u) for u in up)
-            if vt:
-                gmsh.model.mesh.field.setNumbers(fr, "VolumesList", sorted(vt))
-            fields.append(fr)
-        if fields:
-            fg = gmsh.model.mesh.field.add("MathEval")
-            gmsh.model.mesh.field.setString(fg, "F", str(size))
-            fmin = gmsh.model.mesh.field.add("Min")
-            gmsh.model.mesh.field.setNumbers(fmin, "FieldsList", fields + [fg])
-            gmsh.model.mesh.field.setAsBackgroundMesh(fmin)
-
         # Recombination is a session-wide option on a shared gmsh session, so
         # it is set from scratch every time rather than left wherever the last
         # mesh put it — the same discipline the UNV/Abaqus writes need.
         gmsh.option.setNumber("Mesh.RecombineAll", 0)
+        # A complete quadratic hexahedron has 27 nodes; the serendipity one has
+        # 20. HEXA20 / C3D20 is what code_aster and CalculiX both read, and the
+        # interior nodes of a HEX27 buy nothing here, so ask for the incomplete
+        # form. Set every time, never inherited — this session is shared.
+        gmsh.option.setNumber("Mesh.SecondOrderIncomplete", 1)
         want_hex = str(mcfg.get("elements") or "tet") == "hex"
-        hex_note = ""
+        remap = None
 
         if want_hex:
-            progress("trying hexahedra…")
+            progress("looking for a sweep…")
             try:
-                gmsh.model.mesh.setTransfiniteAutomatic()
-                gmsh.option.setNumber("Mesh.RecombineAll", 1)
-                gmsh.model.mesh.generate(3)
-                ok, hex_note = _hex_is_usable(gmsh)
+                plan = _sweep_plan(gmsh)
+                remap = _rebuild_as_sweep(gmsh, plan, size, progress) if plan else None
+                if plan is None:
+                    progress("no sweep: at least one solid is not a prism, or "
+                             "they do not share one axis. Meshing with "
+                             "tetrahedra instead.")
             except Exception as e:      # noqa: BLE001
-                ok, hex_note = False, str(e).split("\n")[0][:120]
-            if not ok:
-                progress(f"hexahedra not usable here ({hex_note}); "
+                progress(f"sweep failed ({str(e).splitlines()[0][:120]}); "
                          "meshing with tetrahedra instead")
+                remap = None
+            if remap is None:
+                # the model may be half-rebuilt; start over from the file
+                _fresh_model(gmsh, "mesh")
+                gmsh.model.occ.importShapes(brep_path)
+                gmsh.model.occ.synchronize()
+                gmsh.option.setNumber("Mesh.MeshSizeMax", size)
+                gmsh.option.setNumber("Mesh.MeshSizeMin", minsize)
+                gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
+                gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", curvdiv)
+                gmsh.option.setNumber("Mesh.Optimize", 1)
                 gmsh.option.setNumber("Mesh.RecombineAll", 0)
-                gmsh.model.mesh.clear()
                 want_hex = False
             else:
-                progress(f"hexahedra: {hex_note}")
+                # every tag the rest of this function uses came from the
+                # geometry that has just been replaced
+                face_sets = {k: [remap["faces"][t] for t in v
+                                 if t in remap["faces"]]
+                             for k, v in face_sets.items()}
+                _size_fields(gmsh, mcfg, size, remap)
+                gmsh.model.mesh.generate(3)
+                ok, note = _hex_is_usable(gmsh)
+                if not ok:
+                    progress(f"the swept mesh is not usable ({note}); "
+                             "meshing with tetrahedra instead")
+                    _fresh_model(gmsh, "mesh")
+                    gmsh.model.occ.importShapes(brep_path)
+                    gmsh.model.occ.synchronize()
+                    gmsh.option.setNumber("Mesh.MeshSizeMax", size)
+                    gmsh.option.setNumber("Mesh.MeshSizeMin", minsize)
+                    gmsh.option.setNumber("Mesh.RecombineAll", 0)
+                    face_sets = _collect_face_sets(setup_orig)
+                    remap, want_hex = None, False
+                else:
+                    progress(f"hexahedra: {note}")
 
         if not want_hex:
+            _size_fields(gmsh, mcfg, size, None)
             progress("meshing surfaces…")
             gmsh.model.mesh.generate(2)
             progress("meshing volume (HXT)…")
@@ -122,12 +132,16 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
             gmsh.model.mesh.setOrder(2)
 
         # bolt beams AFTER setOrder so they stay SEG2 for POU_D_T
-        bolt_records = _add_bolt_beams(gmsh, meta, setup, progress)
+        bolt_records = _add_bolt_beams(gmsh, meta, setup, progress, remap)
         remote_records = _add_remote_stubs(gmsh, setup, meta, progress)
 
         # ---- physical groups ----
+        # A swept model was rebuilt, so its volume tags are new. The group
+        # NAME has to stay the original one — material assignment, contacts
+        # and every result field are keyed to it.
+        vname = {v: k for k, v in (remap or {}).get("volumes", {}).items()}
         for dim, tag in gmsh.model.getEntities(3):
-            gmsh.model.addPhysicalGroup(3, [tag], name=f"V{tag}")
+            gmsh.model.addPhysicalGroup(3, [tag], name=f"V{vname.get(tag, tag)}")
         # One query, not one per face tag: this set was being rebuilt from a
         # fresh gmsh call inside the comprehension for every tag in every
         # group, which on an assembly with thousands of faces and a few dozen
@@ -235,6 +249,225 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
         gmsh.clear()
 
     return {"stats": stats, "skin": skin}
+
+
+# --------------------------------------------------------------- sweep meshing
+
+def _size_fields(gmsh, mcfg: dict, size: float, remap=None) -> None:
+    """Local refinement, as Restrict(MathEval) fields.
+
+    Built AFTER any sweep rebuild, because a rebuild replaces the surfaces
+    these point at. Fields set on dead tags are not an error — gmsh simply
+    ignores them, so the refinement would have gone missing with nothing said.
+    """
+    m = (remap or {}).get("faces") or {}
+    fields = []
+    for loc in mcfg.get("local", []):
+        ftags = [m.get(int(t), int(t)) for t in loc.get("faces", [])]
+        ftags = [t for t in ftags if t in {int(x) for _, x in gmsh.model.getEntities(2)}]
+        lsize = float(loc.get("size_mm") or size)
+        if not ftags or lsize <= 0:
+            continue
+        fm = gmsh.model.mesh.field.add("MathEval")
+        gmsh.model.mesh.field.setString(fm, "F", str(lsize))
+        fr = gmsh.model.mesh.field.add("Restrict")
+        gmsh.model.mesh.field.setNumber(fr, "InField", fm)
+        gmsh.model.mesh.field.setNumbers(fr, "SurfacesList", ftags)
+        vt = set()
+        for t in ftags:
+            up, _ = gmsh.model.getAdjacencies(2, t)
+            vt.update(int(u) for u in up)
+        if vt:
+            gmsh.model.mesh.field.setNumbers(fr, "VolumesList", sorted(vt))
+        fields.append(fr)
+    if fields:
+        fg = gmsh.model.mesh.field.add("MathEval")
+        gmsh.model.mesh.field.setString(fg, "F", str(size))
+        fmin = gmsh.model.mesh.field.add("Min")
+        gmsh.model.mesh.field.setNumbers(fmin, "FieldsList", fields + [fg])
+        gmsh.model.mesh.field.setAsBackgroundMesh(fmin)
+
+
+def _sweep_plan(gmsh, tol_rel: float = 1e-6) -> "dict|None":
+    """Can this model be swept into hexahedra, and how?
+
+    A volume sweeps when it is a prism: two parallel planar faces of equal
+    area, offset along their own normal, with area x thickness equal to the
+    volume. The cross-section can be **anything** — a plate with a dozen bolt
+    holes sweeps perfectly well, because the face it sweeps is quad-meshed in
+    2D where holes are not a problem.
+
+    That is the point missed by the first attempt at this, which only tried
+    gmsh's `setTransfiniteAutomatic`. Transfinite needs a four-sided face, so
+    one hole defeated it, and the conclusion drawn was that holed parts cannot
+    be hex-meshed. They can. They just need sweeping rather than mapping.
+
+    Every volume must sweep along the same axis, because a hex volume next to
+    a tet one cannot share a conformal face — gmsh refuses the mesh outright.
+    So this is all-or-nothing, and returns None the moment one volume fails.
+    """
+    vols = [int(t) for _, t in gmsh.model.getEntities(3)]
+    if not vols:
+        return None
+    out, axis = {}, None
+    for v in vols:
+        faces = [int(f) for _, f in gmsh.model.getBoundary([(3, v)], oriented=False)]
+        mass = gmsh.model.occ.getMass(3, v)
+        best = None
+        planes = [f for f in faces if gmsh.model.getType(2, f) == "Plane"]
+        for i, a in enumerate(planes):
+            na = np.asarray(gmsh.model.getNormal(a, [0.5, 0.5]), dtype=float)
+            ma = gmsh.model.occ.getMass(2, a)
+            ca = np.asarray(gmsh.model.occ.getCenterOfMass(2, a))
+            for b in planes[i + 1:]:
+                mb = gmsh.model.occ.getMass(2, b)
+                if abs(ma - mb) > tol_rel * max(ma, mb):
+                    continue
+                nb = np.asarray(gmsh.model.getNormal(b, [0.5, 0.5]), dtype=float)
+                if abs(abs(float(na @ nb)) - 1.0) > 1e-9:
+                    continue
+                t = float((np.asarray(gmsh.model.occ.getCenterOfMass(2, b)) - ca) @ na)
+                if abs(t) < 1e-9 or abs(abs(t) * ma - mass) > 1e-4 * mass:
+                    continue
+                if best is None or abs(t) < best["t"]:
+                    best = {"base": a, "top": b, "t": abs(t),
+                            "dir": (na * np.sign(t)).tolist()}
+        if best is None:
+            return None
+        d = np.asarray(best["dir"])
+        if axis is None:
+            axis = d
+        elif abs(abs(float(axis @ d)) - 1.0) > 1e-9:
+            return None                     # volumes sweep on different axes
+        out[v] = best
+    return {"axis": axis.tolist(), "volumes": out}
+
+
+def _sweep_chains(plan: dict) -> list:
+    """Order the volumes into stacks.
+
+    Each volume is an edge joining its two cap faces, so a stack of plates is
+    a path through that graph: bottom - mid - top. Walking the path and
+    extruding one volume at a time from the face the last one produced is what
+    keeps the interface between them a single shared face. Extruding each
+    volume from its own cap independently would leave two solids that touch
+    but share nothing, and the mesh across the joint would not match.
+
+    Returns [[(volume, from_face, to_face), ...], ...], or [] if the graph is
+    not a set of simple paths — a branch means it is not a stack and this
+    cannot order it.
+    """
+    vols = plan["volumes"]
+    deg = {}
+    for v in vols.values():
+        for f in (v["base"], v["top"]):
+            deg[f] = deg.get(f, 0) + 1
+    if any(n > 2 for n in deg.values()):
+        return []                       # three volumes meeting on one face
+
+    edges = {k: {v["base"], v["top"]} for k, v in vols.items()}
+    chains, used = [], set()
+    ends = [f for f, n in deg.items() if n == 1]
+    for start in ends:
+        if any(start in edges[k] for k in used):
+            continue
+        chain, cur = [], start
+        while True:
+            nxt = next((k for k, fs in edges.items()
+                        if k not in used and cur in fs), None)
+            if nxt is None:
+                break
+            other = next(iter(edges[nxt] - {cur})) if len(edges[nxt]) == 2 else cur
+            chain.append((nxt, cur, other))
+            used.add(nxt)
+            cur = other
+        if chain:
+            chains.append(chain)
+    return chains if len(used) == len(vols) else []
+
+
+def _rebuild_as_sweep(gmsh, plan: dict, size: float, progress) -> "dict|None":
+    """Rebuild the model by extruding its base faces, and map the old entity
+    tags onto the new ones.
+
+    The rebuild is invisible outside this function: physical groups are still
+    written under the names the setup asked for, so every face group, contact,
+    bolt and boundary condition keeps working. What comes back is
+    {"faces": {old: new}, "volumes": {old: new}} — and None if the rebuilt
+    model is not the same shape as the original, which is checked rather than
+    trusted.
+    """
+    chains = _sweep_chains(plan)
+    if not chains:
+        return None
+
+    # what the original looked like, so the rebuild can be checked against it
+    def snap(dim):
+        return {int(t): (np.asarray(gmsh.model.occ.getCenterOfMass(dim, int(t))),
+                         gmsh.model.occ.getMass(dim, int(t)))
+                for _, t in gmsh.model.getEntities(dim)}
+    old_f, old_v = snap(2), snap(3)
+    centre = {t: c for t, (c, _) in old_f.items()}
+    keep = {c[0][1] for c in chains}          # the face each chain starts from
+
+    gmsh.model.occ.remove([(3, int(v)) for v in plan["volumes"]])
+    gmsh.model.occ.synchronize()
+    for _, t in list(gmsh.model.getEntities(2)):
+        if int(t) not in keep:
+            try:
+                gmsh.model.occ.remove([(2, int(t))], recursive=True)
+            except Exception:               # noqa: BLE001 — shared edges
+                pass
+    gmsh.model.occ.synchronize()
+    if {int(t) for _, t in gmsh.model.getEntities(2)} != keep:
+        return None
+
+    axis = np.asarray(plan["axis"])
+    for chain in chains:
+        face = chain[0][1]
+        for v, frm, to in chain:
+            t = plan["volumes"][v]["t"]
+            # direction is from THIS cap toward the other one, not a global
+            # axis: a stack extruded from its middle runs both ways
+            step = float((centre[to] - centre[frm]) @ axis)
+            d = axis * np.sign(step)
+            n = max(1, int(round(t / max(size, 1e-9))))
+            gmsh.model.mesh.setRecombine(2, int(face))
+            made = gmsh.model.occ.extrude([(2, int(face))], *(d * t),
+                                          numElements=[n], recombine=True)
+            gmsh.model.occ.synchronize()
+            face = next(tag for dim, tag in made if dim == 2)
+    new_f, new_v = snap(2), snap(3)
+
+    # Match by geometry. Identical shapes, so this is exact — and if any face
+    # fails to find its twin the rebuild did not reproduce the model and the
+    # whole thing is abandoned rather than meshed into something else.
+    def match(old, new, scale):
+        used, out = set(), {}
+        for ot, (oc, om) in old.items():
+            hit = None
+            for nt, (nc, nm) in new.items():
+                if nt in used or abs(om - nm) > 1e-6 * max(om, nm, 1e-12):
+                    continue
+                if float(np.linalg.norm(oc - nc)) <= 1e-6 * scale:
+                    hit = nt
+                    break
+            if hit is None:
+                return None
+            used.add(hit)
+            out[ot] = hit
+        return out
+
+    bb = gmsh.model.getBoundingBox(-1, -1)
+    scale = max(float(np.linalg.norm(np.array(bb[3:]) - np.array(bb[:3]))), 1.0)
+    fmap, vmap = match(old_f, new_f, scale), match(old_v, new_v, scale)
+    if fmap is None or vmap is None:
+        progress("sweep rebuild did not reproduce the original faces; "
+                 "meshing with tetrahedra instead")
+        return None
+    progress(f"sweeping {len(vmap)} solid(s) into hexahedra along "
+             f"{np.round(d, 3).tolist()}")
+    return {"faces": fmap, "volumes": vmap}
 
 
 def _element_kinds(gmsh) -> dict:
@@ -388,7 +621,7 @@ def _face_set_stations(gmsh, ftags, axis, origin) -> "tuple|None":
     return None if lo is None else (float(lo), float(hi))
 
 
-def _add_bolt_beams(gmsh, meta: dict, setup: dict, progress) -> list:
+def _add_bolt_beams(gmsh, meta: dict, setup: dict, progress, remap=None) -> list:
     """Create one SEG2 beam per bolt as a discrete curve (added after
     setOrder, so beams stay linear — POU_D_T wants SEG2). End nodes land at
     the projections of each face-set centroid onto the bolt axis.
@@ -425,8 +658,13 @@ def _add_bolt_beams(gmsh, meta: dict, setup: dict, progress) -> list:
         # Taking the OUTER extreme of the picked faces instead gives the true
         # grip, and gives the same answer whether the user picked the hole
         # cylinders or the bearing faces under head and nut.
-        sa = _face_set_stations(gmsh, b.get("side_a_faces", []), axis, mid)
-        sb = _face_set_stations(gmsh, b.get("side_b_faces", []), axis, mid)
+        # `meta` is import-time data keyed by the ORIGINAL tags, so the
+        # centroids above use them as-is; gmsh has been rebuilt if this is a
+        # swept mesh, so only the queries against gmsh are translated.
+        fm = (remap or {}).get("faces") or {}
+        tr = lambda ts: [fm.get(int(t), int(t)) for t in ts]
+        sa = _face_set_stations(gmsh, tr(b.get("side_a_faces", [])), axis, mid)
+        sb = _face_set_stations(gmsh, tr(b.get("side_b_faces", [])), axis, mid)
         ta = float((ca - mid) @ axis)
         tb = float((cb - mid) @ axis)
         if sa and sb:

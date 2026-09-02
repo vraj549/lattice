@@ -1420,7 +1420,7 @@ function syncExplodeControl() {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.22.1";
+const UI_BUILD = "0.23.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;

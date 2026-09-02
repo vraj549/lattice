@@ -259,38 +259,66 @@ it matters most.
 
 ## Element shapes
 
-Tetrahedra by default, and quadratic ones, which is what handles a general
-imported solid.
+Tetrahedra by default. **Hexahedra by sweeping**, which is worth choosing
+whenever the part allows it.
 
-Hexahedra can be asked for. They need a shape that **sweeps** — a plate or a
-block, one solid, no holes through the swept face — and where that holds they
-are worth having. Measured on a 100 × 40 × 2 mm plate:
+### What sweeps
 
-| | elements | worst Jacobian |
-|---|---|---|
-| tetrahedra | 2045 | 0.004 |
-| hexahedra | 275 | 0.835 |
+A volume sweeps when it is a prism: two parallel planar faces of equal area,
+offset along their own normal, with area × thickness equal to the volume. The
+cross-section can be **anything**. A plate with a dozen bolt holes sweeps
+perfectly well, because the section is quad-meshed in 2D, where a hole is not
+a special case. So does an L-section, a channel, a gusset — "not a box" is not
+the same as "not sweepable".
 
-The tet mesh there is mostly slivers, which is the thin-wall problem.
+Every volume must sweep along the same axis. A hex volume cannot share a
+conformal face with a tet one, and gmsh refuses such a mesh outright, so this
+is all-or-nothing: one non-prismatic solid and the whole model meshes with
+tetrahedra.
 
-Where the shape does **not** sweep, asking for hexahedra does not give you a
-worse hex mesh — it gives you no hexahedra at all:
+A **stack** is extruded as a chain. The volumes form a graph whose nodes are
+their cap faces, a stack is a path through it, and each volume is extruded
+from the face the previous one produced. That is what keeps the interface
+between two plates a single shared face rather than two coincident ones.
 
-| | result |
-|---|---|
-| plate with a hole | 0 hexes: 4295 tets + 643 pyramids, worst 0.077 |
-| L-bracket | 0 hexes: 5136 tets + 886 pyramids, worst 0.100 |
-| two parts in contact | gmsh refuses: non-manifold quad boundaries |
+### What it is worth
 
-Each of those is worse than the plain tet mesh of the same part. So the request
-is treated as a request, not an instruction: Lattice meshes, **measures what it
-got**, and falls back to tetrahedra if there are no hexahedra or any inverted
-element. The job log says which you ended up with, and the mesh panel reports
-the element mix.
+Two 8 mm plates with bolt holes, 4 mm target size:
 
-A bolted joint has holes and more than one part, so it will mesh with
-tetrahedra whatever this is set to. That is the honest outcome, not a
-limitation being hidden.
+| | elements | nodes | DOF | worst Jacobian |
+|---|---|---|---|---|
+| tetrahedra | 24 304 TET10 | 37 353 | 112 059 | 0.281 |
+| hexahedra | 3 396 HEXA20 | 16 880 | 50 640 | 0.375 |
+
+Less than half the DOF and a better worst element. On a thin plate the gap is
+wider still — tets there are mostly slivers.
+
+Quadratic hexes are written as **HEXA20 / C3D20**, the serendipity form, not
+the 27-node one: it is what code_aster and CalculiX both read, and the
+interior nodes buy nothing here.
+
+### How the tags survive
+
+Sweeping rebuilds the model — gmsh has no way to sweep an imported solid in
+place, so the base faces are extruded into new geometry. That renumbers every
+entity, and the whole project is keyed to the tags from import: face groups,
+contacts, bolts, material assignment.
+
+So the rebuild is checked and then hidden. Every original face and volume is
+matched to its rebuilt twin by centroid and area — an exact match, since the
+shapes are identical — and **if any one fails to match, the rebuild is
+abandoned and the model meshes with tetrahedra**. Physical groups are then
+written under the original names, so nothing downstream can tell the
+difference.
+
+### Where it does not apply
+
+- A shape that is a prism about no axis: a blind pocket, a boss, a casting.
+  The log says so rather than leaving it to be noticed.
+- CalculiX **contact** needs element faces, and that map is written for
+  tetrahedra only. On a hex mesh it refuses rather than returning a partial
+  map, so a swept mesh solves in CalculiX but cannot carry ccx contact.
+  code_aster is unaffected.
 
 ## Bolted joints — sizing and preload
 

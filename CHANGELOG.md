@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.23.0
+
+### Hexahedra, properly this time
+
+**I was wrong in 0.22.0.** I said a hole defeats hex meshing. A hole defeats
+`setTransfiniteAutomatic`, which needs a four-sided face — and that was the
+wrong tool. The right one is **sweeping**, and a swept plate does not care what
+its cross-section looks like, because the section is quad-meshed in 2D where a
+hole is nothing special.
+
+Two 8 mm plates with bolt holes, 4 mm target size:
+
+| | elements | nodes | DOF | worst Jacobian |
+|---|---|---|---|---|
+| tetrahedra | 24 304 TET10 | 37 353 | 112 059 | 0.281 |
+| hexahedra | 3 396 HEXA20 | 16 880 | 50 640 | 0.375 |
+
+Less than half the DOF and a better worst element, on exactly the geometry I
+previously reported as impossible.
+
+**What sweeps** is any prism: two parallel planar caps of equal area, offset
+along their normal, area × thickness equal to the volume. Plates with holes,
+L-sections, channels, gussets. "Not a box" is not the same as "not sweepable" —
+an L-bracket sweeps along its length, which one of these tests had to be
+rewritten to admit.
+
+**A stack is swept as a chain.** The volumes form a graph whose nodes are their
+cap faces; a stack is a path through it; each volume is extruded from the face
+the previous one produced. That is what keeps the interface between two plates
+one shared face instead of two coincident ones — a hex volume cannot share a
+conformal face with a tet one, and gmsh refuses such a mesh outright.
+
+**The rebuild is hidden, and checked before it is trusted.** gmsh cannot sweep
+an imported solid in place, so base faces are extruded into new geometry, which
+renumbers every entity — and the whole project is keyed to the tags from
+import. Each original face and volume is matched to its rebuilt twin by
+centroid and area, and if a single one fails to match, the rebuild is abandoned
+and the model meshes with tetrahedra. That check earned its keep immediately:
+it caught a real bug where a stack sharing its middle face was extruded the
+same way twice.
+
+Quadratic hexes are HEXA20 / C3D20, not the 27-node form — what code_aster and
+CalculiX actually read.
+
+Verified end to end on the bolted stack: same face groups, same bolt grip, same
+material volumes, deck builds, `.inp` written.
+
+
 ## 0.22.1
 
 **Naming and visibility for solids.**

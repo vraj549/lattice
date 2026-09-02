@@ -1006,13 +1006,13 @@ function panelMesh(S, A, put) {
         (v) => A.mutate(() => { m.elements = v; })),
       (m.elements || "tet") === "hex"
         ? el("div", { class: "hint" },
-            "Hexahedra need a shape that sweeps — a plate or a block, one "
-            + "solid, no holes through the swept face. On a thin plate that is "
-            + "worth having: 275 hexes at worst Jacobian 0.84 against 2045 "
-            + "tets at 0.004. Anything else and gmsh returns no hexahedra at "
-            + "all, so Lattice measures the result and falls back to "
-            + "tetrahedra rather than shipping a worse mesh. The job log says "
-            + "which you got.")
+            "Hexahedra by sweeping. Any prism works \u2014 a plate with bolt "
+            + "holes, an L-section, a channel \u2014 and a stack of them is "
+            + "swept as one chain so the interface stays conformal. Two 8 mm "
+            + "bolted plates: 50,640 DOF against 112,059 for tetrahedra, and "
+            + "a better worst element. Every solid has to sweep along the same "
+            + "axis; if one does not, the whole model falls back to tetrahedra "
+            + "and the job log says why.")
         : null),
     sec("Local refinement",
       ...(m.local || []).map((loc, i) => el("div", {},
