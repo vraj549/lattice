@@ -161,6 +161,8 @@ export class Viewer {
     this.faceMeshes.clear();
     this.faceInfo.clear();
     this.solidOfFace.clear();
+    this._solidCentre = null;      // offsets belong to the old geometry
+    this.explode = 0;
     this.bbox = meta.bbox;
 
     const solidColor = new Map();
@@ -233,6 +235,79 @@ export class Viewer {
     }
     this.glyphGroup.visible = this.geoGroup.visible;
     this.requestRender();
+  }
+
+  /**
+   * Push the parts apart so interior faces can be seen and picked.
+   *
+   * Each solid moves along the line from the assembly's centre to its own,
+   * by `factor` times the model diagonal. That is the whole of the "auto":
+   * there is no ordering or stacking direction to infer, and a radial push
+   * separates a bolted stack, a bracket pair and a ring of parts alike.
+   *
+   * A face shared by two solids — which is what a bonded interface is after
+   * fragmenting — gets the average of their offsets, so it stays between the
+   * parts it joins instead of tearing away with one of them.
+   */
+  setExplode(factor) {
+    this.explode = factor || 0;
+    if (!this._solidCentre) this._buildExplodeOffsets();
+    const diag = Math.hypot(this.bbox[3] - this.bbox[0],
+                            this.bbox[4] - this.bbox[1],
+                            this.bbox[5] - this.bbox[2]) || 1;
+    for (const mesh of this.faceMeshes.values()) {
+      const dir = mesh.userData.explodeDir;
+      if (!dir) continue;
+      mesh.position.set(dir.x * this.explode * diag,
+                        dir.y * this.explode * diag,
+                        dir.z * this.explode * diag);
+      mesh.updateMatrix();
+    }
+    // Glyphs are placed on un-exploded face centroids, so they would float
+    // free of the faces they belong to. Hiding them while apart is honest;
+    // picking contact faces is what this mode is for.
+    this.glyphGroup.visible = this.geoGroup.visible && this.explode === 0;
+    this.requestRender();
+  }
+
+  _buildExplodeOffsets() {
+    // area-weighted centre of each solid, from the faces that bound it
+    const acc = new Map();
+    for (const [tag, mesh] of this.faceMeshes) {
+      const c = this.faceInfo.get(tag)?.centroid;
+      if (!c) continue;
+      const w = Math.max(mesh.userData.area || 0, 1e-9);
+      for (const sd of mesh.userData.solids || []) {
+        const e = acc.get(sd) || { x: 0, y: 0, z: 0, w: 0 };
+        e.x += c.x * w; e.y += c.y * w; e.z += c.z * w; e.w += w;
+        acc.set(sd, e);
+      }
+    }
+    this._solidCentre = new Map();
+    for (const [sd, e] of acc) {
+      this._solidCentre.set(sd, { x: e.x / e.w, y: e.y / e.w, z: e.z / e.w });
+    }
+    let cx = 0, cy = 0, cz = 0;
+    for (const c of this._solidCentre.values()) { cx += c.x; cy += c.y; cz += c.z; }
+    const n = Math.max(this._solidCentre.size, 1);
+    cx /= n; cy /= n; cz /= n;
+
+    for (const mesh of this.faceMeshes.values()) {
+      const solids = mesh.userData.solids || [];
+      let dx = 0, dy = 0, dz = 0, k = 0;
+      for (const sd of solids) {
+        const c = this._solidCentre.get(sd);
+        if (!c) continue;
+        dx += c.x - cx; dy += c.y - cy; dz += c.z - cz; k++;
+      }
+      if (!k) { mesh.userData.explodeDir = null; continue; }
+      dx /= k; dy /= k; dz /= k;
+      const len = Math.hypot(dx, dy, dz);
+      // A single part, or one sitting exactly on the assembly centre, has no
+      // direction to move in. Leaving it put beats inventing one.
+      mesh.userData.explodeDir = len > 1e-9
+        ? { x: dx / len, y: dy / len, z: dz / len } : null;
+    }
   }
 
   setHiddenSolids(set) {

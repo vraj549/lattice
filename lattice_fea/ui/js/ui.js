@@ -113,6 +113,9 @@ export function solutionItems(S, a) {
   if (a.type === "shock") {
     out.push({ what: "shock", label: "Shock response", meta: "peak" });
   }
+  if (a.type === "static" && meta.tables?.contact_check?.length) {
+    out.push({ what: "slip", label: "Slip check", meta: "friction" });
+  }
   if (meta.tables?.bolt_forces?.length) {
     out.push({ what: "bolts", label: "Bolt forces", meta: "N" });
     out.push({ what: "sizing", label: "Bolt sizing", meta: "preload" });
@@ -857,7 +860,9 @@ function panelContact(S, A, put, id) {
   if (!c) return put("Contact", "");
   const geo = S.project.geometry;
   const solidName = (t) => geo.solids.find((s) => s.tag === t)?.name || `Solid ${t}`;
-  const sliding = ["frictionless", "friction", "noseparation"].includes(c.kind);
+  const linearFriction = c.kind === "friction" && (c.solve || "linear") === "linear";
+  const sliding = ["frictionless", "friction", "noseparation"].includes(c.kind)
+                  && !linearFriction;
 
   put(c.name || "Contact", (c.solids || []).map(solidName).join(" ↔ "),
     sec("Definition",
@@ -876,6 +881,24 @@ function panelContact(S, A, put, id) {
         ? el("div", { class: "hint" },
             "Steel on steel dry is roughly 0.15–0.25; a slip-critical joint is "
             + "usually specified by its faying-surface class, not by a guess.")
+        : null,
+      c.kind === "friction"
+        ? selInput("Solve", c.solve || "linear", [
+            ["linear", "Assume stuck, then check — linear"],
+            ["nonlinear", "Solve the sliding — nonlinear"]],
+            (v) => A.mutate(() => { c.solve = v; }))
+        : null,
+      c.kind === "friction"
+        ? el("div", { class: "hint" }, linearFriction
+            ? "A friction joint is designed to stay STUCK, and a stuck "
+              + "frictional interface is the same constraint as a bonded one — "
+              + "so this glues it, solves linearly, and then reads the "
+              + "interface tractions back to check that friction was actually "
+              + "enough. If it was, this IS the nonlinear answer. If it was "
+              + "not, the result says where it slipped and by how much."
+            : "Solves the sliding itself: the load is stepped up and the "
+              + "contact status iterated. Use this once the check says the "
+              + "joint slips and you need to know how far.")
         : null),
     sec("Faces", dl([
       ["Side A", `${(c.faces_a || []).length} face(s) on ${solidName((c.solids || [])[0])}`],
@@ -895,14 +918,18 @@ function panelContact(S, A, put, id) {
         + "contact leaves the parts free of each other entirely.")),
     sliding
       ? sec(null, el("div", { class: "hint warn" },
-          "⚠ Anything that can slide or separate makes the solve NONLINEAR: "
-          + "whether the surfaces touch is part of the answer, so the run steps "
-          + "the load up and iterates. Expect it to take considerably longer "
-          + "than a bonded model, and it applies to static only — modal and "
-          + "harmonic are linear by definition and use the bonded state."))
-      : sec(null, el("div", { class: "hint" },
-          "Bonded stays linear and is exact. Use it wherever parts really are "
-          + "welded, glued or clamped hard enough never to move.")),
+          "⚠ This makes the solve NONLINEAR: whether the surfaces touch is "
+          + "part of the answer, so the run steps the load up and iterates. "
+          + "Expect it to take considerably longer, and it applies to static "
+          + "only — modal and harmonic are linear by definition and use the "
+          + "bonded state."))
+      : linearFriction
+        ? sec(null, el("div", { class: "hint good" },
+            "Solves linearly. The slip check appears under Solution and says "
+            + "whether the stuck assumption held."))
+        : sec(null, el("div", { class: "hint" },
+            "Bonded stays linear and is exact. Use it wherever parts really "
+            + "are welded, glued or clamped hard enough never to move.")),
     sec(null, delBtn("contact", () => A.removeItem("contacts", id))));
 }
 
@@ -940,8 +967,22 @@ function panelMesh(S, A, put) {
       numInput("Curvature refinement (elements per 2π)", m.curvature,
         (v) => A.mutate(() => { m.curvature = v || 16; })),
       selInput("Element order", String(m.order),
-        [["2", "Quadratic (Tet10) — recommended"], ["1", "Linear (Tet4)"]],
-        (v) => A.mutate(() => { m.order = Number(v); }))),
+        [["2", "Quadratic — recommended"], ["1", "Linear"]],
+        (v) => A.mutate(() => { m.order = Number(v); })),
+      selInput("Element shape", m.elements || "tet",
+        [["tet", "Tetrahedra — works on any shape"],
+         ["hex", "Hexahedra where the shape sweeps"]],
+        (v) => A.mutate(() => { m.elements = v; })),
+      (m.elements || "tet") === "hex"
+        ? el("div", { class: "hint" },
+            "Hexahedra need a shape that sweeps — a plate or a block, one "
+            + "solid, no holes through the swept face. On a thin plate that is "
+            + "worth having: 275 hexes at worst Jacobian 0.84 against 2045 "
+            + "tets at 0.004. Anything else and gmsh returns no hexahedra at "
+            + "all, so Lattice measures the result and falls back to "
+            + "tetrahedra rather than shipping a worse mesh. The job log says "
+            + "which you got.")
+        : null),
     sec("Local refinement",
       ...(m.local || []).map((loc, i) => el("div", {},
         el("div", { class: "frm-row2" },
@@ -974,7 +1015,10 @@ function panelMesh(S, A, put) {
       ["Nodes", stats.nodes.toLocaleString()],
       ["Elements", stats.elements.toLocaleString()],
       ["DOF", stats.dof.toLocaleString()],
-      ["Order", stats.order === 2 ? "quadratic (Tet10)" : "linear (Tet4)"],
+      ["Order", stats.order === 2 ? "quadratic" : "linear"],
+      ...(stats.element_kinds
+        ? [["Elements of", Object.entries(stats.element_kinds)
+              .map(([k, v]) => `${v.toLocaleString()} ${k}`).join(", ")]] : []),
       ...(stats.quality_min != null
         ? [["Quality min/avg (SICN)", `${stats.quality_min.toFixed(2)} / ${stats.quality_avg.toFixed(2)}`]] : []),
       ["Mesh time", `${stats.wall_s}s`],
@@ -1604,7 +1648,7 @@ function statusHead(S, A, a) {
 const RESULT_TITLES = {
   contours: "Contours", modes: "Modes", frf: "Frequency response",
   random: "Random response", bolts: "Bolt forces", reactions: "Reactions",
-  shock: "Shock response",
+  shock: "Shock response", slip: "Slip check",
   warnings: "Solver messages", sizing: "Bolt sizing",
 };
 
@@ -1633,6 +1677,7 @@ function panelResult(S, A, put, id) {
     frf: () => secFRF(S, A, a),
     random: () => randomSections(S, A, a),
     shock: () => shockSections(S, A, a),
+    slip: () => slipSections(S, A, a),
     bolts: () => secBolts(S, A, a),
     sizing: () => secSizing(S, A, a),
     reactions: () => secReactions(S, A, a),
@@ -1642,7 +1687,7 @@ function panelResult(S, A, put, id) {
   const exportWhat = { frf: "frf", random: "random", shock: "shock" }[what] || "tables";
   const anchor = { contours: "contours", modes: "modes", frf: "frequency-response",
                    random: "random-vibration", bolts: "bolt-forces-and-stress",
-                   shock: "shock",
+                   shock: "shock", slip: "friction-without-a-newton-loop",
                    sizing: "bolt-sizing", reactions: "reactions" }[what];
   const tail = sec(null,
     anchor ? methodRef(anchor) : null,
@@ -2026,6 +2071,66 @@ function secWarnings(S, A, a) {
  * carries neither. Two of them are each defensible on their own; their ratio
  * is not, because they do not have to happen at the same instant.
  */
+/**
+ * Slip check.
+ *
+ * The solve glued every checked frictional interface. This says whether it
+ * was allowed to: a stuck frictional interface and a bonded one are the same
+ * constraint, so if friction held everywhere the linear result is not an
+ * approximation of the nonlinear one, it is the nonlinear one.
+ */
+function slipSections(S, A, a) {
+  const R = S.slipResults?.[a.id];
+  if (!R) {
+    A.loadSlip(a.id);
+    return [sec("Slip check", el("div", { class: "hint" }, "Checking\u2026"))];
+  }
+  const secs = [];
+  for (const r of R.rows || []) {
+    if (r.error) {
+      secs.push(sec(r.name, el("div", { class: "hint warn" }, "\u26a0 " + r.error)));
+      continue;
+    }
+    secs.push(sec(r.name,
+      el("div", { class: r.held ? "hint good" : "hint bad" },
+         (r.held ? "\u2713 " : "\u26a0 ") + r.verdict),
+      dl([["Worst margin \u03bc\u00b7p/\u03c4",
+           isFinite(r.min_margin) ? r.min_margin.toFixed(2) : "\u221e"],
+          ["\u03bc needed", r.mu_required.toFixed(3)],
+          ["\u03bc assumed", r.mu.toFixed(3)],
+          ["Area slipping", `${(100 * r.area_slipping).toFixed(1)} %`],
+          ["Area in tension", `${(100 * r.area_open).toFixed(1)} %`],
+          ["Peak pressure", `${fmtVal(r.p_max)} MPa`],
+          ["Peak shear", `${fmtVal(r.tau_max)} MPa`]]),
+      r.area_weighted === false
+        ? el("div", { class: "hint" },
+            "These fractions count NODES, not area — no nodal areas were "
+            + "matched for this interface. Re-mesh to weigh them by area; "
+            + "refinement clusters nodes where stress concentrates, so a node "
+            + "count reads high exactly where it matters.")
+        : null,
+      r.flatness < 0.98
+        ? el("div", { class: "hint warn" },
+            `\u26a0 This interface is not flat (${r.flatness.toFixed(3)}). One `
+            + "normal is used for the whole face, so pressure and shear are "
+            + "mixed where it curves.")
+        : null,
+      !r.held
+        ? el("div", { class: "btnrow" },
+            el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
+              const c = (S.project.setup.contacts || [])[r.index - 1];
+              if (c) c.solve = "nonlinear";
+            }) }, "Switch this contact to nonlinear"))
+        : null));
+  }
+  if (!(R.rows || []).length) {
+    secs.push(sec(null, el("div", { class: "hint" },
+      "No frictional interface was solved as stuck, so there is nothing to "
+      + "check.")));
+  }
+  return secs;
+}
+
 function shockSections(S, A, a) {
   const R = S.shockResults?.[a.id];
   if (!R) {

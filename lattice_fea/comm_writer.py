@@ -177,8 +177,10 @@ def _prelude(b: CommBuild, setup: dict, meta: dict, mesh_stats: dict,
     # A BONDED contact is the same constraint: glue the slave face onto the
     # master's volume. Keeping it linear matters — a bonded interface has no
     # status to solve for, so paying for a Newton loop would buy nothing.
+    # A frictional interface being checked rather than solved is glued for
+    # the solve: stuck and bonded are the same constraint.
     bonded = [c for c in active_contacts(setup, mesh_stats)
-              if c.get("kind", "bonded") == "bonded"]
+              if solves_linearly(c)]
     if ties or bonded:
         b.w("# tied (glued) face-to-volume constraints for non-conformal interfaces")
         b.w("tiec = AFFE_CHAR_MECA(MODELE=model, LIAISON_MAIL=(")
@@ -325,6 +327,32 @@ def _bolt_forces_out(b: CommBuild, result_var: str) -> None:
     _optional(b, "bolt end forces", bolt_block)
 
 
+def _slip_check_out(b: CommBuild, contacts: list) -> None:
+    """Interface stress at every frictional interface being solved bonded.
+
+    The stress tensor at the interface nodes is all the check needs: the
+    traction across the surface is sigma . n, and `slip.py` splits it into
+    pressure and shear. Nothing new is asked of the solver — SIGM_NOEU is
+    already computed for the contour plots, and POST_RELEVE_T already pulls
+    tables at named groups everywhere else in this file.
+    """
+    checked = slip_checked(contacts)
+    if not checked:
+        return
+
+    def block(x):
+        for c in checked:
+            x.w(f"sc{c['index']} = POST_RELEVE_T(ACTION=_F(")
+            x.w(f"    INTITULE='CONTACT{c['index']}', OPERATION='EXTRACTION',")
+            x.w("    RESULTAT=res, NOM_CHAM='SIGM_NOEU',")
+            x.w(f"    GROUP_NO='{c['ga']}',")
+            x.w("    NOM_CMP=('SIXX', 'SIYY', 'SIZZ', 'SIXY', 'SIXZ', 'SIYZ')))")
+            x.w(f"IMPR_TABLE(TABLE=sc{c['index']}, UNITE=34, "
+                "FORMAT='TABLEAU', SEPARATEUR=',')")
+        x.result_files.append((34, "contact_check.csv"))
+    _optional(b, "interface stress for the slip check", block)
+
+
 def _supports(b: CommBuild, analysis: dict, ai: int) -> str:
     ddl_items, face_items = [], []
     for i, s in enumerate(analysis.get("supports", [])):
@@ -449,6 +477,12 @@ def _support_groups(analysis: dict, ai: int) -> list:
 
 SLIDING_KINDS = ("frictionless", "friction", "noseparation")
 
+# Bumped when the writer's interpretation of an unchanged setup changes, so
+# results computed under the old meaning are marked out of date.
+# 1: frictional contact defaults to a bonded solve with a slip check, where it
+#    previously always ran nonlinear.
+DECK_FORMAT = 1
+
 
 def active_contacts(setup: dict, mesh_stats: dict) -> list:
     """Contacts whose two face groups actually made it into the mesh."""
@@ -466,16 +500,41 @@ def active_contacts(setup: dict, mesh_stats: dict) -> list:
     return out
 
 
+def solves_linearly(c: dict) -> bool:
+    """Whether this interface can be solved without a Newton loop.
+
+    Bonded always can. A **frictional** one can too, when it is checked rather
+    than solved: a stuck frictional interface and a bonded one are the same
+    constraint, so the bonded solve is exact for a joint that does not slip.
+    What makes that honest is testing the premise afterwards from the
+    interface tractions — see `slip.py`. If the joint turns out to slip or
+    open, the check says so and the nonlinear run is the one to believe.
+
+    Frictionless is never in this set. There is no no-slip premise to
+    validate: it slides by definition, and bonded is simply a different
+    interface, not a testable stand-in for it.
+    """
+    kind = c.get("kind", "bonded")
+    if kind == "bonded":
+        return True
+    return kind == "friction" and (c.get("solve") or "linear") == "linear"
+
+
+def slip_checked(contacts: list) -> list:
+    """Frictional interfaces being solved bonded, which owe a slip check."""
+    return [c for c in contacts
+            if c.get("kind") == "friction" and solves_linearly(c)]
+
+
 def needs_nonlinear(contacts: list) -> bool:
     """Sliding or separating contact is a nonlinear problem.
 
     Whether two surfaces are touching is part of the answer, not part of the
     question, so the stiffness depends on the solution and MECA_STATIQUE
-    cannot be used. This is also the whole reason bolt preload is worth
-    modelling: in a bonded joint the interface can neither open nor slip, so
-    the preload does nothing a bonded connection was not already doing.
+    cannot be used — unless the answer is asserted in advance and checked
+    afterwards, which is what `solves_linearly` allows for friction.
     """
-    return any(c.get("kind", "bonded") in SLIDING_KINDS for c in contacts)
+    return any(not solves_linearly(c) for c in contacts)
 
 
 def _contact_defi(b: CommBuild, contacts: list) -> "str|None":
@@ -485,7 +544,7 @@ def _contact_defi(b: CommBuild, contacts: list) -> "str|None":
     default for solid-on-solid in code_aster. Bonded pairs are not listed —
     they are handled as LIAISON_MAIL ties, which stay linear and are exact.
     """
-    zones = [c for c in contacts if c.get("kind", "bonded") in SLIDING_KINDS]
+    zones = [c for c in contacts if not solves_linearly(c)]
     if not zones:
         return None
     b.w("# Contact. Master is the first-listed side; the finer side should be")
@@ -608,6 +667,7 @@ def write_static(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
     b.result_files.append((80, "result.med"))
     b.w()
     _bolt_forces_out(b, "res")
+    _slip_check_out(b, contacts)
     groups = _support_groups(analysis, ai)
 
     def reactions(x):

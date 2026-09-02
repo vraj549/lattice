@@ -211,6 +211,87 @@ special-cased.
   With nothing restrained the modes are free-free and the answer is not merely
   inaccurate, it is meaningless.
 
+## Friction without a Newton loop
+
+A frictional interface is nonlinear because its state is part of the answer:
+stuck, sliding or open changes the stiffness. That is true when the state is
+genuinely unknown — and it is **not** unknown in a designed friction joint. The
+joint is preloaded precisely so it stays stuck, and
+
+> a stuck frictional interface and a bonded one are the same constraint.
+
+They give identical results. So Lattice glues it, solves linearly, and then
+reads the interface tractions back to ask whether that was allowed:
+
+```
+p      = -n · σ · n                   contact pressure (compression positive)
+τ      = |σ·n - (n·σ·n) n|            shear carried across the interface
+margin = μ·p / τ                      > 1 means friction was enough
+```
+
+Two ways the premise fails, reported separately because they need different
+fixes:
+
+- **`margin < 1` somewhere** — it slips there. The bonded solve carried shear
+  friction cannot, so it is wrong; the nonlinear run is the one to believe.
+- **`p ≤ 0` somewhere** — the interface is in tension. A bonded interface
+  pulls; a real one lets go. The joint is opening, and more preload is the fix.
+
+If neither happens, the linear result is not an approximation of the nonlinear
+one — **it is the nonlinear one**, at one solve with no Newton loop.
+
+Slip and gapping are reported as a **fraction of interface area**, using a
+lumped nodal area rather than a node count. Mesh refinement clusters nodes
+exactly where stress concentrates, so counting nodes reads high precisely where
+it matters most.
+
+### Where it does not apply
+
+- **Frictionless** and **no-separation** interfaces are never solved this way.
+  There is no no-slip premise to validate: they slide by definition, so bonded
+  is a different interface, not a testable stand-in for one.
+- One nonlinear interface anywhere makes the whole solve nonlinear. A checked
+  frictional interface stays glued even then — the premise is the same either
+  way, and gluing keeps its status out of the Newton loop.
+- The check uses **one normal for the whole interface**. On a curved face
+  pressure and shear get mixed; the panel reports the interface's flatness and
+  warns below 0.98.
+
+## Element shapes
+
+Tetrahedra by default, and quadratic ones, which is what handles a general
+imported solid.
+
+Hexahedra can be asked for. They need a shape that **sweeps** — a plate or a
+block, one solid, no holes through the swept face — and where that holds they
+are worth having. Measured on a 100 × 40 × 2 mm plate:
+
+| | elements | worst Jacobian |
+|---|---|---|
+| tetrahedra | 2045 | 0.004 |
+| hexahedra | 275 | 0.835 |
+
+The tet mesh there is mostly slivers, which is the thin-wall problem.
+
+Where the shape does **not** sweep, asking for hexahedra does not give you a
+worse hex mesh — it gives you no hexahedra at all:
+
+| | result |
+|---|---|
+| plate with a hole | 0 hexes: 4295 tets + 643 pyramids, worst 0.077 |
+| L-bracket | 0 hexes: 5136 tets + 886 pyramids, worst 0.100 |
+| two parts in contact | gmsh refuses: non-manifold quad boundaries |
+
+Each of those is worse than the plain tet mesh of the same part. So the request
+is treated as a request, not an instruction: Lattice meshes, **measures what it
+got**, and falls back to tetrahedra if there are no hexahedra or any inverted
+element. The job log says which you ended up with, and the mesh panel reports
+the element mix.
+
+A bolted joint has holes and more than one part, so it will mesh with
+tetrahedra whatever this is set to. That is the honest outcome, not a
+limitation being hidden.
+
 ## Bolted joints — sizing and preload
 
 ### The question, and what the FE can answer

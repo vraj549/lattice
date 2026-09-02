@@ -24,6 +24,7 @@ STEP ─▶ OCCT/gmsh import ─▶ tet10 mesh ─▶ code_aster or CalculiX ─
 | Contacts | bonded, no-separation, frictionless, frictional (μ) |
 | Bolts | beam shank + RBE3 spiders, preload as axial pre-strain, per-bolt force **and stress** vs yield, pattern one joint onto every other hole |
 | Solvers | code_aster (everything) or CalculiX (static, modal), chosen per analysis |
+| Contact | bonded, no-separation, frictionless, and frictional — solved linearly with a slip check, or nonlinear |
 | Units | mm / N / MPa / tonne·mm⁻³ / Hz |
 
 ---

@@ -162,7 +162,8 @@ def default_setup() -> dict:
             "p_G": None,            # clamped-material bearing limit, MPa
         },
         "probes": [],           # [{id, name, x,y,z}]  (mm)
-        "mesh": {"size_mm": None, "curvature": 16, "order": 2, "local": []},
+        "mesh": {"size_mm": None, "curvature": 16, "order": 2,
+                 "elements": "tet", "local": []},
         "analyses": [],         # each: {id, type, name, config, supports[], loads[]}
     }
 

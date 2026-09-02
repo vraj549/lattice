@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,7 +18,8 @@ from fastapi.staticfiles import StaticFiles
 import hashlib
 
 from . import (__version__, bolt_sizing, ccx_writer, comm_writer, config,
-               preload as preload_mod, random_vib, results, shock)
+               preload as preload_mod, random_vib, results, shock,
+               slip)
 from .materials import LIBRARY
 from .projects import ProjectStore
 from .solver import (JobManager, extract_errors, popen_isolated, reap,
@@ -67,10 +69,19 @@ def solve_signature(analysis: dict, setup: dict, mesh_stats: dict) -> str:
     conclusions, so it is detected rather than left to the user to remember.
     """
     payload = {
+        # DECK_FORMAT covers changes to what the writer MEANS by an unchanged
+        # setup. A frictional contact used to always go nonlinear and now
+        # solves bonded-and-checked by default: same JSON, different physics,
+        # so results from before must not be served as current.
+        "deck": comm_writer.DECK_FORMAT,
         "analysis": {k: analysis.get(k) for k in ("type", "config", "supports", "loads")},
         "materials": setup.get("materials"),
         "assignments": setup.get("assignments"),
         "bolts": setup.get("bolts"),
+        # contacts were missing: changing an interface from bonded to
+        # frictional, or changing mu, changes the answer and left the old
+        # result labelled current
+        "contacts": setup.get("contacts"),
         "ties": setup.get("ties"),
         "probes": setup.get("probes"),
         "mesh": {"nodes": mesh_stats.get("nodes"),
@@ -704,6 +715,73 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         return {"curves": out, "miles": checks,
                 "participation": random_vib.cumulative_participation(part),
                 "grms_in": random_vib.grms_input(spec)}
+
+    @app.get("/api/projects/{pid}/results/{aid}/slip")
+    def slip_check(pid: str, aid: str):
+        """Did the friction joint actually stay stuck?
+
+        The solve glued every checked frictional interface. This reads the
+        traction back and says whether that was allowed to be true.
+        """
+        proj = _project(pid)
+        if not store.exists(pid, f"runs/{aid}/meta.json"):
+            raise HTTPException(404, "no results for this analysis")
+        meta = store.read_json(pid, f"runs/{aid}/meta.json")
+        mesh_stats = (store.read_json(pid, "mesh/stats.json")
+                      if store.exists(pid, "mesh/stats.json") else {})
+        contacts = comm_writer.active_contacts(proj["setup"], mesh_stats)
+        checked = {c["index"]: c for c in comm_writer.slip_checked(contacts)}
+        normals = mesh_stats.get("face_normals") or {}
+        # lumped areas, not the consistent-load weights: those put zero on
+        # the corner nodes of a quadratic face, which is exactly where a
+        # slipping patch shows up first
+        weights = mesh_stats.get("face_areas") or {}
+
+        blocks = (meta.get("tables") or {}).get("contact_check") or []
+        rows = []
+        for blk in blocks:
+            cols = blk.get("columns", [])
+            if "INTITULE" not in cols:
+                continue
+            ii = cols.index("INTITULE")
+            try:
+                idx = [cols.index(c) for c in slip.COMPONENTS]
+            except ValueError:
+                continue
+            ni = cols.index("NOEUD") if "NOEUD" in cols else -1
+            per = {}
+            for row in blk.get("rows", []):
+                m = re.match(r"CONTACT(\d+)", str(row[ii]))
+                if not m:
+                    continue
+                vals = [row[j] if isinstance(row[j], (int, float)) else 0.0
+                        for j in idx]
+                node = str(row[ni]) if ni >= 0 else ""
+                per.setdefault(int(m.group(1)), []).append((node, vals))
+            for k, items in per.items():
+                c = checked.get(k)
+                if c is None:
+                    continue
+                nrm = (normals.get(c["ga"]) or {})
+                n = nrm.get("normal")
+                if not n:
+                    rows.append({"index": k, "name": c.get("name") or f"Contact {k}",
+                                 "error": "the mesh has no normal for this "
+                                          "interface — re-mesh to run the check"})
+                    continue
+                areas = slip.areas_for(weights.get(c["ga"]) or {},
+                                       [node for node, _ in items])
+                weighted = areas is not None
+                out = slip.check([v for _, v in items], n,
+                                 float(c.get("mu") or 0.15), areas,
+                                 float(nrm.get("flatness") or 1.0))
+                ok, why = slip.verdict(out)
+                rows.append({"index": k, "name": c.get("name") or f"Contact {k}",
+                             "held": ok, "verdict": why,
+                             "area_weighted": weighted, **out})
+        return {"rows": rows,
+                "checked": [c.get("name") or f"Contact {i}"
+                            for i, c in sorted(checked.items())]}
 
     @app.get("/api/projects/{pid}/results/{aid}/shock")
     def shock_response(pid: str, aid: str):

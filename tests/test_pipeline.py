@@ -342,3 +342,71 @@ def test_unv_groups_hold_elements_only(imported, tmp_path):
         else:
             i += 1
     assert seen > 0
+
+
+# ---------------------------------------------------------------- hexahedra
+
+def _mesh_shape(tmp, build, elements="tet", size=4.0):
+    """Mesh a shape built in gmsh, through the real mesh_project path."""
+    import gmsh as _g
+    from lattice_fea.geometry import GMSH_LOCK, _gmsh, _fresh_model
+    brep = os.path.join(tmp, "s.brep")
+    with GMSH_LOCK:
+        g = _gmsh()
+        _fresh_model(g, "s")
+        build(g)
+        g.model.occ.synchronize()
+        g.write(brep)
+        g.clear()
+    meta = geometry.import_step(brep, os.path.join(tmp, "o.brep")) \
+        if brep.endswith(".step") else geometry._analyze_brep(brep)
+    setup = default_setup()
+    setup["mesh"] = {"size_mm": size, "order": 2, "elements": elements}
+    notes = []
+    out = meshing.mesh_project(brep, os.path.join(tmp, "m.unv"), meta, setup,
+                               progress=notes.append)
+    return out, notes
+
+
+def _box(g):
+    g.model.occ.addBox(0, 0, 0, 100, 40, 2)
+
+
+def _box_with_hole(g):
+    b = g.model.occ.addBox(0, 0, 0, 100, 40, 2)
+    c = g.model.occ.addCylinder(50, 20, -1, 0, 0, 4, 5)
+    g.model.occ.cut([(3, b)], [(3, c)])
+
+
+def test_hex_meshing_works_where_the_shape_sweeps(tmp_path):
+    """A thin plate is the case hexes are for: tets there are slivers."""
+    out, notes = _mesh_shape(str(tmp_path), _box, elements="hex")
+    kinds = out["stats"]["element_kinds"]
+    assert any("Hex" in k for k in kinds), kinds
+    assert any("hexahedra:" in n for n in notes), notes
+
+
+def test_hex_request_falls_back_rather_than_shipping_a_worse_mesh(tmp_path):
+    """Put a hole in it and gmsh produces no hexes at all — just tets and
+    pyramids, of worse quality than plain tets. That is rejected, not
+    shipped, and the log says why."""
+    out, notes = _mesh_shape(str(tmp_path), _box_with_hole, elements="hex")
+    kinds = out["stats"]["element_kinds"]
+    assert not any("Hex" in k for k in kinds), kinds
+    assert not any("Pyramid" in k for k in kinds), kinds
+    assert any("not usable here" in n for n in notes), notes
+
+
+def test_the_default_is_still_tetrahedra(tmp_path):
+    out, _ = _mesh_shape(str(tmp_path), _box)
+    assert all("Tetra" in k for k in out["stats"]["element_kinds"])
+
+
+def test_recombine_does_not_leak_into_the_next_mesh(tmp_path):
+    """The gmsh session is shared. A hex attempt that left RecombineAll on
+    would put quad faces into every mesh after it — which is exactly how the
+    SaveGroupsOfNodes regression happened."""
+    _mesh_shape(str(tmp_path), _box, elements="hex")
+    out, _ = _mesh_shape(str(tmp_path), _box_with_hole, elements="tet")
+    kinds = out["stats"]["element_kinds"]
+    assert all("Tetra" in k for k in kinds), kinds

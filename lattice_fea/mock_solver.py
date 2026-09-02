@@ -254,6 +254,19 @@ def main():
                              f"{15 * a},0.0,{120 * a},{60 * a}\n")
         log("IMPR_TABLE  bolt forces per mode -> unit 35")
 
+    # Interface stress for the slip check. Clamped hard with a modest shear,
+    # which is what a preloaded joint that does NOT slip looks like — so the
+    # demo exercises the passing branch rather than only the alarm.
+    if units.get(34) == "contact_check.csv":
+        with open("contact_check.csv", "w") as fh:
+            fh.write("INTITULE,RESU,NOM_CHAM,NOEUD,SIXX,SIYY,SIZZ,SIXY,SIXZ,SIYZ\n")
+            for cn in sorted(set(re.findall(r"INTITULE='(CONTACT\d+)'", comm))):
+                for i in range(24):
+                    p = -40.0 - 20.0 * math.sin(i)
+                    fh.write(f"{cn},1,SIGM_NOEU,N{i + 1},5.0,-3.0,{p},1.0,"
+                             f"{1.5 + 0.4 * i},0.5\n")
+        log("IMPR_TABLE  interface stress -> unit 34")
+
     if units.get(36) == "bolt_forces.csv":
         axial = mock_bolt_axial(comm)
         with open("bolt_forces.csv", "w") as fh:

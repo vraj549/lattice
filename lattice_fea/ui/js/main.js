@@ -151,7 +151,7 @@ const A = {
       const nm = (t) => geo.solids.find((x) => x.tag === t)?.name || ("Solid " + t);
       setup.contacts.push({
         id: uid(), name: nm(pr.solids[0]) + " \u2194 " + nm(pr.solids[1]),
-        kind: "bonded", mu: 0.2, solids: pr.solids,
+        kind: "bonded", mu: 0.2, solve: "linear", solids: pr.solids,
         faces_a: pr.faces_a, faces_b: pr.faces_b, area: pr.area,
       });
       made++;
@@ -474,6 +474,18 @@ const A = {
     scheduleSave();
     delete (S.sizing || {})[aid];
     A.loadSizing(aid);
+  },
+
+  async loadSlip(aid) {
+    if (S.slipPending?.[aid]) return;
+    (S.slipPending ||= {})[aid] = true;
+    try {
+      const r = await api.get(`/api/projects/${S.project.id}/results/${aid}/slip`);
+      (S.slipResults ||= {})[aid] = r;
+      refresh();
+    } catch (e) {
+      logLine(`slip check: ${e.message}`, "badln");
+    } finally { S.slipPending[aid] = false; }
   },
 
   async loadShock(aid) {
@@ -921,6 +933,7 @@ function setView(v) {
   }
   renderLegend(null);
   if (v === "geometry") { viewer.showGeometry(); updateStat(); }
+  syncExplodeControl();     // also here: switching views is not a model edit
   if (v === "mesh") {
     if (S.meshData) viewer.showMeshPreview(S.meshData.skin);
     else viewer.showMeshPreview(null);
@@ -987,6 +1000,9 @@ function refresh() {
   viewer.setFaceStates(faceStates());
   viewer.setHighlightSolid(S.selection.kind === "solid" ? S.selection.id : null);
   updateGlyphs();
+  // driven from here, not from setView: on project open setView runs before
+  // the geometry is in state, so the solid count was still zero
+  syncExplodeControl();
 }
 
 /**
@@ -1339,11 +1355,41 @@ clipPos.addEventListener("input", () => {
   viewer.setClip(clipAxis.value || null, Number(clipPos.value) / 1000);
 });
 
+// Explode. Interior faces are the ones contacts are made of, and on a stack
+// of parts they are exactly the faces you cannot click on.
+const btnExplode = document.getElementById("btnExplode");
+const explodePos = document.getElementById("explodePos");
+
+function applyExplode() {
+  const on = btnExplode.getAttribute("aria-pressed") === "true";
+  explodePos.style.display = on ? "" : "none";
+  viewer.setExplode(on ? Number(explodePos.value) / 1000 : 0);
+}
+btnExplode.addEventListener("click", () => {
+  btnExplode.setAttribute("aria-pressed",
+    String(btnExplode.getAttribute("aria-pressed") !== "true"));
+  applyExplode();
+});
+explodePos.addEventListener("input", applyExplode);
+
+/** Only offer it where it means something: more than one solid, and a view
+ *  that is showing the parts rather than a field. */
+function syncExplodeControl() {
+  const n = (S.project?.geometry?.solids || []).length;
+  const ok = n > 1 && S.view === "geometry";
+  btnExplode.hidden = !ok;
+  if (!ok) {
+    btnExplode.setAttribute("aria-pressed", "false");
+    explodePos.style.display = "none";
+    viewer.setExplode(0);
+  }
+}
+
 // The UI and the Python process are versioned together. If the server was
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.21.0";
+const UI_BUILD = "0.22.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;

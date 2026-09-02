@@ -78,16 +78,43 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
             gmsh.model.mesh.field.setNumbers(fmin, "FieldsList", fields + [fg])
             gmsh.model.mesh.field.setAsBackgroundMesh(fmin)
 
-        progress("meshing surfaces…")
-        gmsh.model.mesh.generate(2)
-        progress("meshing volume (HXT)…")
-        try:
-            gmsh.option.setNumber("Mesh.Algorithm3D", 10)  # HXT, multithreaded
-            gmsh.model.mesh.generate(3)
-        except Exception:  # noqa: BLE001 — HXT can fail on dirty geometry
-            progress("HXT failed, retrying with Delaunay…")
-            gmsh.option.setNumber("Mesh.Algorithm3D", 1)
-            gmsh.model.mesh.generate(3)
+        # Recombination is a session-wide option on a shared gmsh session, so
+        # it is set from scratch every time rather than left wherever the last
+        # mesh put it — the same discipline the UNV/Abaqus writes need.
+        gmsh.option.setNumber("Mesh.RecombineAll", 0)
+        want_hex = str(mcfg.get("elements") or "tet") == "hex"
+        hex_note = ""
+
+        if want_hex:
+            progress("trying hexahedra…")
+            try:
+                gmsh.model.mesh.setTransfiniteAutomatic()
+                gmsh.option.setNumber("Mesh.RecombineAll", 1)
+                gmsh.model.mesh.generate(3)
+                ok, hex_note = _hex_is_usable(gmsh)
+            except Exception as e:      # noqa: BLE001
+                ok, hex_note = False, str(e).split("\n")[0][:120]
+            if not ok:
+                progress(f"hexahedra not usable here ({hex_note}); "
+                         "meshing with tetrahedra instead")
+                gmsh.option.setNumber("Mesh.RecombineAll", 0)
+                gmsh.model.mesh.clear()
+                want_hex = False
+            else:
+                progress(f"hexahedra: {hex_note}")
+
+        if not want_hex:
+            progress("meshing surfaces…")
+            gmsh.model.mesh.generate(2)
+            progress("meshing volume (HXT)…")
+            try:
+                gmsh.option.setNumber("Mesh.Algorithm3D", 10)  # HXT, multithreaded
+                gmsh.model.mesh.generate(3)
+            except Exception:  # noqa: BLE001 — HXT can fail on dirty geometry
+                progress("HXT failed, retrying with Delaunay…")
+                gmsh.option.setNumber("Mesh.Algorithm3D", 1)
+                gmsh.model.mesh.generate(3)
+        gmsh.option.setNumber("Mesh.RecombineAll", 0)
 
         if order == 2:
             progress("raising to 2nd order…")
@@ -168,6 +195,7 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
                 probes_out.append({**p, "node_xyz": xyz[i].tolist(),
                                    "snap_dist": float(d[i])})
         stats["probes"] = probes_out
+        stats["element_kinds"] = _element_kinds(gmsh)
         stats["bolts"] = bolt_records
         stats["remotes"] = remote_records
         # Only what was actually written. Recording every REQUESTED group
@@ -184,13 +212,14 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
         # any solver that takes point loads. Corner nodes of a quadratic
         # triangle legitimately get zero — that is what the shape functions
         # integrate to, not a bug.
-        # These three exist to serve CalculiX. None of them is needed by
-        # code_aster, and the mesh itself is already written by this point —
+        # These serve CalculiX and the slip check. None is needed to SOLVE
+        # with code_aster, and the mesh itself is already written by now —
         # so a failure in any of them must not throw away a completed mesh.
         # It costs the user minutes and tells them nothing about their model.
         for key, fn in (("face_nodes", _face_group_weights),
                         ("face_elems", _face_group_element_faces),
-                        ("face_normals", _face_group_normals)):
+                        ("face_normals", _face_group_normals),
+                        ("face_areas", _face_group_areas)):
             try:
                 stats[key] = fn(gmsh, written)
             except Exception as e:              # noqa: BLE001
@@ -206,6 +235,60 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
         gmsh.clear()
 
     return {"stats": stats, "skin": skin}
+
+
+def _element_kinds(gmsh) -> dict:
+    """{element name: count} over the solid mesh, for reporting what was made."""
+    out = {}
+    for _, tag in gmsh.model.getEntities(3):
+        for et in gmsh.model.mesh.getElementTypes(3, int(tag)):
+            tags, _ = gmsh.model.mesh.getElementsByType(et, int(tag))
+            name = gmsh.model.mesh.getElementProperties(et)[0]
+            out[name] = out.get(name, 0) + len(tags)
+    return out
+
+
+# gmsh element types that are solid hexahedra
+_HEX_TYPES = (5, 12, 17, 92, 93)
+
+
+def _hex_is_usable(gmsh) -> "tuple[bool, str]":
+    """Did asking for hexes actually produce a mesh worth having?
+
+    Measured, not assumed. gmsh will happily accept the request and then
+    return a mesh with no hexes in it at all, or one with inverted elements,
+    depending entirely on the topology it was given:
+
+        plain thin plate   275 hexes,  worst Jacobian 0.835   (7x fewer nodes)
+        plate with a hole    0 hexes,  4295 tets + 643 pyramids, 0.077
+        L-bracket            0 hexes,  5136 tets + 886 pyramids, 0.100
+        two-part assembly  gmsh refuses: non-manifold quad boundaries
+
+    In the last three the tet mesh was better than what asking for hexes
+    produced. So the answer is checked and rejected rather than shipped: no
+    hexes, or a negative Jacobian anywhere, means fall back.
+    """
+    import numpy as _np
+    nhex = ntot = 0
+    worst = 1.0
+    for _, tag in gmsh.model.getEntities(3):
+        for et in gmsh.model.mesh.getElementTypes(3, int(tag)):
+            tags, _ = gmsh.model.mesh.getElementsByType(et, int(tag))
+            if not len(tags):
+                continue
+            ntot += len(tags)
+            if int(et) in _HEX_TYPES:
+                nhex += len(tags)
+            q = _np.asarray(gmsh.model.mesh.getElementQualities(tags, "minSICN"))
+            worst = min(worst, float(q.min()))
+    if not ntot:
+        return False, "no elements"
+    if not nhex:
+        return False, "this shape does not sweep, so gmsh produced no hexahedra"
+    if worst <= 0.0:
+        return False, f"inverted elements (worst Jacobian {worst:.3f})"
+    return True, (f"{nhex} of {ntot} elements are hexahedra, "
+                  f"worst Jacobian {worst:.3f}")
 
 
 def _collect_face_sets(setup: dict) -> dict:
@@ -517,6 +600,49 @@ def _count_islands(gmsh) -> int:
     return max(1, int(np.unique(label).size))
 
 
+def _face_group_areas(gmsh, group_names) -> dict:
+    """{group: {node_tag: lumped area}} — every node on the face gets a share.
+
+    Deliberately NOT `_face_group_weights`. Those are consistent-load weights,
+    where the corner nodes of a quadratic triangle carry exactly zero. That is
+    right for turning a pressure into forces and wrong for asking "what
+    fraction of this interface is slipping": half the nodes, including the
+    corners where stress concentrates, would weigh nothing.
+
+    Here the element's area is split evenly over all of its nodes. It is a
+    lumped area, not an exact integration weight, which is all a fraction-of-
+    area report needs.
+    """
+    out = {}
+    want = set(group_names)
+    for dim, tag in gmsh.model.getPhysicalGroups(2):
+        name = gmsh.model.getPhysicalName(dim, tag)
+        if name not in want:
+            continue
+        areas = {}
+        for ent in gmsh.model.getEntitiesForPhysicalGroup(dim, tag):
+            etypes, _, enodes = gmsh.model.mesh.getElements(2, int(ent))
+            for et, en in zip(etypes, enodes):
+                npery = {2: 3, 9: 6}.get(int(et))
+                if not npery:
+                    continue
+                conn = np.asarray(en, dtype=np.int64).reshape(-1, npery)
+                pts = {int(t): np.asarray(gmsh.model.mesh.getNode(int(t))[0],
+                                          dtype=float)
+                       for t in np.unique(conn)}
+                for row in conn:
+                    p0, p1, p2 = (pts[int(row[k])] for k in range(3))
+                    area = 0.5 * float(np.linalg.norm(np.cross(p1 - p0, p2 - p0)))
+                    if area <= 0:
+                        continue
+                    share = area / npery
+                    for t in row:
+                        areas[int(t)] = areas.get(int(t), 0.0) + share
+        if areas:
+            out[name] = areas
+    return out
+
+
 def _face_group_weights(gmsh, group_names) -> dict:
     """{group: {node_tag: area_weight}} for a uniform unit traction.
 
@@ -615,7 +741,20 @@ def _face_group_element_faces(gmsh, group_names) -> dict:
     if not want:
         return {}
 
-    # every tet face, keyed by its sorted corner nodes
+    # every tet face, keyed by its sorted corner nodes.
+    #
+    # _TET_FACES is a tetrahedron's face numbering and nothing else's. A mesh
+    # with hexahedra in it would come back with a map covering only part of
+    # the interface, and a CalculiX contact built on a partial master surface
+    # is wrong in a way nothing downstream can see. Refuse the whole map
+    # instead; the caller already treats an empty one as "re-mesh for ccx".
+    for _, tag in gmsh.model.getEntities(3):
+        for et in gmsh.model.mesh.getElementTypes(3, int(tag)):
+            if int(et) not in (4, 11):
+                raise ValueError(
+                    "element faces are mapped for tetrahedra only; this mesh "
+                    "has other solid elements")
+
     lookup = {}
     for dim, tag in gmsh.model.getEntities(3):
         etypes, etags, enodes = gmsh.model.mesh.getElements(3, int(tag))

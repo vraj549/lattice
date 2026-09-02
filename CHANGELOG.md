@@ -1,5 +1,96 @@
 # Changelog
 
+## 0.22.0
+
+### Friction without a Newton loop
+
+You remembered right: a friction joint does not have to be a nonlinear solve.
+
+A frictional interface is nonlinear because its state is part of the answer —
+stuck, sliding or open changes the stiffness. That is true when the state is
+genuinely unknown, and it is **not** unknown in a designed friction joint. The
+joint is preloaded precisely so it stays stuck, and
+
+> a stuck frictional interface and a bonded one are the same constraint.
+
+They give identical results. So Lattice now glues it, solves it linearly, and
+reads the interface tractions back to ask whether that was allowed:
+
+```
+p      = -n · σ · n          contact pressure
+τ      = |σ·n - (n·σ·n)n|    shear carried across the interface
+margin = μ·p / τ             > 1 means friction was enough
+```
+
+Two failures, reported separately because they need different fixes:
+**`margin < 1`** — it slips there, and the bonded solve carried shear friction
+cannot. **`p ≤ 0`** — the interface is in tension; a bonded one pulls where a
+real one lets go, so the joint is opening and the fix is more preload.
+
+If neither happens the linear result is not an approximation of the nonlinear
+one, **it is the nonlinear one** — at one solve with no Newton loop. This is
+the default for frictional contact now; the old behaviour is one dropdown away
+and the panel offers the switch when the check fails.
+
+Frictionless and no-separation are untouched. There is no no-slip premise to
+validate there, so bonded is a different interface, not a testable stand-in.
+
+Slip and gapping are reported as a fraction of interface **area**, using a
+lumped nodal area — not the consistent-load weights already in the mesh, whose
+corner nodes are exactly zero, and not a node count, because refinement
+clusters nodes where stress concentrates.
+
+### Auto-explode
+
+A slider in the viewport pulls the parts apart along the line from the
+assembly's centre to each solid's own. No stacking direction to infer, and it
+separates a bolted stack, a bracket pair and a ring of parts alike. Faces
+shared by two solids keep the average of their offsets so an interface stays
+between the parts it joins.
+
+The faying surfaces are the faces contacts are made of, and on a stack they are
+exactly the ones you cannot click. Now you can.
+
+### Hexahedra, where they are real
+
+`Element shape → Hexahedra` on the mesh panel. It needs a shape that **sweeps**
+— a plate or a block, one solid, no holes through the swept face — and there it
+is worth having. On a 100 × 40 × 2 mm plate:
+
+| | elements | worst Jacobian |
+|---|---|---|
+| tetrahedra | 2045 | 0.004 |
+| hexahedra | 275 | 0.835 |
+
+Where the shape does not sweep, asking for hexahedra does not give a worse hex
+mesh — it gives **no hexahedra at all**:
+
+| | result |
+|---|---|
+| plate with a hole | 0 hexes: 4295 tets + 643 pyramids, worst 0.077 |
+| L-bracket | 0 hexes: 5136 tets + 886 pyramids, worst 0.100 |
+| two parts in contact | gmsh refuses outright |
+
+Each is worse than the plain tet mesh of the same part. So the setting is a
+request, not an instruction: Lattice meshes, **measures what it got**, and falls
+back to tetrahedra on no hexahedra or any inverted element. The job log says
+which you ended up with.
+
+Being straight about it: a bolted joint has holes and more than one part, so it
+will mesh with tetrahedra whatever this is set to. If the thin-wall case is what
+you are after, shell elements are the real answer and this is not that.
+
+### Also
+
+- **Contacts were missing from the solve fingerprint.** Changing an interface
+  from bonded to frictional, or changing μ, changed the answer and left the old
+  result labelled as current. Contacts and a deck-format token are in it now, so
+  every frictional result from before this release is correctly marked stale.
+- The CalculiX contact-face map is tetrahedron-specific and silently returned a
+  partial map for any other element. It refuses outright now — a contact master
+  built on half an interface is wrong in a way nothing downstream can see.
+
+
 ## 0.21.0
 
 **Shock.** Specified either way a shock is specified: as an **SRS** in (Hz, g),
