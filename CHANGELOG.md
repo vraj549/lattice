@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.24.0
+
+### The interface had no command surface
+
+Every action lived inside whichever panel happened to be open. To run an
+analysis you first had to find and click that analysis in the tree; to mesh,
+you clicked Mesh in the tree. Nothing on screen answered *what can I do right
+now*, which is the first question an interface has to answer.
+
+There is now a **command bar**, and it is contextual rather than a fixed
+ribbon — a bar that always shows everything mostly shows things that do not
+apply, which is what makes a ribbon feel cluttered. Mesh, Run and Add analysis
+are always there; Fit and Section are always there; Explode appears only with
+more than one solid in the geometry view; Edges and Probe only in results.
+
+### Explanations are read once and then re-read forever
+
+Panels carried four- and six-line paragraphs of teaching text above their
+numbers, pushing the numbers down a 300 px column. The text is worth keeping —
+someone meeting a feature for the first time needs it — but not at that price.
+
+Every section that contains explanation grows a **?** in its heading, and there
+is an **Explain** toggle in the command bar for all of them at once. Off by
+default, remembered. **Warnings are never folded**: those are state, not
+teaching.
+
+### Density without hierarchy is just small
+
+The stylesheet was right that an FEA tree wants 22 px rows, and wrong that
+everything in them should be the same size. 10, 11 and 11.5 px were doing
+unrelated jobs, icons were 9 px, and an analysis — a major object — looked
+exactly like a support. There is now a type scale, a 15 px glyph size, and a
+study reads as a study.
+
+### Three navigation systems that disagreed
+
+Clicking a result in the tree left the viewport showing the geometry: the tree,
+the panel and the view tabs each had an opinion about what you were doing.
+Selecting a result now loads that run's field and switches the view. One axis.
+
+### Also
+
+- A **status bar**: solver, mesh (with element type), result count, and what is
+  running. It was previously spread across a chip in the header, a tree row,
+  and a collapsed drawer.
+- The solver name is off every analysis row. It is a setting that rarely
+  changes, and it cost a column to print the same word three times; it appears
+  now only when it is not the default or cannot run what is being asked.
+- The left pane went from 264 px to 300 px, which stops the truncation of
+  ordinary study names.
+
+This is a first pass at the structural problems, not a finished redesign.
+Result controls still live in panels rather than the command bar, and there is
+no keyboard layer yet.
+
+
 ## 0.23.0
 
 ### Hexahedra, properly this time

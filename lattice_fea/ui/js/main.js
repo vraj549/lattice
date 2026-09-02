@@ -33,7 +33,18 @@ const A = {
   // and switch the viewport, so you could not open an analysis to edit it.
   select(kind, id) {
     S.selection = { kind, id };
-    if (kind === "result") A.ensureActiveResult(String(id).split("|")[0]);
+    if (kind === "result") {
+      // Clicking a result and being left looking at the geometry is the tree,
+      // the panel and the view tabs each holding a different opinion about
+      // what you are doing. Picking a result IS asking to see it.
+      const aid = String(id).split("|")[0];
+      A.ensureActiveResult(aid);
+      // Always load the run's field, not only for the contour node: switching
+      // the tab without it left the Results view showing the geometry, which
+      // is the same disagreement in a new place.
+      if (!S.results[aid] || S.view !== "results") A.openResults(aid, { select: false });
+      else if (S.view !== "results") setView("results");
+    }
     refresh();
   },
 
@@ -880,6 +891,11 @@ function logLine(text, cls = "") {
 
 function watchJob(jid, label, onFinish) {
   activeJob = jid;
+  // one place that knows something is running, so the status bar and the
+  // toolbar cannot disagree about it
+  S.busy = { label };
+  renderStatus();
+  renderToolbar();
   document.getElementById("logDrawer").dataset.open = "true";
   document.getElementById("logToggle").setAttribute("aria-expanded", "true");
   document.getElementById("logMeta").textContent = label;
@@ -895,6 +911,7 @@ function watchJob(jid, label, onFinish) {
       }
       offset = j.log_offset;
       if (j.status === "running") { setTimeout(poll, 900); return; }
+      S.busy = null;
       document.getElementById("logMeta").textContent = `${label} — ${j.status}`;
       document.getElementById("logCancel").hidden = true;
       activeJob = null;
@@ -903,6 +920,9 @@ function watchJob(jid, label, onFinish) {
       logLine(`job poll failed: ${e.message}`, "badln");
       document.getElementById("logCancel").hidden = true;
       activeJob = null;
+      S.busy = null;
+      renderStatus();
+      renderToolbar();
     }
   };
   poll();
@@ -964,7 +984,8 @@ function setView(v) {
   }
   renderLegend(null);
   if (v === "geometry") { viewer.showGeometry(); updateStat(); }
-  syncExplodeControl();     // also here: switching views is not a model edit
+  renderToolbar();          // also here: switching views is not a model edit
+  renderStatus();
   if (v === "mesh") {
     if (S.meshData) viewer.showMeshPreview(S.meshData.skin);
     else viewer.showMeshPreview(null);
@@ -1033,7 +1054,8 @@ function refresh() {
   updateGlyphs();
   // driven from here, not from setView: on project open setView runs before
   // the geometry is in state, so the solid count was still zero
-  syncExplodeControl();
+  renderToolbar();
+  renderStatus();
 }
 
 /**
@@ -1359,68 +1381,163 @@ document.getElementById("newForm").addEventListener("submit", async (e) => {
   } catch (err) { status.textContent = `Upload failed: ${err.message}`; }
 });
 
-// ---------------- viewport controls ----------------
-document.getElementById("btnFit").addEventListener("click", () => viewer.fit());
+/* ---------------------------------------------------------------- toolbar
+ *
+ * Rendered from state rather than declared in HTML, because it is contextual:
+ * a bar that always shows everything shows mostly things that do not apply,
+ * and that is what makes a ribbon feel cluttered. What is on it depends on
+ * the view and on what is selected.
+ */
+const TOOLBAR = document.getElementById("toolbar");
 
-const btnResMesh = document.getElementById("btnResMesh");
-btnResMesh.addEventListener("click", () => {
-  const on = btnResMesh.getAttribute("aria-pressed") !== "true";
-  btnResMesh.setAttribute("aria-pressed", String(on));
-  viewer.setResultMesh(on);
-});
+const trunc = (t, n) => (t.length > n ? t.slice(0, n - 1) + "\u2026" : t);
 
-const btnProbe = document.getElementById("btnProbe");
-btnProbe.addEventListener("click", () => {
-  const on = btnProbe.getAttribute("aria-pressed") !== "true";
-  btnProbe.setAttribute("aria-pressed", String(on));
-  viewer.probeMode = on;
-  if (!on) document.getElementById("nodeProbe").hidden = true;
-});
-const clipAxis = document.getElementById("clipAxis");
-const clipPos = document.getElementById("clipPos");
-clipAxis.addEventListener("change", () => {
-  clipPos.style.display = clipAxis.value ? "" : "none";
-  viewer.setClip(clipAxis.value || null, Number(clipPos.value) / 1000);
-});
-clipPos.addEventListener("input", () => {
-  viewer.setClip(clipAxis.value || null, Number(clipPos.value) / 1000);
-});
+const tbtn = (o) => el("button", {
+  class: `tbtn${o.primary ? " primary" : ""}${o.label ? "" : " icononly"}`,
+  title: o.title || o.label || "",
+  "aria-pressed": o.pressed === undefined ? null : String(!!o.pressed),
+  disabled: o.disabled || null,
+  onclick: o.onclick,
+}, o.glyph ? el("span", { class: "gl" }, o.glyph) : null,
+   o.label ? el("span", {}, o.label) : null);
 
-// Explode. Interior faces are the ones contacts are made of, and on a stack
-// of parts they are exactly the faces you cannot click on.
-const btnExplode = document.getElementById("btnExplode");
-const explodePos = document.getElementById("explodePos");
+const tgroup = (...kids) => {
+  const k = kids.filter(Boolean);
+  return k.length ? el("div", { class: "tgroup" }, ...k) : null;
+};
+
+function renderToolbar() {
+  TOOLBAR.textContent = "";
+  if (!S.project) return;
+  const a = A.currentAnalysis?.();
+  const meshed = !!S.meshData?.stats;
+  const running = S.busy?.kind === "mesh" || S.busy?.kind === "solve";
+  const nSolids = (S.project.geometry?.solids || []).length;
+
+  // --- what you came here to do
+  TOOLBAR.append(tgroup(
+    tbtn({ glyph: "▦", label: "Mesh", title: "Generate the mesh",
+           disabled: running, onclick: () => A.runMesh() }),
+    tbtn({ glyph: "▶",
+           label: a ? `Run ${trunc(a.name || a.type, 18)}` : "Run",
+           title: a ? `Solve ${a.name || a.type}` : "Select an analysis to run",
+           primary: true, disabled: !a || running,
+           onclick: () => A.runAnalysis(a.id) }),
+    tbtn({ glyph: "＋", label: "Analysis", title: "Add an analysis",
+           onclick: () => A.addAnalysis() })));
+
+  // --- looking at the model
+  TOOLBAR.append(tgroup(
+    tbtn({ glyph: "⤢", label: "Fit", title: "Zoom to fit (F)",
+           onclick: () => viewer.fit() }),
+    el("select", {
+      class: "tsel", "aria-label": "Section plane",
+      onchange: (e) => { S.clipAxis = e.target.value; applyClip(); },
+    }, [["", "No section"], ["x", "Section X"], ["y", "Section Y"],
+        ["z", "Section Z"]].map(([v, t]) =>
+      el("option", { value: v, selected: (S.clipAxis || "") === v || null }, t))),
+    S.clipAxis ? el("input", {
+      type: "range", class: "trange", min: 0, max: 1000,
+      value: String(S.clipPos ?? 500), "aria-label": "Section position",
+      oninput: (e) => { S.clipPos = Number(e.target.value); applyClip(); },
+    }) : null));
+
+  // --- getting at buried faces: only where there is something to separate
+  if (nSolids > 1 && S.view === "geometry") {
+    TOOLBAR.append(tgroup(
+      tbtn({ glyph: "◫", label: "Explode", pressed: !!S.explodeOn,
+             title: "Pull the parts apart so interior faces can be picked",
+             onclick: () => { S.explodeOn = !S.explodeOn; applyExplode(); } }),
+      S.explodeOn ? el("input", {
+        type: "range", class: "trange", min: 0, max: 600,
+        value: String(S.explodeAmt ?? 150), "aria-label": "Explode amount",
+        oninput: (e) => { S.explodeAmt = Number(e.target.value); applyExplode(); },
+      }) : null));
+  }
+
+  // --- only in results, because nowhere else do they mean anything
+  if (S.view === "results") {
+    TOOLBAR.append(tgroup(
+      tbtn({ glyph: "⬚", label: "Edges", pressed: S.resMesh !== false,
+             title: "Show the element mesh over the contours",
+             onclick: () => { S.resMesh = S.resMesh === false; viewer.setResultMesh(S.resMesh !== false); renderToolbar(); } }),
+      tbtn({ glyph: "◎", label: "Probe", pressed: !!S.probeOn,
+             title: "Hover to read the value at the nearest node",
+             onclick: () => {
+               S.probeOn = !S.probeOn;
+               viewer.probeMode = S.probeOn;
+               if (!S.probeOn) document.getElementById("nodeProbe").hidden = true;
+               renderToolbar();
+             } })));
+  }
+
+  TOOLBAR.append(el("div", { class: "tgroup-sp" }));
+  TOOLBAR.append(tgroup(
+    tbtn({ glyph: "?", label: "Explain", pressed: document.body.classList.contains("show-help"),
+           title: "Show the explanatory notes in every panel",
+           onclick: () => {
+             const on = !document.body.classList.contains("show-help");
+             document.body.classList.toggle("show-help", on);
+             try { localStorage.setItem("lattice.help", on ? "1" : "0"); } catch (e) { /* private mode */ }
+             renderToolbar();
+           } })));
+}
+
+function applyClip() {
+  viewer.setClip(S.clipAxis || null, (S.clipPos ?? 500) / 1000);
+  renderToolbar();
+}
 
 function applyExplode() {
-  const on = btnExplode.getAttribute("aria-pressed") === "true";
-  explodePos.style.display = on ? "" : "none";
-  viewer.setExplode(on ? Number(explodePos.value) / 1000 : 0);
+  viewer.setExplode(S.explodeOn ? (S.explodeAmt ?? 150) / 1000 : 0);
+  renderToolbar();
 }
-btnExplode.addEventListener("click", () => {
-  btnExplode.setAttribute("aria-pressed",
-    String(btnExplode.getAttribute("aria-pressed") !== "true"));
-  applyExplode();
-});
-explodePos.addEventListener("input", applyExplode);
 
-/** Only offer it where it means something: more than one solid, and a view
- *  that is showing the parts rather than a field. */
-function syncExplodeControl() {
-  const n = (S.project?.geometry?.solids || []).length;
-  const ok = n > 1 && S.view === "geometry";
-  btnExplode.hidden = !ok;
-  if (!ok) {
-    btnExplode.setAttribute("aria-pressed", "false");
-    explodePos.style.display = "none";
-    viewer.setExplode(0);
+try {
+  if (localStorage.getItem("lattice.help") === "1") {
+    document.body.classList.add("show-help");
   }
+} catch (e) { /* private mode: notes stay folded */ }
+
+/* ---------------------------------------------------------------- status */
+const STATUSBAR = document.getElementById("statusbar");
+
+function renderStatus() {
+  STATUSBAR.textContent = "";
+  if (!S.project) return;
+  const eng = S.config?.solver?.engines || [];
+  const stats = S.meshData?.stats;
+  const busy = S.busy;
+  const put = (dot, text, strong) => STATUSBAR.append(el("span", {},
+    dot ? el("span", { class: `sdot ${dot}` }) : null,
+    strong ? el("b", {}, text) : text));
+
+  if (busy) put("run", busy.label || "working…", true);
+  else put(eng.length ? "ok" : "bad",
+           eng.length ? eng.map((e) => e.label).join(" · ") : "no solver");
+
+  const SHORT = { "Tetrahedron 4": "TET4", "Tetrahedron 10": "TET10",
+                  "Hexahedron 8": "HEX8", "Hexahedron 20": "HEX20",
+                  "Pyramid 5": "PYR5", "Prism 6": "PEN6" };
+  put(null, stats
+    ? `${stats.nodes.toLocaleString()} nodes · ${Object.entries(
+        stats.element_kinds || {}).map(([k, v]) =>
+        `${v.toLocaleString()} ${SHORT[k] || k}`).join(", ") || "meshed"}`
+    : "not meshed");
+
+  const done = Object.keys(S.results || {}).length;
+  put(null, done ? `${done} result set${done > 1 ? "s" : ""}` : "no results");
+  STATUSBAR.append(el("span", { class: "sp" }));
+  STATUSBAR.append(el("button", {
+    onclick: () => document.getElementById("logToggle")?.click(),
+  }, "Job output"));
 }
 
 // The UI and the Python process are versioned together. If the server was
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.23.0";
+const UI_BUILD = "0.24.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;

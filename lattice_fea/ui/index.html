@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lattice — FEA workbench</title>
 <link rel="icon" type="image/svg+xml" href="/ui/favicon.svg">
-<link rel="stylesheet" href="/ui/app.css?v=0.23.0">
+<link rel="stylesheet" href="/ui/app.css?v=0.24.0">
 <script type="importmap">
 { "imports": { "three": "/ui/vendor/three.module.js" } }
 </script>
@@ -38,6 +38,8 @@
     <button class="btn btn-ghost infobtn" id="btnResources" title="Solver resources — click for how to change them">i</button>
   </header>
 
+  <div class="toolbar" id="toolbar" role="toolbar" aria-label="Commands"></div>
+
   <div class="body" id="body">
     <aside class="pane pane-l" id="paneL">
       <div class="pane-hd">
@@ -51,25 +53,6 @@
     <section class="vp" id="vp">
       <canvas id="scene"></canvas>
 
-      <div class="vp-tl" id="vpControls">
-        <button class="vbtn" id="btnFit" title="Zoom to fit">Fit</button>
-        <select class="vbtn" id="clipAxis" aria-label="Section plane">
-          <option value="">No section</option>
-          <option value="x">Section X</option>
-          <option value="y">Section Y</option>
-          <option value="z">Section Z</option>
-        </select>
-        <input type="range" class="vrange" id="clipPos" min="0" max="1000" value="500"
-               aria-label="Section position" style="display:none">
-        <button class="vbtn" id="btnExplode" aria-pressed="false" hidden
-                title="Pull the parts apart so interior faces can be picked">Explode</button>
-        <input type="range" class="vrange" id="explodePos" min="0" max="600" value="150"
-               aria-label="Explode amount" style="display:none">
-        <button class="vbtn" id="btnResMesh" aria-pressed="true"
-                title="Show the element mesh over the contours">Mesh</button>
-        <button class="vbtn" id="btnProbe" aria-pressed="false"
-                title="Hover to read the value at the nearest node">Probe</button>
-      </div>
       <div class="nodeprobe" id="nodeProbe" hidden></div>
 
       <div class="pickbar" id="pickBar" hidden>
@@ -103,6 +86,7 @@
     </aside>
   </div>
 
+  <div class="statusbar" id="statusbar"></div>
   <div class="splitter h" id="splitLog" role="separator" aria-orientation="horizontal" tabindex="0"></div>
   <section class="log" id="logDrawer" data-open="false">
     <div class="log-hd">
@@ -157,6 +141,6 @@
   </div>
 </div>
 
-<script type="module" src="/ui/js/main.js?v=0.23.0"></script>
+<script type="module" src="/ui/js/main.js?v=0.24.0"></script>
 </body>
 </html>

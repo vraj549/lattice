@@ -187,7 +187,13 @@ function analysisNode(S, A, a) {
     // already chose. Ansys distinguishes analysis systems the same way.
     icon: ANALYSIS_ICONS[a.type] || "analysis",
     label: a.name || a.type, badge: st.badge,
-    meta: ENGINE_LABEL[engineOf(S, a)] || engineOf(S, a),
+    // The solver is a per-analysis setting that almost never changes, and
+    // printing it on every study row cost a column to say the same word three
+    // times. It appears only when it is not the default, or when it cannot
+    // run what is being asked of it — which is the only time it is news.
+    meta: engineBlockers(S, a, engineOf(S, a)).length ? "cannot run"
+        : engineOf(S, a) === "aster" ? null
+        : ENGINE_LABEL[engineOf(S, a)] || engineOf(S, a),
     warn: engineBlockers(S, a, engineOf(S, a)).length > 0,
     title: `${TYPE_NAMES[a.type] || a.type} — ${st.title}\n`
          + `solver: ${ENGINE_LABEL[engineOf(S, a)] || engineOf(S, a)}`,

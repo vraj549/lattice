@@ -296,8 +296,41 @@ export function solidName(S, tag) {
   return sd?.name || `Solid ${t}`;
 }
 
-const sec = (label, ...kids) => el("div", { class: "sec" },
-  label ? el("span", { class: "lbl" }, label) : null, ...kids);
+/**
+ * A panel section.
+ *
+ * If it contains explanatory prose, the heading grows a "?" that folds it
+ * away. Explanations are read once and then re-read forever against the
+ * reader's will, because they sit above the numbers and push them down the
+ * panel. They are worth keeping — someone meeting a feature for the first
+ * time needs them — but not worth the permanent cost, so they are off by
+ * default and the choice is remembered.
+ *
+ * Warnings are never folded. Those are state, not teaching.
+ */
+const sec = (label, ...kids) => {
+  const body = kids.filter(Boolean);
+  const explains = body.some((k) => k?.classList?.contains?.("hint")
+    && !k.classList.contains("warn") && !k.classList.contains("bad")
+    && !k.classList.contains("good"));
+  return el("div", { class: "sec" },
+    label || explains
+      ? el("span", { class: "lbl" },
+          label || "",
+          explains ? el("button", {
+            class: "helpq", title: "Explain this section",
+            "aria-expanded": String(document.body.classList.contains("show-help")),
+            onclick: (e) => {
+              e.stopPropagation();
+              const s = e.currentTarget.closest(".sec");
+              s.classList.toggle("show-help");
+              e.currentTarget.setAttribute("aria-expanded",
+                String(s.classList.contains("show-help")));
+            },
+          }, "?") : null)
+      : null,
+    ...body);
+};
 
 const dl = (rows) => el("dl", {}, rows.map(([k, v]) =>
   el("div", { class: "fld" }, el("dt", {}, k), el("dd", {}, String(v)))));

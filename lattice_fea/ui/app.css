@@ -45,7 +45,22 @@
           ui-monospace, monospace;
 
   --r: 2px;
-  --row-h: 22px;
+  --row-h: 24px;
+
+  /* A TYPE SCALE, so hierarchy is something chosen rather than whatever the
+     browser default happened to be. The old file had 10, 11, 11.5 and 12px
+     doing unrelated jobs, which is why nothing read as more important than
+     anything else: density without hierarchy is just small. */
+  --t-micro: 10.5px;   /* units, counts, secondary metadata */
+  --t-body:  12px;     /* labels, field text, tree rows */
+  --t-lead:  13px;     /* section headings, analysis names */
+  --t-num:   12.5px;   /* measured values — never smaller than the label */
+
+  /* Hit targets. 22px was below the point where a pointer lands reliably;
+     these are the smallest sizes that stay dense and still hit. */
+  --h-ctl:   26px;     /* toolbar and inline buttons */
+  --h-tool:  30px;     /* primary command bar */
+  --ico:     15px;     /* tree and toolbar glyphs — 9px was decoration */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -77,19 +92,19 @@ button, select, input, textarea { font-family: inherit; font-size: inherit; colo
 
 /* Section labels: small and quiet. Letterspaced caps at 10px everywhere was
    the single biggest contributor to the generic look. */
-.lbl {
+.lbl-OLD {
   font-size: 10.5px; font-weight: 600; color: var(--faint);
   text-transform: uppercase; letter-spacing: .04em;
 }
 .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
 /* ---------- shell ---------- */
-.app { display: grid; grid-template-rows: 34px 1fr auto; height: 100vh; }
+.app { display: grid; grid-template-rows: 34px var(--h-tool) 1fr auto; height: 100vh; }
 /* A grid item's default min-width is its min-content, so one row that cannot
    shrink — the toolbar, with its chips — silently widened the whole shell past
    the window and pushed the right pane off-screen. Nothing here may do that. */
 .app > * { min-width: 0; }
-.app:has(.skewbar) { grid-template-rows: auto 34px 1fr auto; }
+.app:has(.skewbar) { grid-template-rows: auto 34px var(--h-tool) 1fr auto; }
 .skewbar {
   background: var(--crit); color: #fff; padding: 5px 12px;
   font-size: 11.5px; font-weight: 600; text-align: center;
@@ -158,7 +173,7 @@ button, select, input, textarea { font-family: inherit; font-size: inherit; colo
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
 /* ---------- panes ---------- */
-.body { display: grid; grid-template-columns: var(--wL, 264px) 4px 1fr 4px var(--wR, 300px);
+.body { display: grid; grid-template-columns: var(--wL, 300px) 4px 1fr 4px var(--wR, 340px);
         min-height: 0; }
 .pane { background: var(--panel); min-height: 0; display: flex; flex-direction: column; }
 .pane-l { border-right: 1px solid var(--line); }
@@ -556,3 +571,106 @@ body.resizing-v { cursor: row-resize; user-select: none; }
   border-bottom: 1px dotted var(--line-2);
 }
 .methodref a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
+
+/* ------------------------------------------------------------------ toolbar
+ *
+ * The thing this UI did not have. Every action lived inside whichever panel
+ * happened to be open, so "what can I do right now" had no answer anywhere on
+ * screen — you had to select an analysis before you could find Run.
+ *
+ * Contextual rather than a fixed ribbon: a ribbon that shows everything shows
+ * mostly things that do not apply, which is what makes one feel cluttered.
+ */
+.toolbar {
+  display: flex; align-items: stretch; gap: 0;
+  height: var(--h-tool); background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  padding: 0 6px; overflow-x: auto; scrollbar-width: none;
+}
+.toolbar::-webkit-scrollbar { display: none; }
+.tgroup { display: flex; align-items: center; gap: 2px; padding: 0 6px; }
+.tgroup + .tgroup { border-left: 1px solid var(--line); }
+.tgroup-sp { flex: 1 1 auto; }
+
+.tbtn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: var(--h-ctl); padding: 0 8px; border: 1px solid transparent;
+  border-radius: var(--r); background: transparent; color: var(--text);
+  font: 500 var(--t-body)/1 var(--ui); cursor: pointer; white-space: nowrap;
+}
+.tbtn svg, .tbtn .gl { width: var(--ico); height: var(--ico); flex: none; }
+.tbtn:hover:not(:disabled) { background: var(--panel-3); }
+.tbtn[aria-pressed="true"] { background: var(--panel-4); border-color: var(--line-2); }
+.tbtn:disabled { opacity: .35; cursor: default; }
+.tbtn.primary { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.tbtn.primary:hover:not(:disabled) { filter: brightness(1.08); }
+.tbtn.icononly { padding: 0 6px; }
+.tsel {
+  height: var(--h-ctl); border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--panel-2); color: var(--text);
+  font: var(--t-body)/1 var(--ui); padding: 0 4px;
+}
+.trange { width: 92px; accent-color: var(--accent); }
+
+/* ---------------------------------------------------------------- statusbar
+ *
+ * Solver, mesh and job state were spread across a chip in the header, a tree
+ * row, and a collapsed drawer at the bottom. One line, always present.
+ */
+.statusbar {
+  display: flex; align-items: center; gap: 14px;
+  height: 24px; padding: 0 10px; background: var(--panel-2);
+  border-top: 1px solid var(--line);
+  font: var(--t-micro)/1 var(--ui); color: var(--dim);
+}
+.statusbar b { color: var(--text); font-weight: 600; }
+.statusbar .sdot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--faint);
+  display: inline-block; margin-right: 5px;
+}
+.sdot.ok { background: var(--ok); }
+.sdot.run { background: var(--run); animation: spulse 1.1s ease-in-out infinite; }
+.sdot.bad { background: var(--crit); }
+@keyframes spulse { 50% { opacity: .35; } }
+.statusbar .sp { flex: 1; }
+.statusbar button {
+  border: 0; background: transparent; color: var(--dim); cursor: pointer;
+  font: var(--t-micro)/1 var(--ui); padding: 2px 4px;
+}
+.statusbar button:hover { color: var(--text); text-decoration: underline; }
+
+/* ------------------------------------------------------- explanatory text
+ *
+ * Explanations are read once and then re-read forever against the reader's
+ * will, because they sit above the numbers and push them down. They are kept
+ * — an engineer new to a feature needs them — but folded away by default.
+ * Warnings are NOT hidden: those are state, not teaching.
+ */
+.sec > .lbl { display: flex; align-items: center; gap: 6px; }
+.helpq {
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--dim);
+  width: 15px; height: 15px; line-height: 1; border-radius: 50%;
+  font-size: 10px; cursor: pointer; padding: 0; flex: none;
+}
+.helpq:hover { border-color: var(--line-2); color: var(--text); }
+.helpq[aria-expanded="true"] { background: var(--panel-4); color: var(--text); }
+body:not(.show-help) .sec:not(.show-help) .hint:not(.warn):not(.bad):not(.good) { display: none; }
+body.show-help .helpq { background: var(--panel-4); color: var(--text); }
+
+
+/* --------------------------------------------------------------- hierarchy */
+.lbl {
+  font: 600 var(--t-micro)/1.2 var(--ui); letter-spacing: .06em;
+  text-transform: uppercase; color: var(--faint);
+}
+.tnode { font-size: var(--t-body); }
+.tnode .icon, .tnode svg { width: var(--ico); height: var(--ico); }
+/* A study is a major object and reads like one; its contents do not. */
+.tnode.analysis { font-size: var(--t-lead); font-weight: 600; }
+.tnode.analysis .nm { color: var(--text); }
+.tnode .mt { font-size: var(--t-micro); }
+.fld dt { font-size: var(--t-body); }
+.fld dd { font-size: var(--t-num); }
+.frm { font-size: var(--t-body); }
+.hint { font-size: var(--t-body); }
