@@ -242,6 +242,13 @@ button.tw:hover { color: var(--accent); }
 .tnode:hover .tadd, .tnode[aria-selected="true"] .tadd, .tadd:focus-visible { opacity: 1; }
 .tadd:hover { color: var(--accent); border-color: var(--line-2); background: var(--panel); }
 
+/* The visibility eye. Always visible once a solid is hidden — otherwise the
+   only clue that a part is missing from the viewport is the part missing from
+   the viewport. */
+.teye { font-size: 10px; }
+.tnode.ishidden .nm, .tnode.ishidden .mt { opacity: 0.45; }
+.tnode.ishidden .teye, .teye.off { opacity: 1; color: var(--dim); }
+
 .tempty {
   color: var(--faint); font-size: 11px; padding-top: 1px; padding-bottom: 3px;
   padding-right: 8px; line-height: 1.35;

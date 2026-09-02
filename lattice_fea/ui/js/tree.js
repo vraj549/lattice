@@ -10,7 +10,7 @@
 // no way to collapse a finished study out of the way, and "Solution" was a
 // label rather than a thing you could open.
 
-import { el, needsLoads, analysisStatus, solutionItems, meshIssues,
+import { el, needsLoads, analysisStatus, solutionItems, meshIssues, solidName,
          loadMeta, excitationMeta, boltSizeOf, engineOf,
          engineBlockers, ENGINE_LABEL } from "./ui.js";
 import { icon, RESULT_ICONS } from "./icons.js";
@@ -28,10 +28,15 @@ function buildModel(S, A) {
 
   const solids = geo.solids.map((sd) => {
     const mat = setup.materials.find((m) => m.id === setup.assignments[String(sd.tag)]);
+    const hidden = S.hiddenSolids.has(sd.tag);
     return {
       key: `so:${sd.tag}`, kind: "solid", id: sd.tag, icon: "solid",
-      label: sd.name || `Solid ${sd.tag}`,
+      label: solidName(S, sd.tag),
       meta: mat ? mat.name : "no material", warn: !mat,
+      hidden,
+      // an eye on the row itself: hunting for a solid's panel to un-hide it
+      // is the wrong way round when you are working through a stack
+      eye: { hidden, onToggle: () => A.toggleSolid(sd.tag) },
     };
   });
   if (geo.interfaces.length) {
@@ -240,7 +245,7 @@ function emit(frag, node, depth, S, A) {
     && String(S.selection.id) === String(node.id);
 
   const row = el("div", {
-    class: `tnode${node.cls ? " " + node.cls : ""}`,
+    class: `tnode${node.cls ? " " + node.cls : ""}${node.hidden ? " ishidden" : ""}`,
     role: "treeitem", "data-key": node.key,
     "aria-selected": selected ? "true" : "false",
     "aria-expanded": expandable ? String(open) : false,
@@ -273,11 +278,22 @@ function emit(frag, node, depth, S, A) {
                   node.badge.text));
   }
   if (node.meta) row.append(el("span", { class: `mt${node.warn ? " warn" : ""}` }, node.meta));
-  if (node.insert?.length) {
-    row.append(el("span", { class: "tact" },
-      el("button", { class: "tadd", tabindex: "-1", title: "Insert",
+  if (node.eye || node.insert?.length) {
+    const acts = el("span", { class: "tact" });
+    if (node.eye) {
+      acts.append(el("button", {
+        class: `tadd teye${node.eye.hidden ? " off" : ""}`, tabindex: "-1",
+        title: node.eye.hidden ? "Show" : "Hide",
+        "aria-pressed": String(!node.eye.hidden),
+        onclick: (e) => { e.stopPropagation(); node.eye.onToggle(); } },
+        node.eye.hidden ? "\u25cb" : "\u25c9"));
+    }
+    if (node.insert?.length) {
+      acts.append(el("button", { class: "tadd", tabindex: "-1", title: "Insert",
         onclick: (e) => { e.stopPropagation(); A.openInsertMenu(e.currentTarget, node.insert); } },
-        "+")));
+        "+"));
+    }
+    row.append(acts);
   }
   frag.append(row);
 

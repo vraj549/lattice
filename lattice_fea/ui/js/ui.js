@@ -279,6 +279,23 @@ function renderPanelBody(S, A, put, kind, id) {
   }
 }
 
+/**
+ * What a solid is called.
+ *
+ * The name lives in `setup.solid_names`, not on the geometry: geometry is
+ * re-derived from the STEP on every import, and `setup` is where the user's
+ * own data belongs — it already keys material assignments by the same tag.
+ * A name set here survives a reload, and a re-import keeps it as long as the
+ * tag does.
+ */
+export function solidName(S, tag) {
+  const t = String(tag);
+  const named = S.project?.setup?.solid_names?.[t];
+  if (named) return named;
+  const sd = (S.project?.geometry?.solids || []).find((x) => String(x.tag) === t);
+  return sd?.name || `Solid ${t}`;
+}
+
 const sec = (label, ...kids) => el("div", { class: "sec" },
   label ? el("span", { class: "lbl" }, label) : null, ...kids);
 
@@ -417,7 +434,9 @@ function panelSolid(S, A, put, tag) {
 
   const hidden = S.hiddenSolids.has(s.tag);
   const custom = setup.materials.filter((m) => !m.id.startsWith("lib-"));
-  put(s.name || `Solid ${tag}`, `${s.faces.length} faces`,
+  put(solidName(S, tag), `${s.faces.length} faces`,
+    sec("Definition",
+      textInput("Name", solidName(S, tag), (v) => A.renameSolid(s.tag, v))),
     sec("Material",
       selInput("Assign material", mid.startsWith("custom") ? mid : (mid ? `lib:${findLib(S, mid)}` : ""), opts,
         (v) => A.assignMaterial(tag, v)),
@@ -431,10 +450,22 @@ function panelSolid(S, A, put, tag) {
     sec("Properties", dl([
       ["Volume", `${fmtVal(s.volume)} mm³`],
       ["Mass", massOf(S, s)],
+      ["Tag", String(s.tag)],
     ])),
-    sec("Display", el("div", { class: "btnrow" },
-      el("button", { class: "btn", onclick: () => A.toggleSolid(s.tag) },
-        hidden ? "Show solid" : "Hide solid"))));
+    sec("Display",
+      el("div", { class: "btnrow" },
+        el("button", { class: "btn", onclick: () => A.toggleSolid(s.tag) },
+          hidden ? "Show solid" : "Hide solid"),
+        el("button", { class: "btn", onclick: () => A.isolateSolid(s.tag) },
+          "Isolate"),
+        S.hiddenSolids.size
+          ? el("button", { class: "btn", onclick: () => A.showAllSolids() },
+              `Show all (${S.hiddenSolids.size} hidden)`)
+          : null),
+      el("div", { class: "hint" },
+        "Visibility is for looking and picking — a hidden solid is still in "
+        + "the model and still solved. Hidden faces cannot be clicked, which "
+        + "is the point when the face you want is inside a stack.")));
 }
 
 function findLib(S, mid) {
@@ -462,14 +493,14 @@ function massOf(S, s) {
 
 function panelConnections(S, A, put) {
   const geo = S.project.geometry;
-  const solidName = (t) => geo.solids.find((s) => s.tag === t)?.name || `Solid ${t}`;
+  const nameOf = (t) => solidName(S, t);
   put("Connections", `${geo.interfaces.length} bonded`,
     sec("Bonded (conformal)",
       el("div", { class: "hint" },
         "Shared faces found while importing. The mesh is continuous across " +
         "them — parts are bonded with no tie constraints needed."),
       dl(geo.interfaces.map((i) => [
-        `Face ${i.face}`, `${solidName(i.solids[0])} ↔ ${solidName(i.solids[1])}`]))),
+        `Face ${i.face}`, `${nameOf(i.solids[0])} ↔ ${nameOf(i.solids[1])}`]))),
     sec(null, el("div", { class: "hint" },
       "Parts that only touch without sharing a face are NOT connected. " +
       "The mesh step warns if the model comes out in disconnected pieces.")));
@@ -841,7 +872,7 @@ function panelTie(S, A, put, id) {
           t.slave_faces?.length ? `Re-pick faces (${t.slave_faces.length})` : "Pick faces"))),
     sec("Master solid",
       selInput("Glued onto", String(t.master_solid ?? ""),
-        [["", "— choose —"], ...geo.solids.map((s) => [String(s.tag), s.name || `Solid ${s.tag}`])],
+        [["", "— choose —"], ...geo.solids.map((x) => [String(x.tag), solidName(S, x.tag)])],
         (v) => A.mutate(() => { t.master_solid = v ? Number(v) : null; }))),
     sec(null, dupRow(A, "ties", id, "tie"),
         delBtn("tie", () => A.removeItem("ties", id))));
@@ -859,12 +890,12 @@ function panelContact(S, A, put, id) {
   const c = (S.project.setup.contacts || []).find((x) => x.id === id);
   if (!c) return put("Contact", "");
   const geo = S.project.geometry;
-  const solidName = (t) => geo.solids.find((s) => s.tag === t)?.name || `Solid ${t}`;
+  const nameOf = (t) => solidName(S, t);
   const linearFriction = c.kind === "friction" && (c.solve || "linear") === "linear";
   const sliding = ["frictionless", "friction", "noseparation"].includes(c.kind)
                   && !linearFriction;
 
-  put(c.name || "Contact", (c.solids || []).map(solidName).join(" ↔ "),
+  put(c.name || "Contact", (c.solids || []).map(nameOf).join(" ↔ "),
     sec("Definition",
       textInput("Name", c.name, (v) => A.mutate(() => { c.name = v; })),
       selInput("Behaviour", c.kind || "bonded", [
@@ -901,8 +932,8 @@ function panelContact(S, A, put, id) {
               + "joint slips and you need to know how far.")
         : null),
     sec("Faces", dl([
-      ["Side A", `${(c.faces_a || []).length} face(s) on ${solidName((c.solids || [])[0])}`],
-      ["Side B", `${(c.faces_b || []).length} face(s) on ${solidName((c.solids || [])[1])}`],
+      ["Side A", `${(c.faces_a || []).length} face(s) on ${nameOf((c.solids || [])[0])}`],
+      ["Side B", `${(c.faces_b || []).length} face(s) on ${nameOf((c.solids || [])[1])}`],
       ["Interface area", c.area ? `${fmtVal(c.area)} mm²` : "—"],
     ]),
       el("div", { class: "btnrow" },

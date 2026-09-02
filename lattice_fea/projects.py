@@ -162,6 +162,9 @@ def default_setup() -> dict:
             "p_G": None,            # clamped-material bearing limit, MPa
         },
         "probes": [],           # [{id, name, x,y,z}]  (mm)
+        # solid names live here, keyed by tag, next to the material
+        # assignments that are already keyed the same way
+        "solid_names": {},
         "mesh": {"size_mm": None, "curvature": 16, "order": 2,
                  "elements": "tet", "local": []},
         "analyses": [],         # each: {id, type, name, config, supports[], loads[]}

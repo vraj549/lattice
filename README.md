@@ -94,6 +94,13 @@ examples with `python examples/make_examples.py`).
    ties are added here too.
 4. **Analyses** — *+ add* opens a dialog: static, modal, harmonic, random or
    shock.
+
+Solids can be renamed from their panel — the name is yours and is saved with
+the project — and hidden from the eye on each tree row, or with *Isolate* /
+*Show all*. Hiding is for looking and picking: a hidden solid is still in the
+model and still solved, but its faces cannot be clicked, which is what you
+want when the face you need is inside a stack. *Explode* in the viewport
+toolbar does the same job by pulling the parts apart instead.
    Each analysis owns its own supports and loads, so only what that study needs
    appears beneath it. A base-driven harmonic or a random study is driven
    through its supports, so it offers no loads at all.

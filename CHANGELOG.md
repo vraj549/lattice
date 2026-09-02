@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.22.1
+
+**Naming and visibility for solids.**
+
+Rename a solid from its panel. The name is stored in `setup.solid_names` keyed
+by tag — with the material assignments, which are already keyed the same way —
+so it is saved with the project and is not lost when geometry is re-derived on
+import. Every place that says what a part is called now goes through one
+function, so a renamed solid reads correctly in the tree, the contact panel,
+the interface list, the tie picker, and the auto-generated name of a detected
+contact.
+
+Hide and show from an **eye on each tree row**, rather than having to select
+each solid and find the button in its panel — the wrong way round when you are
+working through a stack. Hidden rows dim and keep their eye visible, so the
+only clue that a part is missing is not the part missing from the viewport.
+**Isolate** shows one and hides the rest; **Show all** comes back, and says how
+many are hidden.
+
+Visibility stays session state, not model state: it changes what you can look
+at and click, never what is solved. Hidden faces were already unpickable — the
+raycast filters on visibility — which is exactly the point when the face you
+want is buried.
+
+
 ## 0.22.0
 
 ### Friction without a Newton loop

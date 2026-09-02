@@ -1,6 +1,6 @@
 import { api } from "./api.js";
 import { Viewer } from "./viewer.js";
-import { renderPanel, defaultAnalysis, solutionItems, el,
+import { renderPanel, defaultAnalysis, solutionItems, el, solidName,
          panelIsFrozen, setPanelThaw } from "./ui.js";
 import { renderTree, installTreeKeys } from "./tree.js";
 import { mapBoltToTarget, defaultReferenceFace, describeFace,
@@ -148,7 +148,7 @@ const A = {
     for (const pr of pairs) {
       const key = pr.faces_a.join() + "|" + pr.faces_b.join();
       if (seen.has(key)) continue;
-      const nm = (t) => geo.solids.find((x) => x.tag === t)?.name || ("Solid " + t);
+      const nm = (t) => solidName(S, t);
       setup.contacts.push({
         id: uid(), name: nm(pr.solids[0]) + " \u2194 " + nm(pr.solids[1]),
         kind: "bonded", mu: 0.2, solve: "linear", solids: pr.solids,
@@ -275,6 +275,37 @@ const A = {
     else S.hiddenSolids.add(tag);
     viewer.setHiddenSolids(S.hiddenSolids);
     refresh();
+  },
+
+  /** Show this one and nothing else. The fastest way to a buried face. */
+  isolateSolid(tag) {
+    const all = (S.project.geometry.solids || []).map((s) => s.tag);
+    S.hiddenSolids = new Set(all.filter((t) => t !== tag));
+    viewer.setHiddenSolids(S.hiddenSolids);
+    refresh();
+  },
+
+  showAllSolids() {
+    S.hiddenSolids = new Set();
+    viewer.setHiddenSolids(S.hiddenSolids);
+    refresh();
+  },
+
+  /**
+   * Rename a solid.
+   *
+   * Stored in setup.solid_names, keyed by tag, because geometry is re-derived
+   * from the STEP on import and setup is the user's own data — the same place
+   * material assignments already live. Blank clears it back to "Solid <tag>"
+   * rather than storing an empty string that would render as nothing.
+   */
+  renameSolid(tag, name) {
+    const names = (S.project.setup.solid_names ||= {});
+    const v = String(name || "").trim();
+    if (v) names[String(tag)] = v;
+    else delete names[String(tag)];
+    A.saveOnly();
+    renderTree(S, A);
   },
 
   // ---- picking ----
@@ -1389,7 +1420,7 @@ function syncExplodeControl() {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.22.0";
+const UI_BUILD = "0.22.1";
 
 function checkVersionSkew() {
   const server = S.config?.version;
