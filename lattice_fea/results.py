@@ -71,7 +71,8 @@ def build_results(run_dir: str, expect_bbox=None, expect_volume=None) -> dict:
                        ("tables.txt", "tables"), ("bolt_forces.csv", "bolt_forces"),
                        ("mode_probes.csv", "mode_probes"),
                        ("mode_bolts.csv", "mode_bolts"),
-                       ("contact_check.csv", "contact_check")]:
+                       ("contact_check.csv", "contact_check"),
+                       ("participation_factors.csv", "part_factors")]:
         p = os.path.join(run_dir, fname)
         if os.path.isfile(p):
             try:

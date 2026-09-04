@@ -297,3 +297,89 @@ def test_axis_selects_the_direction():
     assert max(x["rows"], key=lambda r: r["force_N"])["mode"] == 2
     assert max(y["rows"], key=lambda r: r["force_N"])["mode"] == 3
     assert x["axis"] == "X" and y["axis"] == "Y"
+
+
+# ------------------------------------------- rigid vs periodic (RG 1.92 Rev 2)
+
+def test_alpha_is_the_lindley_yow_ratio():
+    assert shock.rigid_fraction(20.0, 20.0) == pytest.approx(1.0)   # at the ZPA
+    assert shock.rigid_fraction(40.0, 20.0) == pytest.approx(0.5)   # half rigid
+    assert shock.rigid_fraction(200.0, 20.0) == pytest.approx(0.1)  # resonant
+    # softer than the input: it rings after the event, which is periodic
+    assert shock.rigid_fraction(5.0, 20.0) == 0.0
+    assert shock.rigid_fraction(0.0, 20.0) == 0.0
+
+
+def test_an_all_rigid_basis_gives_newtons_second_law():
+    """The identity that makes the algebraic sum obviously right.
+
+    If every mode has come down to the ZPA, nothing resonates: the model is a
+    rigid body on a shaking base, and the load into the supports is its whole
+    mass times the acceleration. Nothing less.
+
+    SRSS cannot produce this. It is the check that the previous version failed.
+    """
+    zpa = 20.0
+    modes = [{"n": i, "f": 4000.0 + 500 * i, "m_gene": 1.0,
+              "eff": [0, 0, 0.25]} for i in range(4)]
+    cfg = {"input": "spectrum", "spec": [[10, zpa], [20000, zpa]],
+           "rule": "srss", "damping": 0.05}
+    out = shock.modal_table(modes, cfg, total_mass=0.8, axis=2)
+
+    assert out["mass_captured"] == pytest.approx(1.0)
+    assert all(r["alpha"] == pytest.approx(1.0) for r in out["rows"])
+    assert out["force_N"] == pytest.approx(0.8 * zpa * shock.G_MM)
+    assert out["force_periodic_N"] == pytest.approx(0.0)
+    assert out["rigid_share"] == pytest.approx(1.0)
+    # and the old behaviour would have been wrong by sqrt(4)
+    assert out["force_N"] == pytest.approx(2.0 * out["force_modal_N"], rel=1e-9)
+
+
+def test_a_resonant_mode_stays_mostly_periodic():
+    """The other end: one sharply amplified mode is not a rigid response and
+    must not be added algebraically to anything."""
+    modes = [{"n": 1, "f": 120.0, "m_gene": 1.0, "eff": [0, 0, 0.9]}]
+    cfg = {"input": "spectrum", "spec": [[10, 20.0], [120, 400.0], [20000, 20.0]],
+           "rule": "srss", "damping": 0.05}
+    out = shock.modal_table(modes, cfg, 0.5, 2)
+    assert out["rows"][0]["alpha"] < 0.1
+    assert out["force_periodic_N"] > 5 * out["force_rigid_N"]
+
+
+def test_one_mode_is_unchanged_by_the_split():
+    """Splitting a single mode and recombining it must give it back — alpha^2
+    plus (1 - alpha^2) is 1, so this is a check that the split is a rotation
+    and not a rescaling."""
+    modes = [{"n": 1, "f": 120.0, "m_gene": 1.0, "eff": [0, 0, 1.0]}]
+    out = shock.modal_table(modes, CFG, 0.5, 2)
+    assert out["missing_mass"] == pytest.approx(0.0)
+    assert out["force_N"] == pytest.approx(out["rows"][0]["force_N"])
+
+
+def test_missing_mass_is_rigid_and_adds_algebraically():
+    """It is the residual mass riding at the ZPA — in phase with the input and
+    with every other rigid term, so it is summed, not SRSS'd, with them."""
+    zpa = 20.0
+    modes = [{"n": 1, "f": 8000.0, "m_gene": 1.0, "eff": [0, 0, 0.6]}]
+    cfg = {"input": "spectrum", "spec": [[10, zpa], [20000, zpa]],
+           "rule": "srss", "damping": 0.05}
+    out = shock.modal_table(modes, cfg, 1.0, 2)
+    assert out["missing_mass"] == pytest.approx(0.4)
+    # 0.6 rigid + 0.4 missing = the whole mass at the ZPA
+    assert out["force_rigid_N"] == pytest.approx(1.0 * zpa * shock.G_MM)
+    assert out["force_N"] == pytest.approx(1.0 * zpa * shock.G_MM)
+
+
+def test_a_mode_on_the_plateau_is_rigid_despite_rounding():
+    """Log-log interpolation returns 19.999999999999996 for a plateau of 20.
+
+    An exact `S_a < zpa` test therefore made every mode sitting on the ZPA —
+    which is most of a high-frequency basis — fully periodic, and silently
+    turned the rigid correction off. This is that regression.
+    """
+    cfg = {"input": "spectrum", "spec": [[10, 20.0], [20000, 20.0]],
+           "rule": "srss", "damping": 0.05}
+    got = shock.spectrum_for(cfg, [4000.0])
+    assert got["srs"][0] != got["zpa"]              # the rounding is real
+    assert got["srs"][0] == pytest.approx(got["zpa"], rel=1e-12)
+    assert shock.rigid_fraction(got["srs"][0], got["zpa"]) == pytest.approx(1.0)

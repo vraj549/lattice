@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.25.0
+
+A methods review against the standards the methods claim to follow. Three
+defects, all of which made the tool report something more comfortable than the
+truth.
+
+### Rigid responses were being combined statistically
+
+A mode whose spectral acceleration has come down to the ZPA does not resonate —
+it rides with the input. Its response is in phase with the input and with every
+other rigid response, so **rigid responses add algebraically**; only resonant
+ones are combined statistically, and the two then combine as
+`√(rigid² + periodic²)`. That is US NRC RG 1.92 Rev. 2. Lattice SRSS'd
+everything, which replaces a sum of *N* equal rigid terms with `√N` of them.
+
+On a representative bolted-plate shock the response is **82% rigid**, and the
+interface load came out **21% low** — in the non-conservative direction. High-
+frequency shock is exactly where this is worst, which is to say pyroshock.
+
+The rigid fraction per mode is Lindley-Yow's `α = ZPA/S_a` where `S_a ≥ ZPA`,
+0 below. The missing-mass term is a rigid response and now joins the rigid sum
+rather than being SRSS'd in — which gives the identity that makes the whole
+thing checkable: **if every mode is rigid, the answer is the model's mass times
+the ZPA.** Newton's second law. SRSS cannot produce it, and there is now a test
+that demands it.
+
+Writing that test immediately caught a second bug in the fix: log-log
+interpolation returns 19.999999999999996 for a plateau of 20, and an exact
+`S_a < ZPA` comparison therefore classified every mode sitting *on* the ZPA —
+most of a high-frequency basis — as fully periodic, silently turning the whole
+correction back off. A physical branch cannot hinge on the last bit of a float.
+
+The algebraic sum needs to know which way each mode moves, and effective mass
+is a square, so it gives `|Γ|` and no sign. Lattice now asks the solver for the
+participation factors too. With them, probe displacements and bolt forces are
+summed correctly; without them those two fall back to summing magnitudes — an
+upper bound — and say so. The interface load never needed signs: it is mass
+times acceleration, all in the direction of the input.
+
+### A check that could not fail
+
+The bolt sizing reported a "slip margin" of `μ·n·F_Kmin_service / F_Q`. But
+`F_Kmin_service` is `F_KR` **by construction** — `F_Mmin` was defined as `F_KR`
+plus the losses that get subtracted back off to produce it — and `F_KR` is at
+least `S_slip·F_Q/(μ·n)`. So the margin was `S_slip` echoed back, and the
+"joint slips" warning attached to it could never fire for any joint whatsoever.
+
+A test that cannot fail reads as verification while verifying nothing. Worse,
+one of the unit tests asserted the tautology (`slip_margin >= 1.0`, "sized for
+no slip, so it must not slip") and passed forever. Both are gone. Real slip
+verification reads interface tractions off a preloaded run and has been there
+since 0.22.0.
+
+### No fatigue check, in a tool for preloaded joints
+
+The docs claimed "a simple alternating check". There wasn't one. A preloaded
+bolt usually fails in fatigue rather than tension, and Φ is precisely what
+governs it. Now checked:
+
+```
+σ_a   = Φ·F_A / (2 A_s)                    external load taken as fully alternating
+σ_ASV = 0.85 (150/d + 45) MPa              rolled thread, VDI 2230-1:2015 §5.5.3
+```
+
+`σ_ASV` **does not depend on property class** — a 12.9 bolt is no better in
+fatigue than an 8.8 one, which is the most commonly missed fact about bolted
+joints, and there is a test that pins it. A joint with a feasible preload
+window is normally fatigue-safe by a wide margin because Φ is small; that is
+the reason preloading works, and it is also a test.
+
+### Also
+
+- Documented what is *not* modelled rather than leaving it implied: no thermal
+  `ΔF_Vth` term, and the residual clamp is reported rather than checked.
+- The shock panel shows the rigid and periodic parts and each mode's α, so the
+  split is visible instead of being an internal detail.
+
+
 ## 0.24.0
 
 ### The interface had no command surface

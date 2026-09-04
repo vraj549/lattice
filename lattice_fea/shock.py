@@ -34,6 +34,10 @@ G_MM = 9810.0     # 1 g in mm/s^2
 
 TRAPEZOID_RISE = 0.1        # fraction of the pulse spent rising, and falling
 
+# How close to the ZPA counts as being on it. Interpolation noise is ~1e-15
+# relative; a real spectrum's plateau is flat to far better than 1e-6.
+RIGID_TOL = 1e-6
+
 # MIL-STD-810 Method 516 classical pulses. Each returns a(t)/A on [0, 1] of
 # the pulse duration, plus the velocity change as a fraction of A*tau, which
 # fixes the low-frequency asymptote of the SRS and is the cleanest check that
@@ -255,6 +259,37 @@ def participation(m_eff: float, m_gene: float) -> float:
     return math.sqrt(m_eff / m_gene)
 
 
+def rigid_fraction(S_a: float, zpa: float) -> float:
+    """Lindley-Yow: how much of a mode's response follows the base rigidly.
+
+        alpha = ZPA / S_a   where S_a >= ZPA,   0 otherwise
+
+    A mode whose spectral acceleration has come down to the ZPA does not
+    resonate — it rides with the input, so alpha = 1. One amplified to twice
+    the ZPA is half rigid and half resonant. One below the ZPA is softer than
+    the input and rings after it, which is periodic, so alpha = 0.
+
+    This matters because **rigid responses are in phase with each other and
+    with the input, so they add algebraically**, while periodic ones peak at
+    different instants and are combined statistically (US NRC RG 1.92 Rev. 2).
+    Treating the whole basis as periodic and SRSS-ing it, which is what this
+    module did until now, replaces a sum of N equal rigid terms with sqrt(N)
+    of them — and a high-frequency shock is mostly rigid modes, so it is the
+    pyroshock case that suffers most.
+    """
+    if S_a <= 0 or zpa <= 0:
+        return 0.0
+    # Compared with a tolerance, never for equality. A mode sitting ON the
+    # plateau is the commonest case there is, and log-log interpolation
+    # returns 19.999999999999996 for a spectrum whose plateau is 20 — an
+    # exact test made every such mode fully periodic and quietly turned this
+    # whole correction off. A physical branch cannot hinge on the last bit of
+    # a float.
+    if S_a >= zpa * (1.0 - RIGID_TOL):
+        return min(zpa / S_a, 1.0)
+    return 0.0
+
+
 def modal_table(modes, cfg: dict, total_mass: float, axis: int) -> dict:
     """Per-mode shock response for base excitation along one axis.
 
@@ -268,6 +303,7 @@ def modal_table(modes, cfg: dict, total_mass: float, axis: int) -> dict:
     fs = [m["f"] for m in modes if m.get("f", 0) > 0]
     spec = spectrum_for(cfg, fs)
     rule = cfg.get("rule", "srss")
+    zpa = float(spec["zpa"])
 
     k = 0
     for m in modes:
@@ -279,39 +315,53 @@ def modal_table(modes, cfg: dict, total_mass: float, axis: int) -> dict:
         m_eff = frac * total_mass
         gamma = participation(m_eff, float(m.get("m_gene") or 0.0))
         w = 2.0 * math.pi * f
+        a = rigid_fraction(S_a, zpa)
+        force = m_eff * S_a * G_MM
         rows.append({
             "mode": m.get("n"), "f": f,
             "eff_frac": frac, "m_eff": m_eff,
-            "srs_g": S_a, "gamma": gamma,
+            "srs_g": S_a, "gamma": gamma, "alpha": a,
             # peak modal coordinate: S_d = S_a / omega^2
             "q": gamma * S_a * G_MM / (w * w) if w else 0.0,
-            # this mode's share of the load into the supports
-            "force_N": m_eff * S_a * G_MM,
+            # this mode's share of the load into the supports, split into the
+            # part that rides with the base and the part that resonates
+            "force_N": force,
+            "force_rigid_N": a * force,
+            "force_periodic_N": math.sqrt(max(1.0 - a * a, 0.0)) * force,
         })
 
     captured = sum(r["eff_frac"] for r in rows)
     missing = max(1.0 - captured, 0.0)
     # The truncated modes are stiffer than the spectrum's knee, so they move
-    # with the base: their contribution is the residual mass riding at the
-    # zero-period acceleration. Standard missing-mass correction; SRSS'd in
-    # with the periodic terms.
-    missing_force = missing * total_mass * spec["zpa"] * G_MM
+    # with the base: the residual mass riding at the zero-period acceleration.
+    # It is a RIGID response and joins the other rigid terms algebraically.
+    missing_force = missing * total_mass * zpa * G_MM
 
-    terms = [r["force_N"] for r in rows]
+    # Rigid terms are all the same sign here — mass times an acceleration, all
+    # in the direction of the input — so the algebraic sum needs no sign
+    # information. It has a check built into it: if every mode were rigid the
+    # total would be the whole model's mass times the ZPA, which is Newton's
+    # second law and nothing else.
+    rigid = sum(r["force_rigid_N"] for r in rows) + missing_force
+    periodic = combine([r["force_periodic_N"] for r in rows], rule)
+    total = math.hypot(rigid, periodic)
+
     return {
         "rows": rows,
         "axis": "XYZ"[axis],
         "rule": rule,
         "input": {k: v for k, v in spec.items() if k != "srs"},
         "srs_at_modes": spec["srs"],
-        "force_N": combine(terms + [missing_force], rule),
-        "force_modal_N": combine(terms, rule),
+        "force_N": total,
+        "force_rigid_N": rigid,
+        "force_periodic_N": periodic,
+        "force_modal_N": combine([r["force_N"] for r in rows], rule),
+        "rigid_share": (rigid / total) if total > 0 else 0.0,
         "mass_captured": captured,
         "missing_mass": missing,
         "missing_force_N": missing_force,
         "total_mass_t": total_mass,
     }
-
 
 # ------------------------------------------------- reading a finished run
 
@@ -397,6 +447,50 @@ def _per_mode(block: dict, want, label_re=None) -> dict:
             for lab, per in out.items()}
 
 
+def gamma_signs(meta: dict, axis: int) -> dict:
+    """{mode: +1/-1} from the solver's participation factors, if it gave them.
+
+    Effective mass is a square, so it yields |Gamma| and nothing about which
+    way the mode moves. The rigid part of a response is summed algebraically,
+    so for anything that is not a magnitude by construction — a displacement,
+    a bolt force — the sign is the difference between adding and cancelling.
+    """
+    col = ("FACT_PARTICI_DX", "FACT_PARTICI_DY", "FACT_PARTICI_DZ")[axis]
+    out = {}
+    for b in _blocks(meta, "part_factors"):
+        n_i = _col(b, "NUME_MODE", "NUME_ORDRE")
+        g_i = _col(b, col)
+        if g_i < 0:
+            continue
+        for k, row in enumerate(b.get("rows", [])):
+            v = row[g_i] if isinstance(row[g_i], (int, float)) else 0.0
+            n = int(row[n_i]) if n_i >= 0 and isinstance(
+                row[n_i], (int, float)) else k + 1
+            out[n] = -1.0 if v < 0 else 1.0
+    return out
+
+
+def split_combine(terms, alpha, rule: str, signs=None) -> "tuple":
+    """(total, rigid, periodic) for a set of per-mode contributions.
+
+    `terms` are the full modal contributions, `alpha` the rigid fraction of
+    each. Rigid parts add algebraically — with their signs where those are
+    known — and periodic parts combine statistically. RG 1.92 Rev. 2.
+
+    Without signs the rigid sum is taken on magnitudes, which is an upper
+    bound rather than the answer: modes that would have cancelled are made to
+    add. `response` says so rather than presenting it as exact.
+    """
+    rigid = 0.0
+    per = []
+    for i, (t, a) in enumerate(zip(terms, alpha)):
+        sg = (signs or {}).get(i, 1.0) if signs else 1.0
+        rigid += sg * a * t
+        per.append(math.sqrt(max(1.0 - a * a, 0.0)) * t)
+    p = combine(per, rule)
+    return math.hypot(rigid, p), rigid, p
+
+
 def probe_shapes(meta: dict) -> dict:
     out = {}
     for b in _blocks(meta, "mode_probes"):
@@ -441,13 +535,32 @@ def response(meta: dict, cfg: dict) -> dict:
             "mass is added at the ZPA — extract more modes to rely on this.")
 
     q = {r["mode"]: r["q"] for r in out["rows"]}
+    alpha = {r["mode"]: r["alpha"] for r in out["rows"]}
+    sgn = gamma_signs(meta, axis)
+    order = [r["mode"] for r in out["rows"]]
+    out["signed"] = bool(sgn)
+    if not sgn and out["rigid_share"] > 0.3:
+        warnings.append(
+            f"The response is {100 * out['rigid_share']:.0f}% rigid, and this "
+            "run has no participation factors, so the rigid part of the probe "
+            "and bolt figures below is summed on magnitudes. Those two are "
+            "upper bounds; the interface load is exact either way.")
+
+    def split(per_mode):
+        """(total, rigid, periodic) for one quantity across the basis."""
+        terms = [per_mode(m) for m in order]
+        al = [alpha[m] for m in order]
+        sg = {i: sgn.get(m, 1.0) for i, m in enumerate(order)} if sgn else None
+        # the mode shape carries its own sign; Gamma's is what was missing
+        return split_combine([abs(t) for t in terms], al, rule,
+                             {i: (sg[i] if sg else 1.0)
+                              * (1.0 if terms[i] >= 0 else -1.0)
+                              for i in range(len(terms))})
 
     probes = []
     for label, per in sorted(probe_shapes(meta).items()):
-        comps = []
-        for k in range(3):
-            comps.append(combine([(per.get(m) or [0, 0, 0])[k] * qi
-                                  for m, qi in q.items()], rule))
+        comps = [split(lambda m, k=k: (per.get(m) or [0, 0, 0])[k] * q[m])[0]
+                 for k in range(3)]
         probes.append({"probe": label, "dx": comps[0], "dy": comps[1],
                        "dz": comps[2],
                        "mag": math.sqrt(sum(c * c for c in comps))})
@@ -459,11 +572,9 @@ def response(meta: dict, cfg: dict) -> dict:
     bolts = {}
     for label, per in bolt_shapes(meta).items():
         idx = int(label.split("_")[0][4:])
-        N = combine([(per.get(m) or [0] * 5)[0] * qi for m, qi in q.items()], rule)
-        V = combine([math.hypot(*(per.get(m) or [0] * 5)[1:3]) * qi
-                     for m, qi in q.items()], rule)
-        M = combine([math.hypot(*(per.get(m) or [0] * 5)[3:5]) * qi
-                     for m, qi in q.items()], rule)
+        N = split(lambda m: (per.get(m) or [0] * 5)[0] * q[m])[0]
+        V = split(lambda m: math.hypot(*(per.get(m) or [0] * 5)[1:3]) * q[m])[0]
+        M = split(lambda m: math.hypot(*(per.get(m) or [0] * 5)[3:5]) * q[m])[0]
         cur = bolts.get(idx)
         if cur is None or N > cur["N"]:
             bolts[idx] = {"bolt": idx, "end": label[-1], "N": N, "V": V, "M": M}

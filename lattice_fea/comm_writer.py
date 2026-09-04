@@ -994,6 +994,19 @@ def write_shock(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
         x.result_files.append((39, "participation.csv"))
     _optional(b, "effective mass table", part)
 
+    # Signed participation factors. Effective mass gives |Gamma| but not its
+    # sign, and the rigid part of a response is summed ALGEBRAICALLY, so
+    # without signs the rigid terms in a probe displacement or a bolt force
+    # cannot be added correctly. Its own optional block: if this version does
+    # not publish the parameter, only the signs are lost, not the run.
+    def pfact(x):
+        x.w("pfac = RECU_TABLE(CO=modes, NOM_PARA=('NUME_MODE',")
+        x.w("                  'FACT_PARTICI_DX', 'FACT_PARTICI_DY',")
+        x.w("                  'FACT_PARTICI_DZ'))")
+        x.w("IMPR_TABLE(TABLE=pfac, UNITE=33, FORMAT='TABLEAU', SEPARATEUR=',')")
+        x.result_files.append((33, "participation_factors.csv"))
+    _optional(b, "modal participation factors", pfact)
+
     if probes:
         def probe_shapes(x):
             for i, _p in enumerate(probes):

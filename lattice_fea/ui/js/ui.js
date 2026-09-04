@@ -2089,14 +2089,16 @@ function secSizing(S, A, a) {
   secs.push(sec("Tightening and margins",
     el("table", { class: "rtable" },
       el("tr", {}, ["Bolt", "torque N\u00b7m", "% yield", "head MPa",
-                    "slip", "verdict"].map((h) => el("th", {}, h))),
+                    "\u03c3a MPa", "fatigue", "verdict"].map((h) => el("th", {}, h))),
       rows.map((r) => el("tr", {},
         el("td", {}, r.name),
         el("td", {}, r.M_A_Nm.toFixed(1)),
         el("td", { class: r.utilisation > 1 ? "bad" : "" },
            (r.utilisation * 100).toFixed(0)),
         el("td", {}, fmtVal(r.p_max)),
-        el("td", {}, r.slip_margin == null ? "\u2014" : r.slip_margin.toFixed(2)),
+        el("td", {}, r.sigma_a == null ? "\u2014" : fmtVal(r.sigma_a)),
+        el("td", { class: r.fatigue_margin != null && r.fatigue_margin < 1 ? "bad" : "" },
+           r.fatigue_margin == null ? "\u2014" : r.fatigue_margin.toFixed(2)),
         el("td", { class: r.feasible ? "" : "bad" },
            r.feasible ? "ok" : "no window"))))));
 
@@ -2209,13 +2211,22 @@ function shockSections(S, A, a) {
   secs.push(sec("Peak interface load",
     dl([["Along", R.axis],
         ["Total", `${fmtVal(R.force_N)} N`],
-        ["Modal part", `${fmtVal(R.force_modal_N)} N`],
+        ["Rigid (summed)", `${fmtVal(R.force_rigid_N)} N`],
+        ["Periodic (combined)", `${fmtVal(R.force_periodic_N)} N`],
+        ["Rigid share", `${(100 * (R.rigid_share ?? 0)).toFixed(0)} %`],
         ["Missing mass", `${(100 * R.missing_mass).toFixed(1)} % \u2192 ` +
                          `${fmtVal(R.missing_force_N)} N at ZPA`],
         ["Effective mass captured", `${(100 * R.mass_captured).toFixed(1)} %`],
         ["Combination", (R.rule || "srss").toUpperCase()],
         ["Input", R.input?.source || "\u2014"],
-        ["ZPA", `${fmtVal(R.input?.zpa ?? 0)} g`]])));
+        ["ZPA", `${fmtVal(R.input?.zpa ?? 0)} g`]]),
+    el("div", { class: "hint" },
+      "Modes at the ZPA ride with the base rather than resonating. Those "
+      + "responses are in phase and add algebraically; the resonant ones peak "
+      + "at different instants and are combined statistically. The two are "
+      + "then combined as \u221a(rigid\u00b2 + periodic\u00b2) \u2014 US NRC "
+      + "RG 1.92 Rev. 2. Treating the whole basis as periodic understates a "
+      + "high-frequency shock badly.")));
 
   if (R.bolts?.length) {
     secs.push(sec("Peak bolt loads",
@@ -2267,13 +2278,14 @@ function shockSections(S, A, a) {
   if (R.rows?.length) {
     secs.push(sec("Per-mode contribution",
       el("table", { class: "rtable" },
-        el("tr", {}, ["#", "Hz", `m_eff ${R.axis}`, "SRS g", "Force N"]
-          .map((h) => el("th", {}, h))),
+        el("tr", {}, ["#", "Hz", `m_eff ${R.axis}`, "SRS g", "rigid \u03b1",
+                      "Force N"].map((h) => el("th", {}, h))),
         R.rows.map((r) => el("tr", {},
           el("td", {}, String(r.mode)),
           el("td", {}, fmtVal(r.f)),
           el("td", {}, `${(100 * r.eff_frac).toFixed(1)}%`),
           el("td", {}, fmtVal(r.srs_g)),
+          el("td", {}, (r.alpha ?? 0).toFixed(2)),
           el("td", {}, fmtVal(r.force_N)))))));
   }
   return secs;

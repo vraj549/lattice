@@ -294,9 +294,29 @@ def size_bolt(*, d: float, pitch: float, l_K: float, A_s: float = None,
     p_max = F_Mmax / A_p if A_p > 0 else float("inf")
 
     # --- residual clamp in service ----------------------------------------
+    # This is F_KR by construction: F_Mmin was DEFINED as F_KR plus the losses
+    # that are subtracted back off here. It is reported because it is the
+    # number the joint is being designed to hold, not as a check — an earlier
+    # version divided it by the transverse load and called the result a slip
+    # margin, which could never come out below S_slip no matter what the joint
+    # was, because both sides came from the same line of arithmetic. A test
+    # that cannot fail reads as verification while verifying nothing. Real slip
+    # verification is the traction-based check on a preloaded run (slip.py).
     F_Kmin_service = F_Mmin - (1.0 - phi) * max(F_A, 0.0) - F_Z
-    slip_margin = (mu_joint * max(n_friction, 1) * F_Kmin_service / abs(F_Q)
-                   if F_Q else None)
+
+    # --- fatigue ------------------------------------------------------------
+    # A preloaded bolt usually fails in fatigue, not in tension, and phi is
+    # exactly what governs it: the alternating part of the external load that
+    # reaches the bolt. Taken as fully alternating between zero and F_A, which
+    # is the conservative reading of a single static load case.
+    #
+    # The endurance amplitude of a rolled thread depends on diameter and NOT
+    # on property class (VDI 2230-1:2015 5.5.3) — a 12.9 bolt is no better in
+    # fatigue than an 8.8 one, which is the single most commonly missed fact
+    # about bolted joints.
+    sigma_a = phi * max(F_A, 0.0) / (2.0 * A_s_)
+    sigma_ASV = 0.85 * (150.0 / d + 45.0)
+    fatigue_margin = sigma_ASV / sigma_a if sigma_a > 0 else None
 
     feasible = F_Mmax <= F_Mzul
     checks = []
@@ -311,11 +331,13 @@ def size_bolt(*, d: float, pitch: float, l_K: float, A_s: float = None,
             f"Surface pressure under the head is {p_max:.0f} MPa against a "
             f"limit of {p_G:.0f} MPa — the clamped material yields before the "
             f"bolt does. Use a washer, a flanged head, or a larger bolt.")
-    if slip_margin is not None and slip_margin < 1.0:
+    if fatigue_margin is not None and fatigue_margin < 1.0:
         checks.append(
-            f"The joint slips: friction carries {slip_margin:.2f} of the "
-            f"transverse load. Raise the preload, add bolts, or do not rely "
-            f"on friction (dowel or fitted bolt).")
+            f"Fatigue: the alternating stress is {sigma_a:.0f} MPa against an "
+            f"endurance limit of {sigma_ASV:.0f} MPa for a rolled thread of "
+            f"this diameter. A stronger property class will not help — the "
+            f"endurance amplitude does not depend on it. Use a longer or "
+            f"thinner bolt (lower phi), more bolts, or reduce the load range.")
 
     return {
         "geometry": g, "bolt": bolt, "member": mem,
@@ -327,7 +349,9 @@ def size_bolt(*, d: float, pitch: float, l_K: float, A_s: float = None,
         "sigma_M": sigma_M, "tau_M": tau_M, "sigma_red_M": sigma_red_M,
         "sigma_red_B": sigma_red_B, "utilisation": sigma_red_B / R_p02,
         "M_A_Nm": M_A / 1000.0, "p_max": p_max, "A_p": A_p,
-        "slip_margin": slip_margin, "feasible": feasible, "checks": checks,
+        "sigma_a": sigma_a, "sigma_ASV": sigma_ASV,
+        "fatigue_margin": fatigue_margin,
+        "feasible": feasible, "checks": checks,
     }
 
 

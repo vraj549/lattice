@@ -165,11 +165,20 @@ def test_surface_pressure_under_the_head_is_checked():
         assert any("Surface pressure" in c for c in r["checks"])
 
 
-def test_slip_margin_is_reported_and_consistent():
-    r = base(F_Q=1500.0, mu_joint=0.15, S_slip=1.0)
-    assert r["slip_margin"] == pytest.approx(
-        0.15 * r["F_Kmin_service"] / 1500.0)
-    assert r["slip_margin"] >= 1.0, "sized for no slip, so it must not slip"
+def test_residual_clamp_is_the_required_clamp_by_construction():
+    """F_Mmin was DEFINED as F_KR plus the losses that get subtracted back off
+    to give the service clamp, so these are the same number arrived at twice.
+
+    It is reported, not checked. Dividing it by the transverse load it was
+    derived from and calling the result a slip margin — which is what this
+    test used to assert — produces a quantity that can never fall below its
+    own safety factor whatever the joint looks like. Real slip verification
+    reads the interface tractions off a preloaded run; see tests/test_slip.py.
+    """
+    for FQ, FA in [(1500.0, 0.0), (0.0, 4000.0), (3000.0, 3000.0)]:
+        r = base(F_Q=FQ, F_A=FA)
+        assert r["F_Kmin_service"] == pytest.approx(r["F_KR"])
+    assert "slip_margin" not in base(F_Q=1500.0)
 
 
 def test_fe_measured_load_factor_overrides_the_cone_estimate():
@@ -307,3 +316,74 @@ def test_assumptions_are_completed_for_older_projects():
     # every key must be accepted by the calculator itself
     r = BS.size_bolt(d=8.0, pitch=1.25, l_K=20.0, F_Q=1000.0, **full)
     assert r["F_Mmin"] > 0
+
+
+# ---------------------------------------------------------------- fatigue
+
+def test_alternating_stress_is_the_load_factor_times_the_range():
+    """Phi is exactly what governs bolt fatigue: the share of the external
+    load that reaches the bolt. Half the range, over the stress area."""
+    r = BS.size_bolt(d=8, pitch=1.25, l_K=16.0, F_A=4000.0, F_Q=0.0)
+    assert r["sigma_a"] == pytest.approx(
+        r["phi"] * 4000.0 / (2 * r["geometry"]["A_s"]))
+
+
+def test_endurance_limit_does_not_depend_on_property_class():
+    """The single most commonly missed fact about bolted joints: a 12.9 bolt
+    is no better in fatigue than an 8.8 one. VDI 2230-1:2015 5.5.3 makes the
+    rolled-thread endurance amplitude a function of diameter alone."""
+    soft = BS.size_bolt(d=8, pitch=1.25, l_K=16.0, R_p02=640.0,
+                                 F_A=3000.0)
+    hard = BS.size_bolt(d=8, pitch=1.25, l_K=16.0, R_p02=1100.0,
+                                 F_A=3000.0)
+    assert soft["sigma_ASV"] == pytest.approx(hard["sigma_ASV"])
+    assert soft["sigma_ASV"] == pytest.approx(0.85 * (150.0 / 8.0 + 45.0))
+    # but the static capacity does
+    assert hard["F_Mzul"] > soft["F_Mzul"]
+
+
+def test_a_longer_bolt_is_better_in_fatigue():
+    """More bolt compliance, lower Phi, less of the range reaching it. This is
+    why a fatigue joint wants a long thin bolt, and the check has to reproduce
+    it or it is not measuring what it claims."""
+    short = BS.size_bolt(d=8, pitch=1.25, l_K=8.0, F_A=4000.0)
+    long_ = BS.size_bolt(d=8, pitch=1.25, l_K=40.0, F_A=4000.0)
+    assert long_["sigma_a"] < short["sigma_a"]
+    assert long_["fatigue_margin"] > short["fatigue_margin"]
+
+
+def test_the_fatigue_check_can_actually_fire():
+    """Unlike the slip "margin" this replaces, which was F_KR divided by the
+    load F_KR was derived from and so could never fall below its own safety
+    factor. A check that cannot fail reads as verification while verifying
+    nothing."""
+    ok = BS.size_bolt(d=8, pitch=1.25, l_K=16.0, F_A=200.0)
+    bad = BS.size_bolt(d=8, pitch=1.25, l_K=8.0, F_A=60000.0, n_intro=1.0)
+    assert ok["fatigue_margin"] > 1.0
+    assert not any("Fatigue" in c for c in ok["checks"])
+    assert bad["fatigue_margin"] < 1.0
+    assert any("Fatigue" in c for c in bad["checks"])
+
+
+def test_a_joint_that_fits_the_bolt_is_normally_fatigue_safe():
+    """Not a weakness of the check — the reason preloading works.
+
+    Phi is small, so most of an external load unloads the interface instead of
+    reaching the bolt; and the load is capped anyway by what the bolt can be
+    preloaded to. Take the largest F_A that still has a feasible preload
+    window and the fatigue margin is still comfortable. A tool that flagged
+    fatigue on every joint would be telling the user nothing.
+    """
+    for d, p in [(4.0, 0.7), (6.0, 1.0), (8.0, 1.25)]:
+        F_A = 100.0
+        while BS.size_bolt(d=d, pitch=p, l_K=3 * d, F_A=F_A)["feasible"]:
+            F_A *= 1.2
+        biggest = BS.size_bolt(d=d, pitch=p, l_K=3 * d, F_A=F_A / 1.2)
+        assert biggest["feasible"]
+        assert biggest["fatigue_margin"] > 1.5, (d, biggest["fatigue_margin"])
+
+
+def test_no_alternating_load_means_no_fatigue_number():
+    r = BS.size_bolt(d=8, pitch=1.25, l_K=16.0, F_A=0.0, F_Q=500.0)
+    assert r["sigma_a"] == 0.0
+    assert r["fatigue_margin"] is None

@@ -663,7 +663,9 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                 "F_Mmin": r["F_Mmin"], "F_Mmax": r["F_Mmax"],
                 "F_Mzul": r["F_Mzul"], "M_A_Nm": r["M_A_Nm"],
                 "utilisation": r["utilisation"], "p_max": r["p_max"],
-                "slip_margin": r["slip_margin"], "feasible": r["feasible"],
+                "sigma_a": r["sigma_a"], "sigma_ASV": r["sigma_ASV"],
+                "fatigue_margin": r["fatigue_margin"],
+                "feasible": r["feasible"],
                 "checks": r["checks"], "case": r["member"]["case"],
                 "alpha_A": r["alpha_A"],
             })

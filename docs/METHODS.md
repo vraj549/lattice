@@ -167,14 +167,51 @@ Sign-blindness is deliberate. The sign of a participation factor is not
 recoverable from effective mass, so a rule that needed it — CQC, or an
 algebraic sum — could not be computed honestly here, and is not offered.
 
+### Rigid and periodic responses combine differently
+
+A mode whose spectral acceleration has come down to the **ZPA** does not
+resonate — it rides with the input. Its response is in phase with the input and
+with every other rigid response, so **rigid responses add algebraically**.
+Resonant responses peak at different instants and are combined statistically.
+The two are then combined as `√(rigid² + periodic²)`. This is US NRC
+RG 1.92 Rev. 2, and the rigid fraction of each mode is Lindley-Yow's
+
+```
+α = ZPA / S_a(f)   where S_a ≥ ZPA,   0 otherwise
+```
+
+α = 1 at the plateau (fully rigid), 0.5 at twice the ZPA, small for a sharply
+amplified mode, and 0 for a mode softer than the input, which rings after the
+event rather than following it.
+
+This matters more than it sounds. Treating the whole basis as periodic and
+SRSS-ing it replaces a sum of *N* equal rigid terms with `√N` of them. On a
+representative bolted-plate shock — 82% rigid — that understated the interface
+load by **21%**, in the non-conservative direction. Lattice did exactly that
+until v0.25.0.
+
 ### Missing mass
 
-A modal basis truncated at some frequency has lost the stiffer modes, which do
-not resonate: they ride with the base. Their share is the residual effective
-mass at the **ZPA**, the spectrum's high-frequency value, and it is added in
-with the periodic terms. The results panel reports the effective mass the basis
-captured, because a large residual means the *shape* of the response is not
-resolved even though the total force is corrected.
+A truncated basis has lost the stiffer modes, which do not resonate. Their
+share is the residual effective mass riding at the ZPA — a **rigid** response,
+so it joins the other rigid terms algebraically rather than being SRSS'd in.
+
+There is a check built into that sum: if every mode is rigid, the total is the
+model's whole mass times the ZPA, which is Newton's second law and nothing
+else. SRSS cannot produce it.
+
+### Signs, and what they cost
+
+The rigid sum needs to know which way each mode moves. Effective mass is a
+square, so it gives `|Γ|` and no sign. Lattice asks the solver for the
+participation factors as well; when they come back, the rigid parts of probe
+displacements and bolt forces are summed correctly.
+
+When they do not, those two quantities fall back to summing magnitudes — an
+upper bound, since modes that would have cancelled are made to add — and the
+panel says so. The **interface load is unaffected** either way: it is a sum of
+mass times acceleration, all in the direction of the input, so every term has
+the same sign by construction.
 
 ### The pulse spectrum
 
@@ -464,9 +501,24 @@ governs before the bolt does.
   usual choice, since most CAD has no separate washer footprint — spreads it
   over the hole wall rather than the bearing annulus, which makes the clamped
   parts look slightly stiffer than they are.
-- Static, plus a simple alternating check. No fatigue life curve.
+- Fatigue is checked as an endurance limit, not a life curve: the alternating
+  stress `σ_a = Φ·F_A/(2 A_s)`, taking the external load as fully alternating
+  between zero and `F_A`, against the rolled-thread endurance amplitude
+  `σ_ASV = 0.85(150/d + 45)` MPa (VDI 2230-1:2015 §5.5.3). That amplitude
+  **does not depend on property class** — a 12.9 bolt is no better in fatigue
+  than an 8.8 one — which is the most commonly missed fact about bolted joints.
+  A joint with a feasible preload window is normally fatigue-safe by a wide
+  margin, because Φ is small; that is the reason preloading works.
+- No thermal term. VDI's `ΔF_Vth` for a joint of dissimilar materials at
+  temperature is not included.
 - The cone model approximates real flange behaviour. Where a contact run has
   measured the bolt's load increase directly, that measurement is used instead.
+- The residual clamp in service equals `F_KR` **by construction** — `F_Mmin`
+  was defined as `F_KR` plus the losses that are subtracted back off to get it.
+  It is reported, not checked. Dividing it by the transverse load it came from
+  and calling the result a slip margin gives a number that can never fall below
+  its own safety factor; that is what this reported until v0.25.0. Slip is
+  verified from interface tractions on a preloaded run instead.
 - The absolute preload a standard tabulates depends on which cross-section is
   taken to govern and what utilisation is assumed. Every intermediate value is
   reported so you can reconcile it with your own bolt standard rather than

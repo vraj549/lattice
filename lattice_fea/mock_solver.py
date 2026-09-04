@@ -234,6 +234,18 @@ def main():
 
     # Per-mode extractions for a shock run. Deterministic but mode-dependent,
     # so a combination rule that ignored a mode would show up.
+    if units.get(33) == "participation_factors.csv":
+        with open("participation_factors.csv", "w") as fh:
+            fh.write("NUME_MODE,FACT_PARTICI_DX,FACT_PARTICI_DY,FACT_PARTICI_DZ\n")
+            for i, _fq in enumerate(freqs):
+                # alternating signs, because that is what makes an algebraic
+                # sum different from taking magnitudes
+                sg = 1.0 if i % 2 == 0 else -1.0
+                fh.write(f"{i + 1},{sg * 0.74 * 0.63 ** i:.6f},"
+                         f"{sg * 0.55 * 0.71 ** i:.6f},"
+                         f"{sg * 0.79 * 0.59 ** i:.6f}\n")
+        log("IMPR_TABLE  participation factors -> unit 33")
+
     if units.get(36) == "mode_probes.csv":
         with open("mode_probes.csv", "w") as fh:
             fh.write("INTITULE,RESU,NOM_CHAM,NUME_ORDRE,NOEUD,DX,DY,DZ\n")
