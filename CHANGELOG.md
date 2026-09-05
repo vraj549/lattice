@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.27.0
+
+### The toolbar follows the selection
+
+Selecting **Connections** now puts Detect contacts, Bolt and Tie on the command
+bar; a contact gets Swap sides / Suppress / Delete; a bolt gets Pattern; a
+solid gets Hide / Isolate / Show all; an analysis gets Support / Load. The same
+reason a ribbon has context tabs — what you can do depends on what you have in
+hand.
+
+That needed the tree's group rows to become selectable at all. **Geometry**,
+**Connections** and **Probes** were expand-only: clicking one just folded it,
+because those nodes carried no `kind`. A group is a place in the model, and
+selecting one should say what is in it and let you add to it, so each now has a
+panel as well.
+
+### Probe snapping
+
+Clicking a tessellated surface puts a probe near the feature you meant, off by
+half a facet — and then every number it reports is for somewhere else. Picking
+now snaps to **corners, circle centres, edge midpoints and edges**, with the
+targets taken from the BREP rather than the triangles, so a hole centre is the
+hole centre exactly.
+
+Intersections are not a separate snap: in a solid model, edges meet at
+vertices, so the corner snap already is one.
+
+Candidates rank by **specificity, not distance** — a corner inside the
+tolerance beats a circle centre, which beats an edge. Ranking by proximity
+alone makes the snap flicker between kinds as the cursor moves a pixel, which
+is worse than no snapping. The marker's shape says what it found, each kind can
+be switched off while picking, and the log records which snap the probe landed
+on or says nothing was close enough.
+
+### Two of my own bugs, both silent
+
+- `Node.append()` stringifies anything that is not a Node, so a context group
+  that came back `null` printed the word **"null"** into the toolbar.
+- The new screen-projection helper was called `_project`, and the viewer
+  **already had** a `_project(x, y, z)` taking three scalars. The array arrived
+  as `x`, every coordinate came out `NaN`, and snapping simply never fired —
+  no error, no marker, nothing to notice. It is `_toScreen(point, rect)` now,
+  and takes the rect as an argument because it runs over every candidate on
+  every mouse move and `getBoundingClientRect()` forces a layout.
+
+
 ## 0.26.0
 
 The second UI pass: the parts that make a tool feel like one you can work in

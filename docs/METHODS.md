@@ -294,6 +294,32 @@ it matters most.
   pressure and shear get mixed; the panel reports the interface's flatness and
   warns below 0.98.
 
+## Probe placement
+
+A probe reads response at a point, so where that point actually is matters.
+Clicking a tessellated surface puts it near the feature you meant, off by half
+a facet.
+
+Picking therefore snaps, to targets taken from the **BREP** rather than from
+the triangles:
+
+| | |
+|---|---|
+| corner | model vertices. In a solid these are also where edges meet, so this is the intersection snap too — a BREP has no edge crossing that is not already a vertex |
+| circle centre | centre of every circular or elliptical curve, by circumcentre from three points on it. Exact for a circle |
+| edge midpoint | middle of each curve's parameter range |
+| edge | nearest point along an edge, found in screen space and mapped back along the same segment so the point really is on the edge |
+
+Candidates are ranked by **specificity, not distance**: a corner inside the
+tolerance beats a circle centre, which beats an edge. Ranking purely by
+proximity makes the snap flicker between two kinds as the cursor moves a pixel,
+which is worse than not snapping at all.
+
+The marker shape says which kind it found — square for a corner, circle for a
+centre, diamond for a midpoint, bar for an edge — and each can be switched off
+while picking. The job log records which snap a probe landed on, or says that
+nothing was near enough and it went to the raw surface point.
+
 ## Element shapes
 
 Tetrahedra by default. **Hexahedra by sweeping**, which is worth choosing

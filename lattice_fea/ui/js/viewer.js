@@ -158,6 +158,14 @@ export class Viewer {
 
   // ---------------- geometry ----------------
   setGeometry(tess, meta) {
+    // Exact snap targets from the BREP, plus the edge polylines the wireframe
+    // already carries — an edge snap needs a line to slide along, and this is
+    // the same data that draws it.
+    this.snaps = meta.snaps || null;
+    this.snapEdges = tess.edges?.vtx
+      ? { vtx: decode(tess.edges.vtx), seg: decode(tess.edges.seg) } : null;
+    this.snapKinds = this.snapKinds
+      || { vertex: true, centre: true, mid: true, edge: true };
     disposeGroup(this.geoGroup);
     this.faceMeshes.clear();
     this.faceInfo.clear();
@@ -389,6 +397,12 @@ export class Viewer {
       this.cb.onProbe?.(this.probeAt(e));
       return;
     }
+    if (this.mode === "pickPoint") {
+      const hit = this._castFace(e);
+      const snap = hit ? this.bestSnap(e, hit) : null;
+      this.cb.onSnapHover?.(snap, hit ? e : null);
+      return;
+    }
     if (this.mode === "view" || this.geoGroup.visible === false) return;
     const hit = this._castFace(e);
     const tag = hit ? hit.object.userData.tag : null;
@@ -411,8 +425,111 @@ export class Viewer {
       }
     } else if (this.mode === "pickPoint") {
       const hit = this._castFace(e);
-      if (hit) this.cb.onPickPoint?.({ x: hit.point.x, y: hit.point.y, z: hit.point.z });
+      if (!hit) return;
+      const snap = this.bestSnap(e, hit);
+      const p = snap ? snap.point : [hit.point.x, hit.point.y, hit.point.z];
+      this.cb.onPickPoint?.({ x: p[0], y: p[1], z: p[2], snap: snap?.type || null });
     }
+  }
+
+
+  /* -------------------------------------------------------------- snapping
+   *
+   * A probe placed "on the corner" has to BE on the corner. Clicking a
+   * tessellated surface gives a point near it, off by half a facet, and every
+   * number the probe then reports is for somewhere you did not mean.
+   *
+   * Candidates are ranked by specificity, not distance: a vertex inside the
+   * tolerance beats a circle centre, which beats an edge, which beats the
+   * surface. Picking purely by proximity makes the snap flicker between two
+   * kinds as the cursor moves a pixel, which is worse than no snap.
+   */
+  setSnapKinds(kinds) { this.snapKinds = { ...this.snapKinds, ...kinds }; }
+
+  /**
+   * Project a point to canvas pixels, taking the rect as an argument.
+   *
+   * Deliberately NOT called `_project`: there is already one of those taking
+   * three scalars and reading the bounding rect itself. Sharing the name meant
+   * the array arrived as `x`, every coordinate came out NaN, and snapping
+   * simply never fired — no error, no marker, nothing to notice.
+   *
+   * The rect is passed in because this runs over every candidate on every
+   * mouse move, and getBoundingClientRect() forces a layout each time.
+   */
+  _toScreen(p, rect) {
+    const v = new THREE.Vector3(p[0], p[1], p[2]);
+    v.project(this.camera);
+    if (v.z > 1) return null;                 // behind the camera
+    return [(v.x * 0.5 + 0.5) * rect.width, (-v.y * 0.5 + 0.5) * rect.height];
+  }
+
+  /** Best snap for a cursor position, given the raw surface hit under it. */
+  bestSnap(e, hit) {
+    if (!hit) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    const TOL = 14;                            // px
+    const near = this._diagOf() * 0.15;        // prune in 3D before projecting
+    const h = hit.point;
+    const within = (p) => (p[0] - h.x) ** 2 + (p[1] - h.y) ** 2
+                        + (p[2] - h.z) ** 2 < near * near;
+
+    const tryList = (list, type) => {
+      if (!list || !this.snapKinds[type]) return null;
+      let best = null;
+      for (const p of list) {
+        if (!within(p)) continue;
+        const s = this._toScreen(p, rect);
+        if (!s) continue;
+        const d = Math.hypot(s[0] - cx, s[1] - cy);
+        if (d <= TOL && (!best || d < best.d)) best = { d, point: p, type };
+      }
+      return best;
+    };
+
+    // specificity order
+    const S_ = this.snaps || {};
+    const found = tryList(S_.vertex, "vertex")
+               || tryList(S_.centre, "centre")
+               || tryList(S_.mid, "mid")
+               || this._edgeSnap(cx, cy, rect, TOL, h, near);
+    if (found) return { point: found.point, type: found.type };
+    return null;
+  }
+
+  _edgeSnap(cx, cy, rect, TOL, h, near) {
+    if (!this.snapEdges || !this.snapKinds.edge) return null;
+    const { vtx, seg } = this.snapEdges;
+    let best = null;
+    for (let i = 0; i < seg.length; i += 2) {
+      const a = seg[i] * 3, b = seg[i + 1] * 3;
+      const ax = vtx[a], ay = vtx[a + 1], az = vtx[a + 2];
+      const bx = vtx[b], by = vtx[b + 1], bz = vtx[b + 2];
+      if ((ax - h.x) ** 2 + (ay - h.y) ** 2 + (az - h.z) ** 2 > near * near
+       && (bx - h.x) ** 2 + (by - h.y) ** 2 + (bz - h.z) ** 2 > near * near) continue;
+      const pa = this._toScreen([ax, ay, az], rect);
+      const pb = this._toScreen([bx, by, bz], rect);
+      if (!pa || !pb) continue;
+      // nearest point on the segment in screen space, then the same parameter
+      // back along the 3D segment — so the snapped point really is on the edge
+      const vx = pb[0] - pa[0], vy = pb[1] - pa[1];
+      const len2 = vx * vx + vy * vy;
+      const t = len2 > 0
+        ? Math.max(0, Math.min(1, ((cx - pa[0]) * vx + (cy - pa[1]) * vy) / len2))
+        : 0;
+      const d = Math.hypot(pa[0] + t * vx - cx, pa[1] + t * vy - cy);
+      if (d <= TOL && (!best || d < best.d)) {
+        best = { d, type: "edge",
+                 point: [ax + t * (bx - ax), ay + t * (by - ay), az + t * (bz - az)] };
+      }
+    }
+    return best;
+  }
+
+  _diagOf() {
+    const b = this.bbox;
+    return Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) || 1;
   }
 
   // ---------------- view switching ----------------

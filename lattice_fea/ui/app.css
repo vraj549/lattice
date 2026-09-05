@@ -710,3 +710,24 @@ body.show-help .helpq { background: var(--panel-4); color: var(--text); }
   border-radius: var(--r); padding: 1px 5px; text-align: center;
 }
 .kbcard .hint { margin-top: 12px; }
+
+
+/* -------------------------------------------------------------- snap marker
+ * Shape carries the snap type the way a CAD osnap marker does, so it reads
+ * without going to the label: square for a corner, circle for a centre,
+ * diamond for a midpoint, bar for an edge.
+ */
+.snapmark {
+  position: absolute; z-index: 4; width: 13px; height: 13px;
+  margin: -7px 0 0 -7px; pointer-events: none;
+  border: 1.5px solid var(--accent); background: rgba(255, 255, 255, .35);
+}
+.snapmark[data-kind="centre"] { border-radius: 50%; }
+.snapmark[data-kind="mid"] { transform: rotate(45deg); }
+.snapmark[data-kind="edge"] { height: 5px; margin-top: -3px; border-radius: 1px; }
+.snapmark span {
+  position: absolute; left: 16px; top: -3px; white-space: nowrap;
+  font: var(--t-micro)/1.4 var(--ui); color: var(--vp-text);
+  background: rgba(20, 26, 32, .82); padding: 1px 5px; border-radius: var(--r);
+}
+.snapmark[data-kind="mid"] span { transform: rotate(-45deg); transform-origin: left top; }

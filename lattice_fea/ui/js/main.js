@@ -349,7 +349,9 @@ const A = {
     pickCtx = { probe };
     setView("geometry");
     viewer.startPickPoint();
-    showPickBar("Click a point on any surface");
+    renderToolbar();          // the snap toggles belong to this mode
+    showPickBar("Click a point — it snaps to corners, circle centres, "
+                + "edge midpoints and edges");
   },
 
   // ---- mesh & solve ----
@@ -817,7 +819,11 @@ function showPickBar(msg) {
   document.getElementById("pickMsg").textContent = msg;
   bar.hidden = false;
 }
-function hidePickBar() { document.getElementById("pickBar").hidden = true; }
+function hidePickBar() {
+  document.getElementById("pickBar").hidden = true;
+  document.getElementById("snapMark").hidden = true;
+  renderToolbar();            // the snap toggles go with the mode
+}
 
 document.getElementById("pickDone").addEventListener("click", () => {
   if (pickCtx?.patternBolt) {
@@ -1487,6 +1493,10 @@ document.getElementById("newForm").addEventListener("submit", async (e) => {
  */
 const TOOLBAR = document.getElementById("toolbar");
 
+const SNAP_LABEL = {
+  vertex: "corner", centre: "circle centre", mid: "edge midpoint", edge: "edge",
+};
+
 const trunc = (t, n) => (t.length > n ? t.slice(0, n - 1) + "\u2026" : t);
 
 const tbtn = (o) => el("button", {
@@ -1497,6 +1507,10 @@ const tbtn = (o) => el("button", {
   onclick: o.onclick,
 }, o.glyph ? el("span", { class: "gl" }, o.glyph) : null,
    o.label ? el("span", {}, o.label) : null);
+
+/** Node.append() stringifies anything that is not a Node, so appending a
+ *  group that came back null printed the word "null" into the toolbar. */
+const add = (node) => { if (node) TOOLBAR.append(node); };
 
 const tgroup = (...kids) => {
   const k = kids.filter(Boolean);
@@ -1517,7 +1531,7 @@ function renderToolbar() {
   const nSolids = (S.project.geometry?.solids || []).length;
 
   // --- what you came here to do
-  TOOLBAR.append(tgroup(
+  add(tgroup(
     tbtn({ glyph: "▦", label: "Mesh", title: "Generate the mesh",
            disabled: running, onclick: () => A.runMesh() }),
     tbtn({ glyph: "▶",
@@ -1529,7 +1543,7 @@ function renderToolbar() {
            onclick: () => A.addAnalysis() })));
 
   // --- looking at the model
-  TOOLBAR.append(tgroup(
+  add(tgroup(
     tbtn({ glyph: "⤢", title: "Zoom to fit  (F)",
            onclick: () => viewer.fit() }),
     el("select", {
@@ -1544,9 +1558,23 @@ function renderToolbar() {
       oninput: (e) => { S.clipPos = Number(e.target.value); applyClip(); },
     }) : null));
 
+  // --- snapping, only while a point is being placed. A permanent row of snap
+  //     toggles is CAD clutter for the 99% of the time you are not picking.
+  if (viewer.mode === "pickPoint") {
+    const k = viewer.snapKinds || {};
+    add(tgroup(
+      el("span", { class: "tlab" }, "Snap"),
+      ...[["vertex", "Corner"], ["centre", "Centre"], ["mid", "Midpoint"],
+          ["edge", "Edge"]].map(([id, lab]) => tbtn({
+        label: lab, pressed: k[id] !== false,
+        title: `Snap to ${lab.toLowerCase()}s`,
+        onclick: () => { viewer.setSnapKinds({ [id]: k[id] === false });
+                         renderToolbar(); } }))));
+  }
+
   // --- getting at buried faces: only where there is something to separate
   if (nSolids > 1 && S.view === "geometry") {
-    TOOLBAR.append(tgroup(
+    add(tgroup(
       tbtn({ glyph: "◫", label: "Explode", pressed: !!S.explodeOn,
              title: "Pull the parts apart so interior faces can be picked",
              onclick: () => { S.explodeOn = !S.explodeOn; applyExplode(); } }),
@@ -1557,9 +1585,17 @@ function renderToolbar() {
       }) : null));
   }
 
+  // --- what the selection can do
+  //
+  // The bar answers "what can I do right now", and what you can do depends on
+  // what you have in hand. Selecting Connections should put contacts and bolts
+  // under the cursor, not leave them three clicks away in a panel — the same
+  // reason a ribbon has context tabs.
+  add(contextGroup());
+
   // --- standard views. Six angles and an iso, which is what a view cube is
   //     for; a cube you have to aim at is slower than a button you can hit.
-  TOOLBAR.append(tgroup(...[
+  add(tgroup(...[
     ["iso", "Iso", "0"], ["front", "Fr", "1"], ["back", "Bk", "2"],
     ["left", "Lf", "3"], ["right", "Rt", "4"], ["top", "Tp", "5"],
     ["bottom", "Bt", "6"],
@@ -1583,7 +1619,7 @@ function renderToolbar() {
       A.setResultField(R.aid, { stepIdx: k });
       A.loadField(R.aid);
     };
-    TOOLBAR.append(tgroup(
+    add(tgroup(
       el("select", { class: "tsel", "aria-label": "Result field",
         onchange: (e) => { A.setResultField(R.aid, { field: e.target.value });
                            A.loadField(R.aid); } },
@@ -1597,7 +1633,7 @@ function renderToolbar() {
           selected: v === (R.comp || "") || null }, t)))));
 
     if (steps.length > 1) {
-      TOOLBAR.append(tgroup(
+      add(tgroup(
         tbtn({ glyph: "◀", title: "Previous step  (\u2190)",
                disabled: i <= 0, onclick: () => stepTo(i - 1) }),
         el("span", { class: "tnum", title: "Step / mode" },
@@ -1606,7 +1642,7 @@ function renderToolbar() {
                disabled: i >= steps.length - 1, onclick: () => stepTo(i + 1) })));
     }
 
-    TOOLBAR.append(tgroup(
+    add(tgroup(
       el("span", { class: "tlab" }, "Deform"),
       el("input", { type: "range", class: "trange", min: 0, max: 300,
         value: String(Math.round((R.defMult ?? 1) * 100)),
@@ -1617,7 +1653,7 @@ function renderToolbar() {
              title: "Animate the deflection  (space)",
              onclick: () => A.toggleAnimate() })));
 
-    TOOLBAR.append(tgroup(
+    add(tgroup(
       tbtn({ glyph: "⬚", label: "Edges", pressed: S.resMesh !== false,
              title: "Show the element mesh over the contours",
              onclick: () => { S.resMesh = S.resMesh === false;
@@ -1633,8 +1669,8 @@ function renderToolbar() {
              } })));
   }
 
-  TOOLBAR.append(el("div", { class: "tgroup-sp" }));
-  TOOLBAR.append(tpin(
+  add(el("div", { class: "tgroup-sp" }));
+  add(tpin(
     tbtn({ glyph: "↶", title: "Undo  (\u2318Z)", disabled: !undoStack.length,
            onclick: () => A.undo() }),
     tbtn({ glyph: "↷", title: "Redo  (\u21e7\u2318Z)", disabled: !redoStack.length,
@@ -1649,6 +1685,125 @@ function renderToolbar() {
              try { localStorage.setItem("lattice.help", on ? "1" : "0"); } catch (e) { /* private mode */ }
              renderToolbar();
            } })));
+}
+
+/**
+ * The selection-dependent group.
+ *
+ * Deliberately short. A context bar that shows everything the selection could
+ * conceivably relate to is a second panel, and stops being scannable — these
+ * are the two or three things you actually do next.
+ */
+function contextGroup() {
+  const { kind, id } = S.selection || {};
+  const setup = S.project.setup;
+  const find = (list) => (setup[list] || []).find((x) => String(x.id) === String(id));
+  const del = (list, what) => tbtn({
+    glyph: "✕", label: "Delete", title: `Delete this ${what}  (Delete)`,
+    onclick: () => A.removeItem(list, id) });
+  const dup = (list, what) => tbtn({
+    glyph: "⧉", label: "Duplicate", title: `Duplicate this ${what}`,
+    onclick: () => A.duplicateItem(list, id) });
+
+  switch (kind) {
+    case "connections":
+      // No "add contact by hand": a contact is a PAIR of coincident faces,
+      // and picking both sides blind is slower and more error-prone than
+      // letting the geometry find them and then editing what came back.
+      return tgroup(
+        tbtn({ glyph: "⇄", label: "Detect contacts",
+               title: "Find every pair of touching faces",
+               onclick: () => A.detectContacts() }),
+        tbtn({ glyph: "⌾", label: "Bolt", title: "Add a bolted joint",
+               onclick: () => A.addBolt() }),
+        tbtn({ glyph: "≡", label: "Tie", title: "Add a tied (glued) pair",
+               onclick: () => A.addTie() }));
+
+    case "contact": {
+      const c = find("contacts");
+      if (!c) return null;
+      return tgroup(
+        tbtn({ glyph: "⇅", label: "Swap sides",
+               title: "Make the other face the slave",
+               onclick: () => A.mutate(() => {
+                 const a = c.faces_a; c.faces_a = c.faces_b; c.faces_b = a;
+                 c.solids = [(c.solids || [])[1], (c.solids || [])[0]];
+               }) }),
+        tbtn({ glyph: "⊘", label: c.suppressed ? "Un-suppress" : "Suppress",
+               pressed: !!c.suppressed,
+               title: "Leave the parts free of each other",
+               onclick: () => A.mutate(() => { c.suppressed = !c.suppressed; }) }),
+        del("contacts", "contact"));
+    }
+
+    case "bolt":
+      return tgroup(
+        tbtn({ glyph: "⊞", label: "Pattern", title: "Copy this bolt to other holes",
+               onclick: () => A.patternBolt(id) }),
+        dup("bolts", "bolt"), del("bolts", "bolt"));
+
+    case "tie":
+      return tgroup(dup("ties", "tie"), del("ties", "tie"));
+
+    case "probe":
+      return tgroup(
+        tbtn({ glyph: "✛", label: "Pick point", title: "Place it on the model",
+               onclick: () => { const p = find("probes"); if (p) A.pickPoint(p); } }),
+        dup("probes", "probe"), del("probes", "probe"));
+
+    case "geometry":
+      return tgroup(
+        tbtn({ glyph: "◍", label: "Show all", disabled: !S.hiddenSolids.size,
+               title: "Reveal every hidden solid",
+               onclick: () => A.showAllSolids() }),
+        tbtn({ glyph: "⤢", label: "Fit", title: "Zoom to fit  (F)",
+               onclick: () => viewer.fit() }));
+
+    case "probes":
+      return tgroup(
+        tbtn({ glyph: "✛", label: "Add probe",
+               title: "Response is read at probes",
+               onclick: () => A.addProbe() }));
+
+    case "solid": {
+      const hidden = S.hiddenSolids.has(Number(id));
+      return tgroup(
+        tbtn({ glyph: hidden ? "◌" : "◉", label: hidden ? "Show" : "Hide",
+               title: "Show or hide this solid",
+               onclick: () => A.toggleSolid(Number(id)) }),
+        tbtn({ glyph: "◎", label: "Isolate", title: "Hide everything else",
+               onclick: () => A.isolateSolid(Number(id)) }),
+        S.hiddenSolids.size
+          ? tbtn({ glyph: "◍", label: "Show all",
+                   onclick: () => A.showAllSolids() }) : null);
+    }
+
+    case "analysis": {
+      const a = (setup.analyses || []).find((x) => x.id === id);
+      if (!a) return null;
+      return tgroup(
+        tbtn({ glyph: "⊥", label: "Support", title: "Add a support",
+               onclick: () => A.addSupport(a.id) }),
+        tbtn({ glyph: "↧", label: "Load", title: "Add a load",
+               onclick: () => A.addLoad(a.id) }),
+        del("analyses", "analysis"));
+    }
+
+    case "support":
+    case "load": {
+      const list = kind === "support" ? "supports" : "loads";
+      const { item } = A.findAnalysisOf(kind, id);
+      if (!item) return null;
+      return tgroup(
+        tbtn({ glyph: "▧", label: `Faces (${(item.faces || []).length})`,
+               title: "Re-pick the faces this applies to",
+               onclick: () => A.pickFaces(item, "faces") }),
+        dup(list, kind), del(list, kind));
+    }
+
+    default:
+      return null;
+  }
 }
 
 function applyClip() {
@@ -1838,7 +1993,7 @@ function renderStatus() {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.26.0";
+const UI_BUILD = "0.27.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;
@@ -1929,12 +2084,35 @@ async function boot() {
       box.hidden = false;
     },
     onPickChange: () => {},
+
+    /** What the click would land on, shown before it is clicked. Snapping you
+     *  cannot see is snapping you cannot trust. */
+    onSnapHover: (snap, e) => {
+      const m = document.getElementById("snapMark");
+      if (!snap || !e) { m.hidden = true; return; }
+      const r = viewer.canvas.getBoundingClientRect();
+      const p = viewer._toScreen(snap.point, r);
+      if (!p) { m.hidden = true; return; }
+      m.dataset.kind = snap.type;
+      m.style.left = `${p[0]}px`;
+      m.style.top = `${p[1]}px`;
+      m.firstChild.textContent = SNAP_LABEL[snap.type] || snap.type;
+      m.hidden = false;
+    },
+
     onPickPoint: (pt) => {
       if (pickCtx?.probe) {
         Object.assign(pickCtx.probe, { x: pt.x, y: pt.y, z: pt.z });
         viewer.endPick();
+        document.getElementById("snapMark").hidden = true;
         pickCtx = null;
         hidePickBar();
+        logLine(pt.snap
+          ? `Probe snapped to ${SNAP_LABEL[pt.snap]} at `
+            + `${fmtVal(pt.x)}, ${fmtVal(pt.y)}, ${fmtVal(pt.z)}.`
+          : `Probe placed on the surface at `
+            + `${fmtVal(pt.x)}, ${fmtVal(pt.y)}, ${fmtVal(pt.z)} — no feature `
+            + `was within snapping distance.`);
         scheduleSave();
         refresh();
       }

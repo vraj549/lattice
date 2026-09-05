@@ -263,7 +263,10 @@ export function renderPanel(S, A) {
 function renderPanelBody(S, A, put, kind, id) {
   switch (kind) {
     case "solid": return panelSolid(S, A, put, id);
-    case "connections": return panelConnections(S, A, put);
+    case "interfaces": return panelBondedInterfaces(S, A, put);
+    case "connections": return panelConnectionsGroup(S, A, put);
+    case "geometry": return panelGeometry(S, A, put);
+    case "probes": return panelProbes(S, A, put);
     case "support": return panelSupport(S, A, put, id);
     case "load": return panelLoad(S, A, put, id);
     case "bolt": return panelBolt(S, A, put, id);
@@ -524,7 +527,71 @@ function massOf(S, s) {
   return `${fmtVal(s.volume * m.rho_kgm3 * 1e-12 * 1000)} kg`;  // mm³ → kg
 }
 
-function panelConnections(S, A, put) {
+/* ------------------------------------------------------------ group panels
+ *
+ * The tree's group rows used to be expand-only: clicking Connections did
+ * nothing but fold it. A group is a place in the model, and selecting one
+ * should tell you what is in it and let you add to it — which is also what
+ * puts its actions on the command bar.
+ */
+function panelConnectionsGroup(S, A, put) {
+  const setup = S.project.setup;
+  const rows = [
+    ...(setup.contacts || []).map((c) => [c.name || "Contact",
+      c.suppressed ? "suppressed" : (c.kind || "bonded")]),
+    ...(setup.bolts || []).map((b) => [b.name || "Bolt",
+      `${boltSizeOf(b)?.id ?? "?"} · ${fmtVal(b.preload_N || 0)} N`]),
+    ...(setup.ties || []).map((t) => [t.name || "Tie",
+      t.master_solid ? `→ solid ${t.master_solid}` : "incomplete"]),
+  ];
+  put("Connections", rows.length ? `${rows.length} defined` : "none",
+    sec("Defined", rows.length ? dl(rows)
+      : el("div", { class: "hint" }, "Nothing yet.")),
+    sec("Add",
+      el("div", { class: "btnrow" },
+        el("button", { class: "btn btn-accent",
+          onclick: () => A.detectContacts() }, "Detect contacts"),
+        el("button", { class: "btn", onclick: () => A.addBolt() }, "Bolt"),
+        el("button", { class: "btn", onclick: () => A.addTie(),
+          disabled: S.project.geometry.solids.length < 2 || null }, "Tie")),
+      el("div", { class: "hint" },
+        "A contact is a pair of coincident faces, so it is detected rather "
+        + "than built by hand — picking both sides blind is slower and easier "
+        + "to get wrong than editing what the geometry found.")));
+}
+
+function panelGeometry(S, A, put) {
+  const geo = S.project.geometry;
+  put("Geometry", `${geo.solids.length} solids · ${geo.faces.length} faces`,
+    sec("Solids", dl(geo.solids.map((sd) => [
+      solidName(S, sd.tag),
+      S.hiddenSolids.has(sd.tag) ? "hidden" : `${fmtVal(sd.volume)} mm³`]))),
+    sec("Bounding box", dl([
+      ["X", `${fmtVal(geo.bbox[0])} … ${fmtVal(geo.bbox[3])} mm`],
+      ["Y", `${fmtVal(geo.bbox[1])} … ${fmtVal(geo.bbox[4])} mm`],
+      ["Z", `${fmtVal(geo.bbox[2])} … ${fmtVal(geo.bbox[5])} mm`],
+      ["Diagonal", `${fmtVal(geo.diag)} mm`]])),
+    S.hiddenSolids.size
+      ? sec(null, el("div", { class: "btnrow" },
+          el("button", { class: "btn", onclick: () => A.showAllSolids() },
+            `Show all (${S.hiddenSolids.size} hidden)`)))
+      : null);
+}
+
+function panelProbes(S, A, put) {
+  const probes = S.project.setup.probes || [];
+  put("Probes", probes.length ? `${probes.length} points` : "none",
+    sec("Points", probes.length
+      ? dl(probes.map((p) => [p.name || "Probe",
+          `${fmtVal(p.x)}, ${fmtVal(p.y)}, ${fmtVal(p.z)}`]))
+      : el("div", { class: "hint" },
+          "Harmonic, random and shock read their response here.")),
+    sec(null, el("div", { class: "btnrow" },
+      el("button", { class: "btn btn-accent", onclick: () => A.addProbe() },
+        "Add probe"))));
+}
+
+function panelBondedInterfaces(S, A, put) {
   const geo = S.project.geometry;
   const nameOf = (t) => solidName(S, t);
   put("Connections", `${geo.interfaces.length} bonded`,

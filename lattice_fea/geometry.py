@@ -157,12 +157,95 @@ def _analyze_brep(brep_path: str, sigs=None) -> dict:
             if len(up) == 2:
                 interfaces.append({"face": tag, "solids": sorted(int(u) for u in up)})
 
+        snaps = _snap_points(gmsh)
         x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(-1, -1)
         gmsh.clear()
 
     return {"solids": solids, "faces": faces, "interfaces": interfaces,
+            "snaps": snaps,
             "bbox": [x0, y0, z0, x1, y1, z1],
             "diag": math.dist((x0, y0, z0), (x1, y1, z1))}
+
+
+def _snap_points(gmsh) -> dict:
+    """Exact points worth snapping a probe to, taken from the BREP.
+
+    From the geometry, not the tessellation. A probe placed "on the corner" has
+    to be ON the corner — a tessellated approximation of one is a different
+    point, and the whole reason to snap is that you meant an exact feature.
+
+    * `vertex`  — model vertices. In a solid these are also where edges meet,
+                  so they are the intersection snap as well; a BREP has no
+                  edge crossing that is not already a vertex.
+    * `centre`  — centre of every circular or elliptical curve, recovered by
+                  circumcentre from three points on it, which is exact for a
+                  circle and the best available for anything else.
+    * `mid`     — midpoint of every curve, at the middle of its parameter
+                  range.
+    """
+    out = {"vertex": [], "centre": [], "mid": []}
+    for _, t in gmsh.model.getEntities(0):
+        try:
+            out["vertex"].append([round(float(c), 6)
+                                  for c in gmsh.model.getValue(0, int(t), [])])
+        except Exception:                       # noqa: BLE001
+            pass
+
+    for _, t in gmsh.model.getEntities(1):
+        tag = int(t)
+        try:
+            lo, hi = gmsh.model.getParametrizationBounds(1, tag)
+            u0, u1 = float(lo[0]), float(hi[0])
+        except Exception:                       # noqa: BLE001
+            continue
+        try:
+            mid = gmsh.model.getValue(1, tag, [0.5 * (u0 + u1)])
+            out["mid"].append([round(float(c), 6) for c in mid])
+        except Exception:                       # noqa: BLE001
+            pass
+        try:
+            kind = gmsh.model.getType(1, tag)
+        except Exception:                       # noqa: BLE001
+            kind = ""
+        if kind not in ("Circle", "Ellipse"):
+            continue
+        try:
+            pts = [np.asarray(gmsh.model.getValue(1, tag, [u0 + f * (u1 - u0)]),
+                              dtype=float) for f in (0.0, 1.0 / 3.0, 2.0 / 3.0)]
+            c = _circumcentre(*pts)
+            if c is not None:
+                out["centre"].append([round(float(x), 6) for x in c])
+        except Exception:                       # noqa: BLE001
+            pass
+
+    # A closed circle's three sample points can repeat between the two
+    # half-edges OCC splits it into, and a box has eight vertices reported once
+    # per adjacent face in some kernels. Snapping does not care how many times
+    # a point was found, only where it is.
+    for k in out:
+        out[k] = _dedupe(out[k])
+    return out
+
+
+def _circumcentre(a, b, c):
+    """Centre of the circle through three points, or None if collinear."""
+    ab, ac = b - a, c - a
+    n = np.cross(ab, ac)
+    n2 = float(n @ n)
+    if n2 < 1e-20:
+        return None
+    return a + (np.cross(n, ab) * float(ac @ ac)
+                + np.cross(ac, n) * float(ab @ ab)) / (2.0 * n2)
+
+
+def _dedupe(points, tol: float = 1e-6) -> list:
+    seen, out = set(), []
+    for p in points:
+        key = tuple(round(v / tol) for v in p)
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
 
 
 def _fit_surface(gmsh, tag: int, vtx: np.ndarray, nrm: np.ndarray) -> dict:

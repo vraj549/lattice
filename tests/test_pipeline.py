@@ -535,3 +535,59 @@ def test_a_bolted_stack_sweeps_conformally(tmp_path):
     # and it is worth doing
     assert hexed["dof"] < 0.6 * tets["dof"]
     assert hexed["quality_min"] > tets["quality_min"]
+
+
+# ------------------------------------------------------------------- snapping
+
+@pytest.mark.skipif(not os.path.isfile(os.path.join(
+    os.path.dirname(__file__), "..", "examples", "bolted_plates.step")),
+    reason="run examples/make_examples.py first")
+def test_snap_points_are_exact_geometry(tmp_path):
+    """Snap targets come from the BREP, not the tessellation.
+
+    A probe placed "on the hole centre" has to BE on it — a tessellated
+    approximation is a different point, and being exact is the entire reason
+    to snap rather than click.
+    """
+    step = os.path.join(os.path.dirname(__file__), "..", "examples",
+                        "bolted_plates.step")
+    meta = geometry.import_step(step, os.path.join(str(tmp_path), "g.brep"))
+    sn = meta["snaps"]
+
+    # two M6 holes at x = 25 and 65, y = 25, through a stack from z=0 to z=16,
+    # so a circle centre at each hole on each of the three plate faces
+    centres = {tuple(round(c, 3) for c in p) for p in sn["centre"]}
+    for x in (25.0, 65.0):
+        for z in (0.0, 8.0, 16.0):
+            assert (x, 25.0, z) in centres, f"no circle centre at {x}, 25, {z}"
+
+    # corners of the stack, exactly
+    verts = {tuple(round(c, 3) for c in p) for p in sn["vertex"]}
+    for z in (0.0, 8.0, 16.0):
+        assert (0.0, 0.0, z) in verts
+        assert (90.0, 50.0, z) in verts
+
+    assert sn["mid"], "every curve should offer a midpoint"
+
+
+def test_snap_points_are_deduplicated(tmp_path):
+    """OCC splits a full circle into two half-edges and reports a box corner
+    once per adjacent face. Snapping does not care how many times a point was
+    found, only where it is."""
+    step = os.path.join(os.path.dirname(__file__), "..", "examples",
+                        "bolted_plates.step")
+    meta = geometry.import_step(step, os.path.join(str(tmp_path), "g.brep"))
+    for key, pts in meta["snaps"].items():
+        keys = [tuple(round(c, 6) for c in p) for p in pts]
+        assert len(keys) == len(set(keys)), f"{key} has duplicates"
+
+
+def test_circumcentre_is_the_circle_centre():
+    import numpy as _np
+    c = geometry._circumcentre(_np.array([1.0, 0.0, 5.0]),
+                               _np.array([0.0, 1.0, 5.0]),
+                               _np.array([-1.0, 0.0, 5.0]))
+    assert c == pytest.approx([0.0, 0.0, 5.0], abs=1e-9)
+    # collinear points define no circle
+    assert geometry._circumcentre(_np.zeros(3), _np.array([1.0, 0, 0]),
+                                  _np.array([2.0, 0, 0])) is None

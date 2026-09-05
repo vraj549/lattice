@@ -41,7 +41,7 @@ function buildModel(S, A) {
   });
   if (geo.interfaces.length) {
     solids.push({
-      key: "ifc", kind: "connections", id: "all", icon: "interface",
+      key: "ifc", kind: "interfaces", id: "all", icon: "interface",
       label: "Bonded interfaces", meta: String(geo.interfaces.length),
     });
   }
@@ -91,9 +91,14 @@ function buildModel(S, A) {
   };
 
   const children = [
-    { key: "geo", icon: "geometry", label: "Geometry",
+    // The group rows carry a kind so they can be SELECTED, not just expanded.
+    // A group you can only open has nothing to say and nothing to offer; with
+    // a kind it gets a panel and a set of toolbar actions.
+    { key: "geo", kind: "geometry", id: "all", icon: "geometry",
+      label: "Geometry",
       meta: plural(geo.faces.length, "face"), children: solids },
-    { key: "con", icon: "connection", label: "Connections",
+    { key: "con", kind: "connections", id: "all", icon: "connection",
+      label: "Connections",
       meta: conns.length ? String(conns.length) : "none", children: conns,
       empty: "No contacts, bolts or ties yet.",
       insert: [
@@ -103,7 +108,7 @@ function buildModel(S, A) {
           disabled: geo.solids.length < 2,
           hint: geo.solids.length < 2 ? "needs two or more solids" : null },
       ] },
-    { key: "prb", icon: "probe", label: "Probes",
+    { key: "prb", kind: "probes", id: "all", icon: "probe", label: "Probes",
       meta: probes.length ? String(probes.length) : "none", children: probes,
       empty: "Frequency response is extracted at probes.",
       insert: [{ label: "Probe point", onclick: () => A.addProbe() }] },
