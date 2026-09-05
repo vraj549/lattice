@@ -107,6 +107,31 @@ export class Orbit {
     this.onChange();
   }
 
+  /**
+   * Snap to a named view.
+   *
+   * Camera sits at target + dist(sin phi cos theta, sin phi sin theta, cos phi)
+   * with Z up, so the six orthographic views are two angles each. Top and
+   * bottom are nudged a thousandth off the pole because looking straight down
+   * the up-vector leaves the camera's roll undefined and the view rolls at
+   * random as it lands.
+   */
+  setStandardView(name) {
+    const E = 1e-3;
+    const v = {
+      iso:    [Math.PI / 4, Math.PI / 3],
+      top:    [0, E],
+      bottom: [0, Math.PI - E],
+      front:  [-Math.PI / 2, Math.PI / 2],
+      back:   [Math.PI / 2, Math.PI / 2],
+      right:  [0, Math.PI / 2],
+      left:   [Math.PI, Math.PI / 2],
+    }[name];
+    if (!v) return;
+    [this.theta, this.phi] = v;
+    this.update();
+  }
+
   fit(bbox) {
     const [x0, y0, z0, x1, y1, z1] = bbox;
     this.target.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);

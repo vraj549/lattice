@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.26.0
+
+The second UI pass: the parts that make a tool feel like one you can work in
+rather than one you have to operate.
+
+### Undo
+
+There wasn't any. That is the most conspicuous thing that can be missing from a
+pre-processor — every mis-click was permanent, on a model someone has spent
+real time building. `⌘Z` / `⇧⌘Z`, sixty steps.
+
+Getting it right took two attempts, and the first failure is the interesting
+one. Snapshotting the model when `mutate()` is entered looks obviously correct
+and is wrong: twelve call sites in this file change the model and *then* call
+`A.mutate(() => {})` purely to save and re-render, so the snapshot captured the
+edit after it had happened and undoing it did nothing. Deleting a bolt and
+pressing undo demonstrated it immediately. The snapshot is now taken at the
+**end** of each committed edit, which is correct whichever pattern a call site
+uses and does not depend on future call sites remembering which one they are.
+
+View state — selection, hidden solids, explode — is deliberately not in the
+history. Undo should take back a change to the model, not move the camera.
+
+### The controls you use while looking at a result were in a panel
+
+Field, component, step/mode, deformation scale and animate now live on the
+command bar. They are what you change *while looking at the thing you are
+changing*, and reaching across to the right-hand panel to do it meant looking
+away — then pressing a second button ("Show contours") to apply it. Changing
+any of them now just shows it.
+
+What stays in the panel is styling — bands, palette — which is set once.
+
+### Keyboard
+
+`F` fit · `0`–`6` standard views · `←`/`→` step modes · `Space` animate ·
+`P` probe · `M` edges · `X` explode · `E` section · `Delete` · `⌘Z` / `⇧⌘Z` ·
+`⌘↵` run · `Esc` cancel a pick · `H` explanatory notes · `?` the list itself.
+
+Discoverable rather than folklore: the list is a keystroke away and also a
+button. Nothing fires while a field has focus — a tool that eats the `1` you
+are typing into a preload box is worse than one with no shortcuts.
+
+### Also
+
+- Seven standard views on the bar. A view cube you have to aim at is slower
+  than a button you can hit.
+- The trailing toolbar group is **pinned** to the right edge. The bar scrolls
+  when the window is narrow, and undo scrolling off the end is not acceptable
+  for undo.
+
+
 ## 0.25.0
 
 A methods review against the standards the methods claim to follow. Three

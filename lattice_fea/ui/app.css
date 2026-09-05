@@ -591,7 +591,15 @@ body.resizing-v { cursor: row-resize; user-select: none; }
 .toolbar::-webkit-scrollbar { display: none; }
 .tgroup { display: flex; align-items: center; gap: 2px; padding: 0 6px; }
 .tgroup + .tgroup { border-left: 1px solid var(--line); }
-.tgroup-sp { flex: 1 1 auto; }
+.tgroup-sp { flex: 1 1 auto; min-width: 8px; }
+
+/* The bar scrolls when the window is narrow, and undo scrolling off the end
+   is not acceptable for undo. The trailing group stays pinned to the right
+   edge and the rest scrolls underneath it. */
+.tgroup.pin {
+  position: sticky; right: 0; background: var(--panel);
+  box-shadow: -8px 0 8px -6px rgba(0, 0, 0, .18);
+}
 
 .tbtn {
   display: inline-flex; align-items: center; gap: 5px;
@@ -674,3 +682,31 @@ body.show-help .helpq { background: var(--panel-4); color: var(--text); }
 .fld dd { font-size: var(--t-num); }
 .frm { font-size: var(--t-body); }
 .hint { font-size: var(--t-body); }
+
+
+/* --------------------------------------------------------- toolbar extras */
+.tlab { font: var(--t-micro)/1 var(--ui); color: var(--dim); padding: 0 2px; }
+.tnum { font: var(--t-num)/1 var(--mono); color: var(--text);
+        font-variant-numeric: tabular-nums; padding: 0 4px; min-width: 3.2em;
+        text-align: center; }
+
+/* ------------------------------------------------------- shortcuts overlay */
+.kboverlay {
+  position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;
+  background: rgba(8, 12, 16, 0.5);
+}
+.kbcard {
+  background: var(--panel); border: 1px solid var(--line-2);
+  border-radius: var(--r); padding: 16px 18px; max-width: 720px;
+}
+.kbcard h2 { margin: 0 0 12px; font: 600 var(--t-lead)/1 var(--ui); }
+.kbcols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 26px; }
+.kbgroup > .lbl { display: block; margin-bottom: 5px; }
+.kbrow { display: grid; grid-template-columns: 7.5em 1fr; gap: 8px;
+         align-items: baseline; padding: 1px 0; font-size: var(--t-body); }
+.kbcard kbd {
+  font: var(--t-micro)/1.5 var(--mono); background: var(--panel-3);
+  border: 1px solid var(--line); border-bottom-width: 2px;
+  border-radius: var(--r); padding: 1px 5px; text-align: center;
+}
+.kbcard .hint { margin-top: 12px; }

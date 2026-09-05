@@ -1,7 +1,7 @@
 import { api } from "./api.js";
 import { Viewer } from "./viewer.js";
 import { renderPanel, defaultAnalysis, solutionItems, el, solidName,
-         panelIsFrozen, setPanelThaw } from "./ui.js";
+         compOptions, panelIsFrozen, setPanelThaw } from "./ui.js";
 import { renderTree, installTreeKeys } from "./tree.js";
 import { mapBoltToTarget, defaultReferenceFace, describeFace,
          claimedFaces } from "./pattern.js";
@@ -81,7 +81,26 @@ const A = {
     return S.activeResult;
   },
 
-  mutate(fn) { fn(); scheduleSave(); refresh(); },
+  /**
+   * Every model edit goes through here, which is what makes undo possible at
+   * all: one place to snapshot from.
+   *
+   * The snapshot is the whole `setup` as JSON. It is small — a few kB even for
+   * a large study — and copying it whole avoids the entire class of bug where
+   * an undo stack records a change incompletely. A tool people commit real
+   * work to needs a way back from a mis-click; not having one is the single
+   * most conspicuous thing missing from a pre-processor.
+   */
+  mutate(fn) {
+    pushUndo();
+    fn();
+    commitBaseline();
+    scheduleSave();
+    refresh();
+  },
+
+  undo() { stepHistory(undoStack, redoStack, "Nothing to undo"); },
+  redo() { stepHistory(redoStack, undoStack, "Nothing to redo"); },
 
   // ---- setup items ----
   // Supports and loads belong to a specific analysis.
@@ -1043,6 +1062,81 @@ function faceStates() {
 }
 
 // ---------------- refresh ----------------
+/* ------------------------------------------------------------------- undo
+ *
+ * Snapshots of `setup`, capped so a long session cannot grow without bound.
+ * View state — what is selected, hidden, exploded — is deliberately NOT in
+ * here: undo should take back a change to the model, not move the camera or
+ * reopen a panel, which is disorienting and is not what was asked for.
+ */
+const UNDO_LIMIT = 60;
+const undoStack = [];
+const redoStack = [];
+
+/**
+ * The state as of the end of the last committed edit.
+ *
+ * Undo pushes THIS rather than a snapshot taken when `mutate` is entered,
+ * because twelve call sites in this file change the model and then call
+ * `A.mutate(() => {})` purely to save and re-render. Snapshotting on entry
+ * captured those edits after they had already happened, so undoing them was a
+ * no-op — which is exactly what the first version did, and what deleting a
+ * bolt and pressing undo demonstrated.
+ *
+ * Taking the snapshot at the END of the previous edit instead makes it
+ * correct for both patterns, and does not depend on every future call site
+ * remembering which one it is using.
+ */
+let baseline = null;
+
+function snapshot() {
+  return JSON.stringify(S.project.setup);
+}
+
+function pushUndo() {
+  if (!S.project || baseline === null) return;
+  const now = snapshot();
+  if (now === baseline && !undoStack.length) return;
+  undoStack.push(baseline);
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  redoStack.length = 0;          // a new edit forks the future
+}
+
+function commitBaseline() {
+  if (S.project) baseline = snapshot();
+}
+
+/** Typing does not go through `mutate` — the panel is deliberately not
+ *  rebuilt under the caret — so a field edit is committed when the field is
+ *  left. One undo step per field, rather than one per keystroke. */
+function commitIfChanged() {
+  if (!S.project || baseline === null) return;
+  if (snapshot() === baseline) return;
+  undoStack.push(baseline);
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  redoStack.length = 0;
+  commitBaseline();
+  renderToolbar();
+}
+
+function stepHistory(from, to, emptyMsg) {
+  if (!S.project) return;
+  if (!from.length) { logLine(emptyMsg, "warnln"); return; }
+  to.push(snapshot());
+  S.project.setup = JSON.parse(from.pop());
+  commitBaseline();
+  // A selection can point at something the undo removed.
+  const kinds = { contact: "contacts", bolt: "bolts", probe: "probes",
+                  tie: "ties", analysis: "analyses" };
+  const list = kinds[S.selection?.kind];
+  if (list && !(S.project.setup[list] || []).some(
+      (x) => String(x.id) === String(S.selection.id))) {
+    S.selection = { kind: "model", id: "root" };
+  }
+  scheduleSave();
+  refresh();
+}
+
 function refresh() {
   if (!S.project) return;
   renderTree(S, A);
@@ -1087,6 +1181,9 @@ function updateGlyphs() {
 // ---------------- project bootstrap ----------------
 async function openProject(pid) {
   S.project = await api.get(`/api/projects/${pid}`);
+  // a fresh project starts its own history
+  undoStack.length = 0; redoStack.length = 0;
+  commitBaseline();
   document.getElementById("projName").textContent = S.project.name;
   document.getElementById("overlay").hidden = true;
   S.results = {}; S.runStatus = {}; S.meshData = null; S.activeResult = null;
@@ -1406,6 +1503,11 @@ const tgroup = (...kids) => {
   return k.length ? el("div", { class: "tgroup" }, ...k) : null;
 };
 
+const tpin = (...kids) => {
+  const k = kids.filter(Boolean);
+  return k.length ? el("div", { class: "tgroup pin" }, ...k) : null;
+};
+
 function renderToolbar() {
   TOOLBAR.textContent = "";
   if (!S.project) return;
@@ -1419,7 +1521,7 @@ function renderToolbar() {
     tbtn({ glyph: "▦", label: "Mesh", title: "Generate the mesh",
            disabled: running, onclick: () => A.runMesh() }),
     tbtn({ glyph: "▶",
-           label: a ? `Run ${trunc(a.name || a.type, 18)}` : "Run",
+           label: a ? `Run ${trunc(a.name || a.type, 14)}` : "Run",
            title: a ? `Solve ${a.name || a.type}` : "Select an analysis to run",
            primary: true, disabled: !a || running,
            onclick: () => A.runAnalysis(a.id) }),
@@ -1428,7 +1530,7 @@ function renderToolbar() {
 
   // --- looking at the model
   TOOLBAR.append(tgroup(
-    tbtn({ glyph: "⤢", label: "Fit", title: "Zoom to fit (F)",
+    tbtn({ glyph: "⤢", title: "Zoom to fit  (F)",
            onclick: () => viewer.fit() }),
     el("select", {
       class: "tsel", "aria-label": "Section plane",
@@ -1455,14 +1557,74 @@ function renderToolbar() {
       }) : null));
   }
 
-  // --- only in results, because nowhere else do they mean anything
-  if (S.view === "results") {
+  // --- standard views. Six angles and an iso, which is what a view cube is
+  //     for; a cube you have to aim at is slower than a button you can hit.
+  TOOLBAR.append(tgroup(...[
+    ["iso", "Iso", "0"], ["front", "Fr", "1"], ["back", "Bk", "2"],
+    ["left", "Lf", "3"], ["right", "Rt", "4"], ["top", "Tp", "5"],
+    ["bottom", "Bt", "6"],
+  ].map(([v, lab, key]) => tbtn({
+    label: lab, title: `${v[0].toUpperCase()}${v.slice(1)} view  (${key})`,
+    onclick: () => viewer.standardView(v),
+  }))));
+
+  // --- what you actually manipulate while looking at a result. These lived in
+  //     the right-hand panel, so changing a field meant looking away from the
+  //     thing you were changing, and then pressing a second button to apply it.
+  const R = S.activeResult;
+  const meta = R ? S.results[R.aid] : null;
+  const fields = meta?.fields?.filter((f) => f.part !== "I") || [];
+  if (S.view === "results" && fields.length) {
+    const f = fields.find((x) => x.name === R.field) || fields[0];
+    const steps = f.steps || [];
+    const i = Math.min(R.stepIdx || 0, Math.max(steps.length - 1, 0));
+    const stepTo = (k) => {
+      if (k < 0 || k >= steps.length) return;
+      A.setResultField(R.aid, { stepIdx: k });
+      A.loadField(R.aid);
+    };
+    TOOLBAR.append(tgroup(
+      el("select", { class: "tsel", "aria-label": "Result field",
+        onchange: (e) => { A.setResultField(R.aid, { field: e.target.value });
+                           A.loadField(R.aid); } },
+        fields.map((x) => el("option", { value: x.name,
+          selected: x.name === f.name || null },
+          x.label + (x.part === "R" ? " (real)" : "")))),
+      el("select", { class: "tsel", "aria-label": "Component",
+        onchange: (e) => { A.setResultField(R.aid, { comp: e.target.value });
+                           A.loadField(R.aid); } },
+        compOptions(f).map(([v, t]) => el("option", { value: v,
+          selected: v === (R.comp || "") || null }, t)))));
+
+    if (steps.length > 1) {
+      TOOLBAR.append(tgroup(
+        tbtn({ glyph: "◀", title: "Previous step  (\u2190)",
+               disabled: i <= 0, onclick: () => stepTo(i - 1) }),
+        el("span", { class: "tnum", title: "Step / mode" },
+           `${i + 1}/${steps.length}`),
+        tbtn({ glyph: "▶", title: "Next step  (\u2192)",
+               disabled: i >= steps.length - 1, onclick: () => stepTo(i + 1) })));
+    }
+
+    TOOLBAR.append(tgroup(
+      el("span", { class: "tlab" }, "Deform"),
+      el("input", { type: "range", class: "trange", min: 0, max: 300,
+        value: String(Math.round((R.defMult ?? 1) * 100)),
+        "aria-label": "Deformation scale",
+        oninput: (e) => A.setDeform(Number(e.target.value) / 100) }),
+      el("span", { class: "tnum" }, `${(R.defMult ?? 1).toFixed(2)}\u00d7`),
+      tbtn({ glyph: "▷", label: "Animate", pressed: !!S.animating,
+             title: "Animate the deflection  (space)",
+             onclick: () => A.toggleAnimate() })));
+
     TOOLBAR.append(tgroup(
       tbtn({ glyph: "⬚", label: "Edges", pressed: S.resMesh !== false,
              title: "Show the element mesh over the contours",
-             onclick: () => { S.resMesh = S.resMesh === false; viewer.setResultMesh(S.resMesh !== false); renderToolbar(); } }),
+             onclick: () => { S.resMesh = S.resMesh === false;
+                              viewer.setResultMesh(S.resMesh !== false);
+                              renderToolbar(); } }),
       tbtn({ glyph: "◎", label: "Probe", pressed: !!S.probeOn,
-             title: "Hover to read the value at the nearest node",
+             title: "Hover to read the value at the nearest node  (P)",
              onclick: () => {
                S.probeOn = !S.probeOn;
                viewer.probeMode = S.probeOn;
@@ -1472,8 +1634,14 @@ function renderToolbar() {
   }
 
   TOOLBAR.append(el("div", { class: "tgroup-sp" }));
-  TOOLBAR.append(tgroup(
-    tbtn({ glyph: "?", label: "Explain", pressed: document.body.classList.contains("show-help"),
+  TOOLBAR.append(tpin(
+    tbtn({ glyph: "↶", title: "Undo  (\u2318Z)", disabled: !undoStack.length,
+           onclick: () => A.undo() }),
+    tbtn({ glyph: "↷", title: "Redo  (\u21e7\u2318Z)", disabled: !redoStack.length,
+           onclick: () => A.redo() }),
+    tbtn({ glyph: "⌨", title: "Keyboard shortcuts  (?)",
+           onclick: () => showShortcuts() }),
+    tbtn({ glyph: "?", pressed: document.body.classList.contains("show-help"),
            title: "Show the explanatory notes in every panel",
            onclick: () => {
              const on = !document.body.classList.contains("show-help");
@@ -1498,6 +1666,139 @@ try {
     document.body.classList.add("show-help");
   }
 } catch (e) { /* private mode: notes stay folded */ }
+
+/* --------------------------------------------------------------- keyboard
+ *
+ * Experts do not hunt menus. Every frequent action gets a key, and the list
+ * is reachable with "?" so it is discoverable rather than folklore.
+ *
+ * Nothing fires while a field has focus — a tool that eats the "1" you are
+ * typing into a preload box is worse than one with no shortcuts at all.
+ */
+const SHORTCUTS = [
+  ["View", [
+    ["F", "Zoom to fit"],
+    ["0", "Isometric"],
+    ["1 – 6", "Front, back, left, right, top, bottom"],
+    ["X", "Explode on/off"],
+    ["E", "Section plane on/off"],
+  ]],
+  ["Results", [
+    ["← →", "Previous / next step or mode"],
+    ["Space", "Animate"],
+    ["P", "Probe values"],
+    ["M", "Element edges"],
+  ]],
+  ["Model", [
+    ["\u2318Z / Ctrl+Z", "Undo"],
+    ["\u21e7\u2318Z / Ctrl+Y", "Redo"],
+    ["Delete", "Delete the selected item"],
+    ["\u2318\u21a9 / Ctrl+\u21a9", "Run the current analysis"],
+    ["Esc", "Cancel picking"],
+  ]],
+  ["Help", [
+    ["?", "This list"],
+    ["H", "Show or hide the explanatory notes"],
+  ]],
+];
+
+function showShortcuts() {
+  const old = document.getElementById("kbOverlay");
+  if (old) { old.remove(); return; }
+  const card = el("div", { class: "kbcard" },
+    el("h2", {}, "Keyboard"),
+    el("div", { class: "kbcols" }, SHORTCUTS.map(([group, rows]) =>
+      el("div", { class: "kbgroup" },
+        el("span", { class: "lbl" }, group),
+        rows.map(([k, what]) => el("div", { class: "kbrow" },
+          el("kbd", {}, k), el("span", {}, what)))))),
+    el("div", { class: "hint" },
+      "Shortcuts do not fire while a field has focus."));
+  const ov = el("div", { class: "kboverlay", id: "kbOverlay",
+    onclick: (e) => { if (e.target.id === "kbOverlay") e.target.remove(); } }, card);
+  document.body.append(ov);
+}
+
+const typing = () => {
+  const t = document.activeElement;
+  return t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
+               || t.tagName === "SELECT" || t.isContentEditable);
+};
+
+function deleteSelected() {
+  const { kind, id } = S.selection || {};
+  const list = { contact: "contacts", bolt: "bolts", probe: "probes",
+                 tie: "ties", support: "supports", load: "loads",
+                 analysis: "analyses" }[kind];
+  if (!list) { logLine("Nothing deletable is selected.", "warnln"); return; }
+  A.removeItem(list, id);
+}
+
+function stepResult(delta) {
+  const R = S.activeResult;
+  const meta = R ? S.results[R.aid] : null;
+  if (!meta) return;
+  const f = meta.fields?.find((x) => x.name === R.field);
+  if (!f || (f.steps || []).length < 2) return;
+  const k = Math.min(Math.max((R.stepIdx || 0) + delta, 0), f.steps.length - 1);
+  if (k === R.stepIdx) return;
+  A.setResultField(R.aid, { stepIdx: k });
+  A.loadField(R.aid);
+}
+
+window.addEventListener("keydown", (e) => {
+  if (e.target?.closest?.(".modal")) return;      // the project dialog owns keys
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === "z") {
+    e.preventDefault();
+    (e.shiftKey ? A.redo : A.undo)();
+    return;
+  }
+  if (mod && (e.key.toLowerCase() === "y")) { e.preventDefault(); A.redo(); return; }
+  if (mod && e.key === "Enter") {
+    e.preventDefault();
+    const a = A.currentAnalysis?.();
+    if (a) A.runAnalysis(a.id);
+    return;
+  }
+  if (e.key === "Escape") {
+    document.getElementById("kbOverlay")?.remove();
+    // the pick bar's own Cancel, so one code path ends a pick
+    const c = document.getElementById("pickCancel");
+    if (c && !document.getElementById("pickBar").hidden) c.click();
+    return;
+  }
+  if (typing() || mod || e.altKey) return;
+
+  const k = e.key;
+  const views = { "0": "iso", "1": "front", "2": "back", "3": "left",
+                  "4": "right", "5": "top", "6": "bottom" };
+  if (views[k]) { viewer.standardView(views[k]); return; }
+  switch (k.toLowerCase()) {
+    case "f": viewer.fit(); break;
+    case "?": showShortcuts(); break;
+    case "h": document.querySelector('.tbtn[title^="Show the explanatory"]')?.click(); break;
+    case "x": if ((S.project?.geometry?.solids || []).length > 1 && S.view === "geometry") {
+                S.explodeOn = !S.explodeOn; applyExplode();
+              } break;
+    case "e": S.clipAxis = S.clipAxis ? "" : "z"; applyClip(); break;
+    case " ": if (S.view === "results") { e.preventDefault(); A.toggleAnimate(); } break;
+    case "p": if (S.view === "results") {
+                S.probeOn = !S.probeOn; viewer.probeMode = S.probeOn;
+                if (!S.probeOn) document.getElementById("nodeProbe").hidden = true;
+                renderToolbar();
+              } break;
+    case "m": if (S.view === "results") {
+                S.resMesh = S.resMesh === false;
+                viewer.setResultMesh(S.resMesh !== false); renderToolbar();
+              } break;
+    case "delete": case "backspace": deleteSelected(); break;
+    default: break;
+  }
+  if (S.view === "results" && (k === "ArrowLeft" || k === "ArrowRight")) {
+    stepResult(k === "ArrowRight" ? 1 : -1);
+  }
+});
 
 /* ---------------------------------------------------------------- status */
 const STATUSBAR = document.getElementById("statusbar");
@@ -1537,7 +1838,7 @@ function renderStatus() {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.25.0";
+const UI_BUILD = "0.26.0";
 
 function checkVersionSkew() {
   const server = S.config?.version;
@@ -1648,7 +1949,10 @@ async function boot() {
   initSplitters();
   installTreeKeys(S, A);
   // a field losing focus (or Enter) re-renders the panel it froze
-  setPanelThaw(() => { if (S.project) renderPanel(S, A); });
+  // Leaving a field commits it as one undo step. Typing does not go through
+  // `mutate`, so without this a field edit would be swept into whatever the
+  // next model change happened to be.
+  setPanelThaw(() => { commitIfChanged(); if (S.project) renderPanel(S, A); });
   await showOverlay();
 }
 

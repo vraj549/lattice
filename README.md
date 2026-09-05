@@ -95,6 +95,9 @@ examples with `python examples/make_examples.py`).
 4. **Analyses** — *+ add* opens a dialog: static, modal, harmonic, random or
    shock.
 
+Press **?** for the keyboard list: `F` to fit, `0`–`6` for the standard views,
+`←`/`→` to step through modes, `Space` to animate, `⌘Z` to undo.
+
 Solids can be renamed from their panel — the name is yours and is saved with
 the project — and hidden from the eye on each tree row, or with *Isolate* /
 *Show all*. Hiding is for looking and picking: a hidden solid is still in the

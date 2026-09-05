@@ -154,6 +154,7 @@ export class Viewer {
   }
 
   fit() { this.orbit.fit(this.bbox); }
+  standardView(name) { this.orbit.setStandardView(name); }
 
   // ---------------- geometry ----------------
   setGeometry(tess, meta) {

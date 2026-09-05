@@ -1877,45 +1877,25 @@ function secFRF(S, A, a) {
 
 function secContours(S, A, a) {
   const meta = S.results[a.id];
-  const secs = [];
-  const R = S.activeResult;
   const realFields = meta.fields?.filter((f) => f.part !== "I") || [];
-  if (realFields.length) {
-    const cur = R?.aid === a.id ? R : null;
-    const fsel = selInput("Field", cur?.field || realFields[0].name,
-      realFields.map((f) => [f.name, f.label + (f.part === "R" ? " (real part)" : "")]),
-      (v) => A.setResultField(a.id, { field: v }));
-    const f = realFields.find((x) => x.name === (cur?.field || realFields[0].name)) || realFields[0];
-    const comps = compOptions(f);
-    const csel = selInput("Component", cur?.comp || comps[0][0], comps,
-      (v) => A.setResultField(a.id, { comp: v }));
-    const steps = f.steps.map((s, i) => [String(i),
-      f.steps.length > 1 ? `${s.ndt} — ${fmtVal(s.value)} ${a.type === "static" ? "" : "Hz"}` : "result"]);
-    const ssel = f.steps.length > 1
-      ? selInput("Step / mode / frequency", String(cur?.stepIdx ?? 0), steps,
-          (v) => A.setResultField(a.id, { stepIdx: Number(v) }))
-      : null;
-    secs.push(sec("Contours", fsel, csel, ssel,
-      el("div", { class: "frm-row2" },
-        selInput("Bands", String(contourStyle.bands),
-          [["9", "9 (default)"], ["5", "5"], ["13", "13"], ["18", "18"],
-           ["27", "27"], ["0", "Smooth"]],
-          (v) => { contourStyle.bands = Number(v); A.restyleContours(); }),
-        selInput("Palette", contourStyle.palette,
-          [["rainbow", "Rainbow"], ["turbo", "Turbo"]],
-          (v) => { contourStyle.palette = v; A.restyleContours(); })),
-      deformControl(S, A, cur),
-      // Animation is not a modal-only idea: watching a static deflection grow
-      // and relax is the fastest way to see where a part is actually moving.
-      el("div", { class: "btnrow" },
-        el("button", { class: "btn", onclick: () => A.toggleAnimate() },
-          S.animating ? "Stop animation" : "Animate")),
-      el("div", { class: "btnrow" },
-        el("button", { class: "btn btn-accent", onclick: () => A.loadField(a.id) }, "Show contours"),
-        el("button", { class: "btn btn-small",
-          onclick: () => A.exportField(a.id) }, "Export nodal values (CSV)"))));
-  }
-  return secs;
+  if (!realFields.length) return [];
+  // Field, component, step, deformation and animate are on the command bar.
+  // They are what you change WHILE looking at the result, and reaching across
+  // to a panel to do it meant looking away from the thing being changed —
+  // then pressing a second button to apply it. What is left here is styling,
+  // which is set once, and the export.
+  return [sec("Contour style",
+    el("div", { class: "frm-row2" },
+      selInput("Bands", String(contourStyle.bands),
+        [["9", "9 (default)"], ["5", "5"], ["13", "13"], ["18", "18"],
+         ["27", "27"], ["0", "Smooth"]],
+        (v) => { contourStyle.bands = Number(v); A.restyleContours(); }),
+      selInput("Palette", contourStyle.palette,
+        [["rainbow", "Rainbow"], ["turbo", "Turbo"]],
+        (v) => { contourStyle.palette = v; A.restyleContours(); })),
+    el("div", { class: "btnrow" },
+      el("button", { class: "btn btn-small",
+        onclick: () => A.exportField(a.id) }, "Export nodal values (CSV)")))];
 }
 
 function secBolts(S, A, a) {
@@ -2403,7 +2383,7 @@ function deformControl(S, A, cur) {
   );
 }
 
-function compOptions(f) {
+export function compOptions(f) {
   if (f.kind === "DEPL") {
     return [["MAG", "Magnitude |u|"], ...["DX", "DY", "DZ"]
       .filter((c) => f.comps.includes(c)).map((c) => [c, c.replace("D", "U")])];
