@@ -362,3 +362,60 @@ def test_a_real_run_is_not_labelled_demo(client, monkeypatch):
         json.dump(meta, fh)
     body = c.get(f"/api/projects/{pid}/results/a1/export?what=all").text
     assert "DEMO SOLVER" not in body
+
+
+# ---------------------------------------------- the setup document is checked
+
+@pytest.mark.parametrize("patch,fragment", [
+    ({"contacts": [{"id": "c", "name": "p/p", "kind": "frictional",
+                    "faces_a": [1], "faces_b": [2], "solids": [1, 2]}]},
+     "behaviour 'frictional'"),
+    ({"contacts": [{"id": "c", "kind": "friction", "solve": "sort-of",
+                    "faces_a": [1], "faces_b": [2], "solids": [1, 2]}]},
+     "solve mode 'sort-of'"),
+    ({"mesh": {"size_mm": 0}}, "greater than zero"),
+])
+def test_a_typo_that_changes_the_physics_is_refused(client, patch, fragment):
+    """Every writer treats an unrecognised enum as a default rather than an
+    error: an unknown contact kind becomes a plain contact zone with no
+    friction, an unknown support type becomes a prescribed displacement
+    holding nothing, an unknown load type matches no branch and is never
+    applied, and a mesh size of 0 means "unset" so the model meshes at the
+    automatic size. All four finish, report numbers, and describe a different
+    structure than the one on screen.
+    """
+    c = client
+    pid = make_project(c)["id"]
+    setup = c.get(f"/api/projects/{pid}").json()["setup"]
+    setup.update(patch)
+    r = c.put(f"/api/projects/{pid}/setup", json=setup)
+    assert r.status_code == 422, r.text
+    assert fragment in r.text, r.text
+
+
+@pytest.mark.parametrize("bad,fragment", [
+    ({"type": "fixxed", "name": "base", "faces": [1], "id": "s"}, "support type"),
+    ({"type": "fixed", "name": "base", "faces": [1], "id": "s"}, None),
+])
+def test_support_and_load_types_are_checked_per_analysis(client, bad, fragment):
+    c = client
+    pid = make_project(c)["id"]
+    setup = c.get(f"/api/projects/{pid}").json()["setup"]
+    setup["analyses"] = [{"id": "a1", "type": "static", "name": "Static",
+                          "config": {}, "supports": [bad], "loads": []}]
+    r = c.put(f"/api/projects/{pid}/setup", json=setup)
+    if fragment is None:
+        assert r.status_code == 200, r.text
+    else:
+        assert r.status_code == 422 and fragment in r.text, r.text
+
+
+def test_a_valid_setup_still_saves(client):
+    """Validation that rejects legitimate models is worse than none."""
+    c = client
+    pid = make_project(c)["id"]
+    setup = c.get(f"/api/projects/{pid}").json()["setup"]
+    for kind in ("bonded", "noseparation", "frictionless", "friction"):
+        setup["contacts"] = [{"id": "c", "name": "p/p", "kind": kind,
+                              "faces_a": [1], "faces_b": [2], "solids": [1, 2]}]
+        assert c.put(f"/api/projects/{pid}/setup", json=setup).status_code == 200, kind

@@ -375,8 +375,17 @@ function textInput(label, value, oninput) {
     liveInput({ type: "text", value: value ?? "" }, (t) => oninput(t.value)));
 }
 function selInput(label, value, options, onchange) {
-  const s = el("select", { onchange: (e) => onchange(e.target.value) },
-    options.map(([v, t]) => {
+  // A value that matches no option would otherwise select the first one, so
+  // the panel would show "Bonded" for a contact the tree lists as something
+  // else and the solver treats as a third thing. A select cannot display what
+  // is not in it, so the unrecognised value is added and marked — the panel
+  // says what the model holds, and choosing anything replaces it.
+  const known = options.some(([v]) => String(v) === String(value));
+  const opts = known ? options
+    : [[value, `${value} — not recognised, pick one below`], ...options];
+  const s = el("select",
+    { class: known ? "" : "bad", onchange: (e) => onchange(e.target.value) },
+    opts.map(([v, t]) => {
       const o = el("option", { value: v }, t);
       if (String(v) === String(value)) o.selected = true;
       return o;

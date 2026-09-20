@@ -27,6 +27,18 @@ const S = {
 let viewer = null;
 let pickCtx = null;          // {item, key} | {probe}
 
+// What the viewport is actually displaying, as opposed to what is selected.
+// Without this the two drift: S.activeResult is replaced the moment a
+// different analysis is selected, so "is the right thing on screen" cannot be
+// answered from it. Set only by loadField, which is what draws.
+let shown = null;            // {aid, field, step, comp} | null
+
+function showingResult(R) {
+  return !!shown && !!R && S.view === "results"
+    && shown.aid === R.aid && shown.field === R.field
+    && shown.step === (R.stepIdx || 0) && shown.comp === (R.comp || "");
+}
+
 // ---------------- actions ----------------
 const A = {
   // Selecting is now only selecting. It used to jump straight into results
@@ -38,12 +50,23 @@ const A = {
       // the panel and the view tabs each holding a different opinion about
       // what you are doing. Picking a result IS asking to see it.
       const aid = String(id).split("|")[0];
-      A.ensureActiveResult(aid);
-      // Always load the run's field, not only for the contour node: switching
-      // the tab without it left the Results view showing the geometry, which
-      // is the same disagreement in a new place.
-      if (!S.results[aid] || S.view !== "results") A.openResults(aid, { select: false });
-      else if (S.view !== "results") setView("results");
+      const R = A.ensureActiveResult(aid);
+      // Three cases, and the middle one used to fall through both branches:
+      // results already loaded AND already on the Results tab meant nothing
+      // ran, so picking a mode while looking at a static contour left the
+      // previous analysis's field on screen under the new analysis's panel.
+      // ensureActiveResult has by then replaced S.activeResult, so the
+      // viewport and the legend were describing a run nobody had selected.
+      if (!S.results[aid]) {
+        A.openResults(aid, { select: false });
+      } else if (!showingResult(R)) {
+        // loadField is the only path that sets the mesh, the legend and the
+        // status line together, so it is the only one that leaves all three
+        // describing the same run.
+        A.loadField(aid);
+      } else if (S.view !== "results") {
+        setView("results");
+      }
     }
     refresh();
   },
@@ -481,6 +504,7 @@ const A = {
       R.autoScale = autoScale;
       setView("results");
       viewer.showResult(payload, { defScale: autoScale * (R.defMult || 1), animate: S.animating });
+      shown = { aid, field: f.name, step: R.stepIdx || 0, comp: R.comp || "" };
       const a = S.project.setup.analyses.find((x) => x.id === aid);
       const unit = f.kind === "DEPL" ? "mm" : "MPa";
       const stepTxt = f.steps.length > 1 ? ` @ ${fmtVal(step.value)} Hz` : "";
@@ -1008,13 +1032,14 @@ function setView(v) {
     b.setAttribute("aria-selected", String(b.dataset.view === v));
   }
   renderLegend(null);
-  if (v === "geometry") { viewer.showGeometry(); updateStat(); }
+  if (v === "geometry") { viewer.showGeometry(); updateStat(); shown = null; }
   renderToolbar();          // also here: switching views is not a model edit
   renderStatus();
   if (v === "mesh") {
     if (S.meshData) viewer.showMeshPreview(S.meshData.skin);
     else viewer.showMeshPreview(null);
     updateStat();
+    shown = null;
   }
   // results view is driven by loadField
 }
@@ -1192,7 +1217,7 @@ async function openProject(pid) {
   commitBaseline();
   document.getElementById("projName").textContent = S.project.name;
   document.getElementById("overlay").hidden = true;
-  S.results = {}; S.runStatus = {}; S.meshData = null; S.activeResult = null;
+  S.results = {}; S.runStatus = {}; S.meshData = null; S.activeResult = null; shown = null;
   S.selection = { kind: "model", id: "root" };
   try { S.expanded = JSON.parse(localStorage.getItem(`lattice-tree-${pid}`) || "{}"); }
   catch { S.expanded = {}; }

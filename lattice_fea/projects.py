@@ -189,3 +189,71 @@ def migrate_setup(setup: dict) -> dict:
         a.setdefault("supports", [])
         a.setdefault("loads", [])
     return setup
+
+
+# --------------------------------------------------------------- validation
+
+# Values that decide physics. A typo in any of these does not fail — it
+# quietly changes the model: an unrecognised support type falls through to
+# "prescribed displacement with no components" and holds nothing, an
+# unrecognised load type matches no branch and is never applied, and an
+# unrecognised contact kind is written as a plain contact zone with no
+# friction. Each one produces a run that completes, reports numbers, and
+# describes a different structure from the one on screen.
+CONTACT_KINDS = ("bonded", "noseparation", "frictionless", "friction")
+CONTACT_SOLVE = ("linear", "nonlinear")
+SUPPORT_TYPES = ("fixed", "frictionless", "disp")
+LOAD_TYPES = ("force", "pressure", "remote", "gravity", "rotation")
+ANALYSIS_TYPES = ("static", "modal", "harmonic", "random", "shock")
+
+
+class SetupInvalid(ValueError):
+    """The setup names something the solvers do not implement."""
+
+
+def _one_of(value, allowed, what: str, where: str) -> None:
+    if value in allowed:
+        return
+    raise SetupInvalid(
+        f"{where}: {what} '{value}' is not one of "
+        f"{', '.join(repr(a) for a in allowed)}.")
+
+
+def validate_setup(setup: dict) -> None:
+    """Refuse a setup that would be silently mis-solved. Raises SetupInvalid.
+
+    Deliberately narrow: only the enumerated fields that change what is
+    solved, and only the numeric fields where an out-of-range value is
+    absorbed rather than rejected. Everything else stays permissive, because
+    the setup document is written by the UI and by scripts and a schema that
+    rejects unknown keys would break both on every addition.
+    """
+    for i, c in enumerate(setup.get("contacts") or [], 1):
+        where = f"contact {i} ('{c.get('name', '')}')"
+        _one_of(c.get("kind", "bonded"), CONTACT_KINDS, "behaviour", where)
+        if c.get("solve") is not None:
+            _one_of(c["solve"], CONTACT_SOLVE, "solve mode", where)
+
+    for ai, a in enumerate(setup.get("analyses") or [], 1):
+        aname = a.get("name") or f"analysis {ai}"
+        _one_of(a.get("type"), ANALYSIS_TYPES, "analysis type", aname)
+        for i, s in enumerate(a.get("supports") or [], 1):
+            _one_of(s.get("type", "fixed"), SUPPORT_TYPES, "support type",
+                    f"{aname} / support {i} ('{s.get('name', '')}')")
+        for i, l in enumerate(a.get("loads") or [], 1):
+            _one_of(l.get("type"), LOAD_TYPES, "load type",
+                    f"{aname} / load {i} ('{l.get('name', '')}')")
+
+    size = (setup.get("mesh") or {}).get("size_mm")
+    if size is not None and size != "":
+        try:
+            size = float(size)
+        except (TypeError, ValueError):
+            raise SetupInvalid(f"mesh: element size '{size}' is not a number.")
+        if size <= 0.0:
+            # `size_mm or diag/25` treats 0 as "unset" and meshes at the
+            # automatic size, so a user who typed 0 got a mesh and no hint
+            # that the number had been ignored.
+            raise SetupInvalid(
+                "mesh: element size must be greater than zero. Clear the "
+                "field to let Lattice choose a size from the model.")

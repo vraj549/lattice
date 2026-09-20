@@ -21,7 +21,7 @@ from . import (__version__, bolt_sizing, ccx_writer, comm_writer, config,
                preload as preload_mod, random_vib, results, shock,
                slip)
 from .materials import LIBRARY
-from .projects import ProjectStore
+from .projects import ProjectStore, SetupInvalid, validate_setup
 from .solver import (JobManager, extract_errors, popen_isolated, reap,
                      run_ccx, run_solver, summarise_failure)
 
@@ -210,6 +210,14 @@ def create_app(workspace: str = "workspace") -> FastAPI:
     @app.put("/api/projects/{pid}/setup")
     async def put_setup(pid: str, setup: dict):
         proj = _project(pid)
+        # The enumerated fields decide what gets solved, and every writer
+        # treats an unrecognised value as a default rather than an error, so
+        # a typo here is absorbed and reported as a finished run. Refusing at
+        # the boundary is the only place it is still a typo.
+        try:
+            validate_setup(setup)
+        except SetupInvalid as e:
+            raise HTTPException(422, str(e))
         proj["setup"] = setup
         store.save(pid, proj)
         return {"ok": True}
