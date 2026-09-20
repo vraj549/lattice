@@ -3,6 +3,7 @@ import { Viewer } from "./viewer.js";
 import { renderPanel, defaultAnalysis, solutionItems, el, solidName,
          compOptions, panelIsFrozen, setPanelThaw } from "./ui.js";
 import { renderTree, installTreeKeys } from "./tree.js";
+import { History } from "./history.js";
 import { mapBoltToTarget, defaultReferenceFace, describeFace,
          claimedFaces } from "./pattern.js";
 import { renderLegend, fmtVal, contourStyle } from "./colormap.js";
@@ -122,8 +123,8 @@ const A = {
     refresh();
   },
 
-  undo() { stepHistory(undoStack, redoStack, "Nothing to undo"); },
-  redo() { stepHistory(redoStack, undoStack, "Nothing to redo"); },
+  undo() { stepHistory("undo", "Nothing to undo"); },
+  redo() { stepHistory("redo", "Nothing to redo"); },
 
   // ---- setup items ----
   // Supports and loads belong to a specific analysis.
@@ -1100,62 +1101,27 @@ function faceStates() {
  * here: undo should take back a change to the model, not move the camera or
  * reopen a panel, which is disorienting and is not what was asked for.
  */
-const UNDO_LIMIT = 60;
-const undoStack = [];
-const redoStack = [];
+const history = new History(
+  () => JSON.stringify(S.project.setup),
+  (json) => { S.project.setup = JSON.parse(json); });
 
-/**
- * The state as of the end of the last committed edit.
- *
- * Undo pushes THIS rather than a snapshot taken when `mutate` is entered,
- * because twelve call sites in this file change the model and then call
- * `A.mutate(() => {})` purely to save and re-render. Snapshotting on entry
- * captured those edits after they had already happened, so undoing them was a
- * no-op — which is exactly what the first version did, and what deleting a
- * bolt and pressing undo demonstrated.
- *
- * Taking the snapshot at the END of the previous edit instead makes it
- * correct for both patterns, and does not depend on every future call site
- * remembering which one it is using.
- */
-let baseline = null;
-
-function snapshot() {
-  return JSON.stringify(S.project.setup);
-}
-
-function pushUndo() {
-  if (!S.project || baseline === null) return;
-  const now = snapshot();
-  if (now === baseline && !undoStack.length) return;
-  undoStack.push(baseline);
-  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
-  redoStack.length = 0;          // a new edit forks the future
-}
-
-function commitBaseline() {
-  if (S.project) baseline = snapshot();
-}
+function pushUndo() { if (S.project) history.push(); }
+function commitBaseline() { if (S.project) history.commit(); }
 
 /** Typing does not go through `mutate` — the panel is deliberately not
  *  rebuilt under the caret — so a field edit is committed when the field is
  *  left. One undo step per field, rather than one per keystroke. */
 function commitIfChanged() {
-  if (!S.project || baseline === null) return;
-  if (snapshot() === baseline) return;
-  undoStack.push(baseline);
-  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
-  redoStack.length = 0;
-  commitBaseline();
-  renderToolbar();
+  if (!S.project) return;
+  if (history.commitIfChanged()) renderToolbar();
 }
 
-function stepHistory(from, to, emptyMsg) {
+function stepHistory(dir, emptyMsg) {
   if (!S.project) return;
-  if (!from.length) { logLine(emptyMsg, "warnln"); return; }
-  to.push(snapshot());
-  S.project.setup = JSON.parse(from.pop());
-  commitBaseline();
+  if (!(dir === "undo" ? history.undo() : history.redo())) {
+    logLine(emptyMsg, "warnln");
+    return;
+  }
   // A selection can point at something the undo removed.
   const kinds = { contact: "contacts", bolt: "bolts", probe: "probes",
                   tie: "ties", analysis: "analyses" };
@@ -1213,8 +1179,7 @@ function updateGlyphs() {
 async function openProject(pid) {
   S.project = await api.get(`/api/projects/${pid}`);
   // a fresh project starts its own history
-  undoStack.length = 0; redoStack.length = 0;
-  commitBaseline();
+  history.reset();
   document.getElementById("projName").textContent = S.project.name;
   document.getElementById("overlay").hidden = true;
   S.results = {}; S.runStatus = {}; S.meshData = null; S.activeResult = null; shown = null;
@@ -1696,9 +1661,9 @@ function renderToolbar() {
 
   add(el("div", { class: "tgroup-sp" }));
   add(tpin(
-    tbtn({ glyph: "↶", title: "Undo  (\u2318Z)", disabled: !undoStack.length,
+    tbtn({ glyph: "↶", title: "Undo  (\u2318Z)", disabled: !history.canUndo,
            onclick: () => A.undo() }),
-    tbtn({ glyph: "↷", title: "Redo  (\u21e7\u2318Z)", disabled: !redoStack.length,
+    tbtn({ glyph: "↷", title: "Redo  (\u21e7\u2318Z)", disabled: !history.canRedo,
            onclick: () => A.redo() }),
     tbtn({ glyph: "⌨", title: "Keyboard shortcuts  (?)",
            onclick: () => showShortcuts() }),

@@ -1087,8 +1087,59 @@ function panelProbe(S, A, put, id) {
         el("button", { class: "btn btn-accent", onclick: () => A.pickPoint(p) }, "Pick point on surface")),
       el("div", { class: "hint" },
         "Snapped to the nearest mesh node at solve time. Harmonic FRFs are extracted here.")),
+    ...probeReadout(S, A, p),
     sec(null, dupRow(A, "probes", id, "probe"),
         delBtn("probe", () => A.removeItem("probes", id))));
+}
+
+/**
+ * What this probe actually measured, per solved analysis.
+ *
+ * A probe exists to give a number at a point. Its panel used to show only the
+ * coordinates it was placed at — the one thing it is for appeared nowhere in
+ * it, and you had to know which result node to open to find out whether the
+ * point you asked about had moved at all.
+ *
+ * Only the analyses that extract at probes are listed. Static and modal decks
+ * do not create the probe node groups, so there is nothing to report for them
+ * and saying so beats an empty row.
+ */
+function probeReadout(S, A, p) {
+  const idx = (S.project.setup.probes || []).findIndex((x) => x.id === p.id) + 1;
+  const rows = [];
+  for (const a of S.project.setup.analyses || []) {
+    const meta = S.results[a.id];
+    if (!meta) continue;
+    if (a.type === "shock") {
+      const R = S.shockResults?.[a.id];
+      if (!R) {
+        // Same on-demand fetch the shock panel does, guarded by shockPending,
+        // so asking here does not mean opening the result node first.
+        A.loadShock(a.id);
+        rows.push([a.name || a.type, "computing\u2026"]);
+        continue;
+      }
+      const r = R.probes?.find((x) => x.probe === `PROBE${idx}`);
+      rows.push([a.name || a.type,
+                 r ? `${fmtVal(r.mag)} mm peak` : "not extracted in this run"]);
+    } else if (["harmonic", "random"].includes(a.type)) {
+      const mine = (meta.frf || []).filter((f) => f.probe === idx);
+      if (!mine.length) continue;
+      for (const f of mine) {
+        let best = 0, at = 0;
+        f.module.forEach((v, i) => { if (v > best) { best = v; at = f.freq[i]; } });
+        rows.push([`${a.name || a.type} · ${f.comp}`,
+                   `${fmtVal(best)} mm at ${fmtVal(at)} Hz`]);
+      }
+    }
+  }
+  if (!rows.length) {
+    return [sec("Measured here", el("div", { class: "hint" },
+      "Nothing yet. Probes are extracted by harmonic, random and shock runs; "
+      + "static and modal decks do not create the probe node groups, so read "
+      + "those from the contour instead."))];
+  }
+  return [sec("Measured here", dl(rows))];
 }
 
 // ---------- mesh ----------

@@ -617,9 +617,20 @@ body.resizing-v { cursor: row-resize; user-select: none; }
   font: 500 var(--t-body)/1 var(--ui); cursor: pointer; white-space: nowrap;
 }
 .tbtn svg, .tbtn .gl { width: var(--ico); height: var(--ico); flex: none; }
+/* A text glyph does not fill the box an SVG icon does: the span was sized to
+   15px while the character inside it stayed at 12px body text, top-left and
+   uncentred. Undo and Redo are text glyphs, so at .35 opacity on a
+   transparent toolbar they were not merely faint — you had to query the DOM
+   to establish they were there at all. */
+.tbtn .gl {
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: calc(var(--ico) * 1.05); line-height: 1;
+}
 .tbtn:hover:not(:disabled) { background: var(--panel-3); }
 .tbtn[aria-pressed="true"] { background: var(--panel-4); border-color: var(--line-2); }
-.tbtn:disabled { opacity: .35; cursor: default; }
+/* Disabled still has to read as a control that exists and is unavailable,
+   not as an empty patch of toolbar. */
+.tbtn:disabled { opacity: .55; color: var(--faint); cursor: default; }
 .tbtn.primary { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .tbtn.primary:hover:not(:disabled) { filter: brightness(1.08); }
 .tbtn.icononly { padding: 0 6px; }
