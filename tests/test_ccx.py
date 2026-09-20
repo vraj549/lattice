@@ -301,3 +301,67 @@ def test_no_test_builds_its_own_ccx_environment():
             continue
         for line in open(os.path.join(here, name), encoding="utf-8"):
             assert not assign.search(line), f"{name}: {line.strip()}"
+
+
+# ------------------------------- group names belong to their own analysis
+
+def test_the_second_analysis_reads_its_own_groups_not_the_first_analysis(tmp_path):
+    """Mesh groups are numbered per analysis: SUP<ai>_<n>, LOA<ai>_<n>.
+
+    build_deck derived that index correctly; every helper that looked up a node
+    set wrote a literal 1. So the reaction frames and the applied-load total
+    for analysis 2 were read from analysis 1's faces. With one analysis that is
+    invisible, which is why it survived — and on the second one it checks
+    equilibrium against a face that is not the one being loaded.
+
+    A pressure load is what exposes it: a force load carries its own
+    components, but pressure has to be turned into a resultant using the
+    group's area and normal, so naming the wrong group gives the wrong answer
+    silently and in full confidence.
+    """
+    meta, setup, _ = _cantilever(str(tmp_path))
+    root = min(meta["faces"], key=lambda f: f["com"][0])
+    tip = max(meta["faces"], key=lambda f: f["com"][0])
+    side = max(meta["faces"], key=lambda f: f["area"])       # an L x b flank
+    assert side["tag"] not in (root["tag"], tip["tag"])
+
+    a1 = setup["analyses"][0]
+    a1["loads"] = [{"id": "l1", "name": "tip", "type": "pressure",
+                    "faces": [tip["tag"]], "pressure": 2.0}]
+    a2 = {"id": "a2", "type": "static", "name": "Side pressure", "config": {},
+          "supports": [{"id": "s1", "name": "root", "type": "fixed",
+                        "faces": [root["tag"]]}],
+          "loads": [{"id": "l1", "name": "flank", "type": "pressure",
+                     "faces": [side["tag"]], "pressure": 2.0}]}
+    setup["analyses"] = [a1, a2]
+
+    out = meshing.mesh_project(os.path.join(str(tmp_path), "bar.brep"),
+                               os.path.join(str(tmp_path), "mesh2.unv"),
+                               meta, setup)
+    stats = out["stats"]
+    assert "SUP2_1" in (stats.get("face_nodes") or {})
+
+    assert ccx_writer.analysis_index(setup, a1) == 1
+    assert ccx_writer.analysis_index(setup, a2) == 2
+
+    f1 = ccx_writer.support_frames(a1, stats, 1)
+    f2 = ccx_writer.support_frames(a2, stats, 2)
+    assert f1 and f1[0]["group"] == "SUP1_1" and f1[0]["nodes"]
+    assert f2 and f2[0]["group"] == "SUP2_1" and f2[0]["nodes"]
+
+    # The two faces differ in area and normal, so the resultants differ in both
+    # magnitude and direction. Right index, right answer:
+    t1 = ccx_writer.applied_total(a1, stats, 1)
+    t2 = ccx_writer.applied_total(a2, stats, 2)
+    assert abs(t1[0]) > 0 and abs(t1[1]) + abs(t1[2]) < 1e-6, t1   # along x
+    assert abs(t2[0]) < 1e-6 and abs(t2[1]) + abs(t2[2]) > 0, t2   # not along x
+
+    # The old behaviour, reproduced exactly: ai pinned to 1 while solving
+    # analysis 2. It does not fail — it returns analysis 1's resultant.
+    assert ccx_writer.applied_total(a2, stats, 1) == pytest.approx(t1), \
+        "the test no longer reproduces the bug it is guarding"
+
+    # And the deck for analysis 2 names its own groups throughout.
+    deck = ccx_writer.build_deck(a2, setup, meta, stats)
+    assert "SUP2_1" in deck and "LOA2_1" in deck
+    assert "SUP1_1" not in deck and "LOA1_1" not in deck

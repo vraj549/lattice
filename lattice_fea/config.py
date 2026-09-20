@@ -238,9 +238,15 @@ def detect(workspace: str = ".") -> SolverConfig:
             "factorization has been observed to return wrong results without "
             "any error; verify your build before trusting these runs.")
 
-    explicitly_set = cfg.mode != "none" or "LATTICE_ASTER_MODE" in env or "mode" in file_cfg
-    if explicitly_set and cfg.mode != "none":
-        cfg.detail = f"configured: {cfg.mode}"
+    # `mode` only ever comes from the default, the file, or the environment, so
+    # asking whether the file or the environment named it IS the question. The
+    # condition used to also require mode != "none", which made an explicit
+    # LATTICE_ASTER_MODE=none fall through to auto-detect and switch the solver
+    # back on — the one setting whose whole purpose is to keep it off.
+    explicitly_set = "LATTICE_ASTER_MODE" in env or "mode" in file_cfg
+    if explicitly_set:
+        cfg.detail = ("configured: none — code_aster is switched off here"
+                      if cfg.mode == "none" else f"configured: {cfg.mode}")
         return _probe_resources(cfg)
 
     # --- auto-detect ---

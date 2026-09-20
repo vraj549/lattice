@@ -378,10 +378,11 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             if engine == "ccx":
                 rc = run_ccx(solver_cfg, run_dir, job, "job")
                 job.append("Parsing results …")
+                cai = ccx_writer.analysis_index(proj["setup"], analysis)
                 meta = results.build_results_ccx(
                     run_dir, "job",
-                    applied=ccx_writer.applied_total(analysis, mesh_stats),
-                    support_frames=ccx_writer.support_frames(analysis, mesh_stats),
+                    applied=ccx_writer.applied_total(analysis, mesh_stats, cai),
+                    support_frames=ccx_writer.support_frames(analysis, mesh_stats, cai),
                     model_diag=geo.get("diag"))
             else:
                 cal = None

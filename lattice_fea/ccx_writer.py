@@ -52,6 +52,24 @@ class Deck:
         return "\n".join(self.lines) + "\n"
 
 
+def analysis_index(setup: dict, analysis: dict) -> int:
+    """1-based position of this analysis in the project, which is how the mesh
+    numbers its face groups: SUP<ai>_<n>, LOA<ai>_<n>.
+
+    Derived here once. It used to be computed correctly in build_deck and
+    written as a literal 1 in six other places, so every helper that looked up
+    a node set — the frictionless transform, the reaction frames, the applied
+    load total — read the FIRST analysis's groups no matter which analysis was
+    running. On a project with one analysis that is invisible; on the second
+    one it silently checks equilibrium against another analysis's loads.
+    """
+    ids = [a.get("id") for a in setup.get("analyses", []) or []]
+    try:
+        return 1 + ids.index(analysis.get("id"))
+    except ValueError:
+        return 1
+
+
 def unsupported_reason(analysis: dict, setup: dict, mesh_stats: dict = None) -> "str|None":
     """Why CalculiX cannot run this analysis, or None if it can.
 
@@ -78,7 +96,7 @@ def unsupported_reason(analysis: dict, setup: dict, mesh_stats: dict = None) -> 
         if sup.get("type") not in CAPABILITIES["supports"]:
             return f"CalculiX: support type '{sup.get('type')}' is not supported yet."
         if sup.get("type") == "frictionless" and mesh_stats:
-            g = group_name("SUP", 1, i + 1)
+            g = group_name("SUP", analysis_index(setup, analysis), i + 1)
             info = (mesh_stats.get("face_normals") or {}).get(g)
             if info and info.get("flatness", 1.0) < 0.999:
                 return (f"Support '{sup.get('name', g)}' is frictionless on a "
@@ -89,7 +107,7 @@ def unsupported_reason(analysis: dict, setup: dict, mesh_stats: dict = None) -> 
     return None
 
 
-def frictionless_nodes(analysis: dict, mesh_stats: dict, index: int) -> list:
+def frictionless_nodes(analysis: dict, mesh_stats: dict, index: int, ai: int) -> list:
     """Nodes to transform for one frictionless support.
 
     A node can carry only one coordinate transform, and a symmetry face
@@ -100,13 +118,13 @@ def frictionless_nodes(analysis: dict, mesh_stats: dict, index: int) -> list:
     means something entirely different.
     """
     face_nodes = mesh_stats.get("face_nodes") or {}
-    mine = {int(n) for n in (face_nodes.get(group_name("SUP", 1, index + 1)) or {})}
+    mine = {int(n) for n in (face_nodes.get(group_name("SUP", ai, index + 1)) or {})}
     for j, other in enumerate(analysis.get("supports", [])):
         if j == index or not other.get("faces"):
             continue
         if other.get("type") == "frictionless":
             continue
-        mine -= {int(n) for n in (face_nodes.get(group_name("SUP", 1, j + 1)) or {})}
+        mine -= {int(n) for n in (face_nodes.get(group_name("SUP", ai, j + 1)) or {})}
     # Loaded nodes come out too. A transform rotates everything at that node,
     # applied forces included — so a symmetry face sharing an edge with a
     # loaded face would silently turn part of the load in a new direction.
@@ -114,7 +132,7 @@ def frictionless_nodes(analysis: dict, mesh_stats: dict, index: int) -> list:
     # error than applying the load somewhere other than where it was asked for.
     for j, l in enumerate(analysis.get("loads", [])):
         if l.get("faces"):
-            mine -= {int(n) for n in (face_nodes.get(group_name("LOA", 1, j + 1)) or {})}
+            mine -= {int(n) for n in (face_nodes.get(group_name("LOA", ai, j + 1)) or {})}
     return sorted(mine)
 
 
@@ -163,7 +181,7 @@ def _boundaries(d: Deck, analysis: dict, ai: int, mesh_stats: dict) -> None:
                 raise ValueError(
                     f"Support '{s.get('name', g)}': the mesh carries no normal "
                     f"for {g}. Re-mesh, then run again.")
-            nodes = frictionless_nodes(analysis, mesh_stats, i)
+            nodes = frictionless_nodes(analysis, mesh_stats, i, ai)
             if not nodes:
                 raise ValueError(
                     f"Support '{s.get('name', g)}': every node of this "
@@ -208,7 +226,7 @@ def _perp(n):
     return [x / m for x in v]
 
 
-def applied_total(analysis: dict, mesh_stats: dict) -> list:
+def applied_total(analysis: dict, mesh_stats: dict, ai: int) -> list:
     """Resultant of every face load, in N — what the reactions must balance.
 
     Pressure counts too: p x area along the inward face normal. Leaving it out
@@ -226,7 +244,7 @@ def applied_total(analysis: dict, mesh_stats: dict) -> list:
             for k, key in enumerate(("fx", "fy", "fz")):
                 tot[k] += float(l.get(key, 0) or 0)
         elif t == "pressure":
-            info = normals.get(group_name("LOA", 1, i + 1))
+            info = normals.get(group_name("LOA", ai, i + 1))
             if not info:
                 return [0.0, 0.0, 0.0]      # cannot state it exactly; do not guess
             p = float(l.get("pressure", 0) or 0)
@@ -235,7 +253,7 @@ def applied_total(analysis: dict, mesh_stats: dict) -> list:
     return tot
 
 
-def support_frames(analysis: dict, mesh_stats: dict) -> list:
+def support_frames(analysis: dict, mesh_stats: dict, ai: int) -> list:
     """Per support: its nodes, and the local frame its reactions are reported in.
 
     A frictionless support is written with a *TRANSFORM, and CalculiX then
@@ -249,13 +267,13 @@ def support_frames(analysis: dict, mesh_stats: dict) -> list:
     for i, s in enumerate(analysis.get("supports", [])):
         if not s.get("faces"):
             continue
-        g = group_name("SUP", 1, i + 1)
+        g = group_name("SUP", ai, i + 1)
         nodes = [int(n) for n in (face_nodes.get(g) or {})]
         if not nodes:
             continue
         frame = None
         if s.get("type") == "frictionless":
-            nodes = frictionless_nodes(analysis, mesh_stats, i)
+            nodes = frictionless_nodes(analysis, mesh_stats, i, ai)
             info = normals.get(g)
             if info:
                 n = info["normal"]
@@ -269,9 +287,9 @@ def support_frames(analysis: dict, mesh_stats: dict) -> list:
     return out
 
 
-def support_nodes(analysis: dict, mesh_stats: dict) -> list:
+def support_nodes(analysis: dict, mesh_stats: dict, ai: int) -> list:
     """Flat list of every supported node."""
-    return [n for f in support_frames(analysis, mesh_stats) for n in f["nodes"]]
+    return [n for f in support_frames(analysis, mesh_stats, ai) for n in f["nodes"]]
 
 
 def _loads(d: Deck, analysis: dict, ai: int, meta: dict, mesh_stats: dict) -> bool:
@@ -436,7 +454,7 @@ def build_deck(analysis: dict, setup: dict, meta: dict, mesh_stats: dict,
     if reason:
         raise ValueError(reason)
 
-    ai = 1 + [a["id"] for a in setup.get("analyses", [])].index(analysis["id"])
+    ai = analysis_index(setup, analysis)
     d = Deck()
     d.w("** Generated by Lattice — CalculiX deck")
     d.w("** units: mm, tonne, s  =>  MPa, N, Hz")
