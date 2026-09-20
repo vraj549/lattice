@@ -545,6 +545,13 @@ body.resizing-v { cursor: row-resize; user-select: none; }
 
 
 
+/* A run made by the demo solver. Louder than stale on purpose: stale numbers
+   were at least computed, these were invented. */
+.stalebar.fakebar {
+  background: color-mix(in srgb, var(--crit) 18%, var(--panel));
+  border-color: var(--crit);
+}
+
 /* ---------- choice cards (new-analysis dialog) ---------- */
 .optcards { display: flex; flex-direction: column; gap: 5px; margin: 10px 0 4px; }
 .optcard {

@@ -261,7 +261,7 @@ def test_modal_table_reports_what_the_basis_missed():
     # the residual mass rides at the ZPA — the measured one, not the pulse
     # amplitude it is very nearly equal to
     zpa = out["input"]["zpa"]
-    assert out["missing_force_N"] == pytest.approx(0.15 * 0.5 * zpa * shock.G_MM)
+    assert out["missing_force_N"] == pytest.approx(0.15 * 0.5 * zpa * 9810.0)
 
 
 def test_interface_force_is_effective_mass_times_spectrum():
@@ -270,7 +270,7 @@ def test_interface_force_is_effective_mass_times_spectrum():
     out = shock.modal_table(modes, CFG, total_mass=0.5, axis=2)
     row = out["rows"][0]
     assert out["missing_mass"] == pytest.approx(0.0)
-    assert row["force_N"] == pytest.approx(0.5 * row["srs_g"] * shock.G_MM)
+    assert row["force_N"] == pytest.approx(0.5 * row["srs_g"] * 9810.0)
     assert out["force_N"] == pytest.approx(row["force_N"])
 
 
@@ -279,7 +279,7 @@ def test_modal_displacement_is_the_spectral_displacement():
     out = shock.modal_table(_modes(), CFG, total_mass=0.5, axis=2)
     r = out["rows"][0]
     w = 2 * math.pi * r["f"]
-    assert r["q"] == pytest.approx(r["gamma"] * r["srs_g"] * shock.G_MM / w ** 2)
+    assert r["q"] == pytest.approx(r["gamma"] * r["srs_g"] * 9810.0 / w ** 2)
 
 
 def test_rule_choice_moves_the_answer_the_right_way():
@@ -328,7 +328,7 @@ def test_an_all_rigid_basis_gives_newtons_second_law():
 
     assert out["mass_captured"] == pytest.approx(1.0)
     assert all(r["alpha"] == pytest.approx(1.0) for r in out["rows"])
-    assert out["force_N"] == pytest.approx(0.8 * zpa * shock.G_MM)
+    assert out["force_N"] == pytest.approx(0.8 * zpa * 9810.0)
     assert out["force_periodic_N"] == pytest.approx(0.0)
     assert out["rigid_share"] == pytest.approx(1.0)
     # and the old behaviour would have been wrong by sqrt(4)
@@ -366,8 +366,8 @@ def test_missing_mass_is_rigid_and_adds_algebraically():
     out = shock.modal_table(modes, cfg, 1.0, 2)
     assert out["missing_mass"] == pytest.approx(0.4)
     # 0.6 rigid + 0.4 missing = the whole mass at the ZPA
-    assert out["force_rigid_N"] == pytest.approx(1.0 * zpa * shock.G_MM)
-    assert out["force_N"] == pytest.approx(1.0 * zpa * shock.G_MM)
+    assert out["force_rigid_N"] == pytest.approx(1.0 * zpa * 9810.0)
+    assert out["force_N"] == pytest.approx(1.0 * zpa * 9810.0)
 
 
 def test_a_mode_on_the_plateau_is_rigid_despite_rounding():

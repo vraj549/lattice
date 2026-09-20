@@ -331,6 +331,22 @@ def size_bolt(*, d: float, pitch: float, l_K: float, A_s: float = None,
             f"Surface pressure under the head is {p_max:.0f} MPa against a "
             f"limit of {p_G:.0f} MPa — the clamped material yields before the "
             f"bolt does. Use a washer, a flanged head, or a larger bolt.")
+    # VDI 2230-1 R0: the working stress in service, preload plus the bolt's
+    # share of the external load plus bending, against yield. This is a
+    # separate failure from "no preload window" — a joint can have a perfectly
+    # assemblable preload and still yield the bolt once the load arrives,
+    # which is exactly what a bending moment does. sigma_red_B was computed
+    # and reported as a percentage here for a long time without anything ever
+    # comparing it to R_p02.
+    if sigma_red_B > R_p02:
+        extra = (f" Bending contributes {sigma_b:.0f} MPa of that."
+                 if sigma_b > 0 else "")
+        checks.append(
+            f"Working stress in service is {sigma_red_B:.0f} MPa against a "
+            f"yield strength of {R_p02:.0f} MPa ({sigma_red_B / R_p02 * 100:.0f}% "
+            f"of yield) — the bolt yields under load even though it can be "
+            f"assembled.{extra} Use a larger or stronger bolt, or reduce the "
+            f"load reaching it.")
     if fatigue_margin is not None and fatigue_margin < 1.0:
         checks.append(
             f"Fatigue: the alternating stress is {sigma_a:.0f} MPa against an "
@@ -347,11 +363,16 @@ def size_bolt(*, d: float, pitch: float, l_K: float, A_s: float = None,
         "F_Mmin": F_Mmin, "F_Mmax": F_Mmax, "F_Mzul": F_Mzul,
         "F_Smax": F_Smax, "F_Kmin_service": F_Kmin_service,
         "sigma_M": sigma_M, "tau_M": tau_M, "sigma_red_M": sigma_red_M,
+        "sigma_b": sigma_b,
         "sigma_red_B": sigma_red_B, "utilisation": sigma_red_B / R_p02,
         "M_A_Nm": M_A / 1000.0, "p_max": p_max, "A_p": A_p,
         "sigma_a": sigma_a, "sigma_ASV": sigma_ASV,
         "fatigue_margin": fatigue_margin,
-        "feasible": feasible, "checks": checks,
+        # `feasible` is narrow on purpose: it means a preload window exists.
+        # `passes` is the verdict for the joint — every check silent as well.
+        # The two used to be conflated, so a bolt at 170% of yield reported ok.
+        "feasible": feasible, "passes": feasible and not checks,
+        "checks": checks,
     }
 
 

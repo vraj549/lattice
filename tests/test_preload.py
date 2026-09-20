@@ -146,7 +146,7 @@ def test_scale_is_capped():
     multiplier."""
     j = Joint(k_bolt=1.0e5, k_joint=1.0e9, targets={1: 9000.0})
     out = preload.calibrate({1: 9000.0}, j, max_passes=8)
-    assert out["scale"][1] <= preload.MAX_SCALE
+    assert out["scale"][1] <= 10.0
 
 
 def test_no_bolts_is_a_no_op():

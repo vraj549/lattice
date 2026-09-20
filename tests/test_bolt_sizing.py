@@ -158,11 +158,20 @@ def test_an_impossible_joint_is_reported_not_rounded_off():
 
 def test_surface_pressure_under_the_head_is_checked():
     """On aluminium or a polymer the clamped material gives up first — this is
-    frequently what actually limits the preload."""
-    r = base(F_Q=8000.0, p_G=120.0)          # 120 MPa: a soft alloy
-    assert r["p_max"] > 0
-    if r["p_max"] > 120.0:
-        assert any("Surface pressure" in c for c in r["checks"])
+    frequently what actually limits the preload.
+
+    Both directions on one joint: identical geometry and preload, only the
+    bearing limit differs, so the check has to appear for the soft alloy and
+    stay silent for the steel. Asserting it only in the branch where it fires
+    lets the whole check disappear without a test noticing.
+    """
+    soft = base(F_Q=1000.0, p_G=120.0)       # 120 MPa: a soft alloy
+    steel = base(F_Q=1000.0, p_G=600.0)
+    assert soft["p_max"] == pytest.approx(steel["p_max"])
+    assert soft["p_max"] > 120.0
+    assert soft["feasible"] and steel["feasible"], "the bolt itself is fine either way"
+    assert any("Surface pressure" in c for c in soft["checks"])
+    assert not any("Surface pressure" in c for c in steel["checks"])
 
 
 def test_residual_clamp_is_the_required_clamp_by_construction():
@@ -387,3 +396,35 @@ def test_no_alternating_load_means_no_fatigue_number():
     r = BS.size_bolt(d=8, pitch=1.25, l_K=16.0, F_A=0.0, F_Q=500.0)
     assert r["sigma_a"] == 0.0
     assert r["fatigue_margin"] is None
+
+
+def test_bending_yields_the_bolt_even_when_the_preload_window_is_fine():
+    """The two failures are independent and both have to be reported.
+
+    A bending moment barely touches the assembly preload but dominates the
+    working stress, so a joint can be perfectly assemblable and still yield
+    the moment the load arrives. `feasible` answers only "is there a preload
+    window"; `passes` is the verdict for the joint.
+    """
+    straight = BS.size_bolt(d=10.0, pitch=1.5, l_K=20.0, F_A=500.0, F_Q=200.0)
+    bent = BS.size_bolt(d=10.0, pitch=1.5, l_K=20.0, F_A=500.0, F_Q=200.0,
+                        M_b=60000.0)
+    assert straight["feasible"] and bent["feasible"], "bending is not a preload problem"
+    assert straight["passes"], "the same joint without the moment is fine"
+    assert bent["sigma_b"] > 0 and straight["sigma_b"] == 0.0
+    assert bent["utilisation"] > 1.0
+    assert not bent["passes"]
+    assert any("Working stress" in c for c in bent["checks"])
+
+
+def test_passes_is_false_whenever_any_check_fired():
+    """The verdict cannot disagree with the list of problems printed beside
+    it — that is how a bolt at 170% of yield came to be labelled ok."""
+    for kw in ({"F_Q": 60000.0, "mu_joint": 0.10},     # no preload window
+               {"F_Q": 1000.0, "p_G": 120.0},          # head crushes the alloy
+               {"F_A": 500.0, "F_Q": 200.0, "M_b": 60000.0}):   # bolt yields
+        r = base(**kw)
+        assert r["checks"], f"expected a check for {kw}"
+        assert not r["passes"], f"checks fired but the verdict was ok: {kw}"
+    clean = base(F_Q=1000.0, p_G=600.0)
+    assert clean["passes"] and not clean["checks"]

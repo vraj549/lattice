@@ -20,9 +20,35 @@ import math
 G_MM = 9810.0     # 1 g in mm/s^2
 
 
+def sorted_breakpoints(spec, unit: str = "g^2/Hz") -> list:
+    """Breakpoints as sorted (Hz, amplitude) pairs, or a clear refusal.
+
+    A frequency of zero or below is rejected rather than dropped. Both
+    spectrum readers used to filter `if float(a) > 0` silently, while the only
+    gate in front of them counted the raw list — so a two-row table with a
+    mistyped first frequency passed the "needs two breakpoints" check, arrived
+    here as one usable point, and reported a near-zero response for an input
+    that had simply been thrown away. A qualification that looks like it
+    passes easily is the worst way to be wrong.
+    """
+    pts = []
+    for row in spec:
+        f, a = float(row[0]), float(row[1])
+        if not math.isfinite(f) or f <= 0.0:
+            raise ValueError(
+                f"Spectrum breakpoint at {f:g} Hz: frequency must be greater "
+                f"than zero. The curve is interpolated in log-log, which has "
+                f"no meaning at or below zero.")
+        if not math.isfinite(a) or a < 0.0:
+            raise ValueError(
+                f"Spectrum breakpoint at {f:g} Hz has an amplitude of {a:g} "
+                f"{unit}; it must be zero or above.")
+        pts.append((f, a))
+    return sorted(pts)
+
+
 def _sorted_spec(spec) -> list:
-    """Breakpoints as sorted (Hz, g^2/Hz) pairs."""
-    return sorted((float(a), float(b)) for a, b in spec if float(a) > 0)
+    return sorted_breakpoints(spec, "g^2/Hz")
 
 
 def psd_at(spec, f: float, _pts=None) -> float:

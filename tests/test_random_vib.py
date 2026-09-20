@@ -7,6 +7,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from lattice_fea import random_vib as rv  # noqa: E402
 from lattice_fea.random_vib import (  # noqa: E402
     G_MM, grms_input, miles, psd_at, response, transmissibility)
 
@@ -145,3 +146,29 @@ def test_sweep_that_misses_the_spec_is_reported():
     assert r_narrow["grms"] < 0.55 * r_full["grms"]
     assert r_narrow["sweep_band"] == [20, 500.0]
     assert r_narrow["spec_band"] == [20.0, 2000.0]
+
+
+# ------------------------------------------------- spectrum input validation
+
+@pytest.mark.parametrize("bad", [
+    [(0.0, 0.1), (100.0, 0.2)],        # a mistyped first frequency
+    [(-5.0, 0.1), (100.0, 0.2)],
+    [(20.0, 0.1), (float("nan"), 0.2)],
+    [(20.0, -0.1), (100.0, 0.2)],      # negative PSD
+])
+def test_a_bad_breakpoint_is_refused_not_dropped(bad):
+    """Filtering silently is how a two-row table passed the "needs two
+    breakpoints" gate and arrived as one usable point: the reported g_RMS came
+    back near zero for an input that had been thrown away, which reads as a
+    qualification passing with enormous margin."""
+    with pytest.raises(ValueError):
+        rv.sorted_breakpoints(bad)
+    with pytest.raises(ValueError):
+        rv.grms_input(bad)
+
+
+def test_a_valid_spectrum_is_sorted_and_kept_whole():
+    pts = rv.sorted_breakpoints([(2000.0, 0.02), (20.0, 0.01)])
+    assert pts == [(20.0, 0.01), (2000.0, 0.02)]
+    flat = [(20.0, 0.01), (2000.0, 0.01)]
+    assert rv.grms_input(flat) == pytest.approx(math.sqrt(0.01 * 1980.0))

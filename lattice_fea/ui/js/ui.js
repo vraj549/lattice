@@ -1753,6 +1753,16 @@ function panelSolution(S, A, put, id) {
 function statusHead(S, A, a) {
   const meta = S.results[a.id];
   if (!meta) return [];
+  // Demo first: it outranks staleness, and unlike the red session banner this
+  // is a property of the run, so it survives a restart with a real solver.
+  if (meta.demo) {
+    return [el("div", { class: "stalebar fakebar" },
+      el("b", {}, "⚠ Fabricated results. "),
+      "This run used the demo solver — the numbers were invented to exercise " +
+      "the interface and were never computed from the model. Nothing here is " +
+      "engineering data, and exports carry the same warning.",
+      ...(meta.stale ? [" The model has also changed since."] : []))];
+  }
   if (meta.stale) {
     return [el("div", { class: "stalebar" },
       el("b", {}, "⚠ Out of date. "),
@@ -2146,8 +2156,8 @@ function secSizing(S, A, a) {
         el("td", {}, r.sigma_a == null ? "\u2014" : fmtVal(r.sigma_a)),
         el("td", { class: r.fatigue_margin != null && r.fatigue_margin < 1 ? "bad" : "" },
            r.fatigue_margin == null ? "\u2014" : r.fatigue_margin.toFixed(2)),
-        el("td", { class: r.feasible ? "" : "bad" },
-           r.feasible ? "ok" : "no window"))))));
+        el("td", { class: r.passes ? "" : "bad" },
+           r.passes ? "ok" : (r.feasible ? "check" : "no window")))))));
 
   const problems = rows.flatMap((r) => (r.checks || []).map((c) => `${r.name}: ${c}`));
   if (problems.length) {

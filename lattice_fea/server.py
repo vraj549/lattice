@@ -415,7 +415,30 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                             "Preload was not calibrated: the bolts carry less "
                             "than the requested force by the joint's share of "
                             "the imposed strain.")
+            if analysis.get("type") in ("modal", "harmonic", "random", "shock"):
+                glued = comm_writer.glued_for_dynamics(proj["setup"], mesh_stats)
+                if glued:
+                    names = ", ".join(str(c.get("name") or f"contact {c['index']}")
+                                      for c in glued)
+                    meta.setdefault("warnings", []).append(
+                        f"Tied for this solve: {names}. A linear dynamic "
+                        "analysis has one stiffness matrix, so a sliding or "
+                        "separating interface is glued. Frequencies are on the "
+                        "stiff side and any mode that depends on the joint "
+                        "moving will not appear.")
             meta["engine"] = engine
+            # Demo is a property of the RUN, not of the session that happens to
+            # be live when someone looks at it. The red banner is driven by the
+            # current config, so it vanishes the moment the server restarts
+            # without --demo-solver, or once a real solver is installed — and
+            # the fabricated numbers sitting in the workspace then read as a
+            # genuine solve. Only the aster path is mocked; CalculiX really runs.
+            meta["demo"] = bool(solver_cfg.is_demo() and engine == "aster")
+            if meta["demo"]:
+                meta.setdefault("warnings", []).append(
+                    "DEMO SOLVER: these numbers were fabricated by a stand-in, "
+                    "not computed. They are for exercising the interface only "
+                    "and must not be used for any engineering decision.")
             meta["exit_code"] = rc
             meta["signature"] = solve_signature(analysis, proj["setup"], mesh_stats)
             store.write_json(pid, f"runs/{aid}/meta.json", meta)
@@ -523,6 +546,13 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                "# status: OUT OF DATE — the model changed after this run" if stale
                else "# status: current for the model as saved",
                ""]
+        if meta.get("demo"):
+            # A CSV outlives the session that made it and travels to people who
+            # never saw the banner. It says so on its own face, at the top.
+            out[1:1] = [
+                "# *** DEMO SOLVER — THESE NUMBERS WERE FABRICATED, NOT COMPUTED ***",
+                "# *** They exercise the interface only. Not engineering data. ***",
+            ]
 
         if what in ("all", "tables"):
             for key, blocks in (meta.get("tables") or {}).items():
@@ -665,7 +695,8 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                 "utilisation": r["utilisation"], "p_max": r["p_max"],
                 "sigma_a": r["sigma_a"], "sigma_ASV": r["sigma_ASV"],
                 "fatigue_margin": r["fatigue_margin"],
-                "feasible": r["feasible"],
+                "sigma_b": r["sigma_b"],
+                "feasible": r["feasible"], "passes": r["passes"],
                 "checks": r["checks"], "case": r["member"]["case"],
                 "alpha_A": r["alpha_A"],
             })
@@ -689,8 +720,11 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         meta = store.read_json(pid, f"runs/{aid}/meta.json")
         cfg = analysis.get("config", {})
         spec = cfg.get("spec") or []
-        if len(spec) < 2:
-            raise HTTPException(422, "analysis has no PSD spectrum")
+        try:
+            if len(random_vib.sorted_breakpoints(spec, "g^2/Hz")) < 2:
+                raise HTTPException(422, "analysis has no PSD spectrum")
+        except ValueError as e:
+            raise HTTPException(422, str(e))
         base_g = float(cfg.get("base_g", 1.0))
 
         out = []
@@ -802,9 +836,19 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             raise HTTPException(404, "no results for this analysis")
         meta = store.read_json(pid, f"runs/{aid}/meta.json")
         cfg = analysis.get("config", {}) or {}
-        if (cfg.get("input") or "spectrum") == "spectrum" and len(cfg.get("spec") or []) < 2:
-            raise HTTPException(422, "analysis has no shock spectrum")
-        out = shock.response(meta, cfg)
+        if (cfg.get("input") or "spectrum") == "spectrum":
+            # The count has to be of USABLE breakpoints. Counting the raw rows
+            # let a table with a mistyped frequency through this gate.
+            try:
+                pts = random_vib.sorted_breakpoints(cfg.get("spec") or [], "g")
+            except ValueError as e:
+                raise HTTPException(422, str(e))
+            if len(pts) < 2:
+                raise HTTPException(422, "analysis has no shock spectrum")
+        try:
+            out = shock.response(meta, cfg)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
         # the input curve itself, for the chart and to check the table was
         # entered as intended
         fs = [10.0 * (10000.0 / 10.0) ** (i / 119.0) for i in range(120)]

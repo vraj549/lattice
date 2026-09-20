@@ -321,3 +321,44 @@ def test_shock_export_carries_the_numbers(client):
                    "# shock peak bolt loads",
                    "# shock peak displacement at probes"):
         assert header in body, body[:1500]
+
+
+# ----------------------------------------- provenance of a fabricated result
+
+def test_a_demo_run_still_says_so_after_a_real_solver_is_installed(client, tmp_path,
+                                                                   monkeypatch):
+    """The red session banner is driven by the live config, so it disappears
+    the moment the server restarts without --demo-solver. The fabricated
+    numbers stay in the workspace. Provenance has to live with the run.
+    """
+    c = client
+    pid = _shock_project(c)
+    meta = c.get(f"/api/projects/{pid}/results/a1").json()
+    assert meta["demo"] is True
+    assert any("DEMO SOLVER" in w for w in meta.get("warnings", []))
+
+    # Same workspace, a server that knows nothing about the mock: this is what
+    # reopening the project tomorrow, or after installing code_aster, looks like.
+    monkeypatch.setenv("LATTICE_ASTER_MODE", "none")
+    monkeypatch.delenv("LATTICE_ASTER_CMD", raising=False)
+    app2 = server.create_app(c.workspace)
+    with TestClient(app2) as c2:
+        assert c2.get("/api/config").json()["solver"]["demo"] is False
+        again = c2.get(f"/api/projects/{pid}/results/a1").json()
+        assert again["demo"] is True, "the run forgot it was fabricated"
+        body = c2.get(f"/api/projects/{pid}/results/a1/export?what=all").text
+        assert "DEMO SOLVER" in body.split("\n", 4)[1], body[:400]
+
+
+def test_a_real_run_is_not_labelled_demo(client, monkeypatch):
+    """The label has to discriminate, or it is noise people learn to ignore."""
+    c = client
+    pid = _shock_project(c)
+    path = os.path.join(c.workspace, "projects", pid, "runs", "a1", "meta.json")
+    with open(path) as fh:
+        meta = json.load(fh)
+    meta["demo"] = False
+    with open(path, "w") as fh:
+        json.dump(meta, fh)
+    body = c.get(f"/api/projects/{pid}/results/a1/export?what=all").text
+    assert "DEMO SOLVER" not in body

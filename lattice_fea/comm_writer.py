@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import math
 
+from . import random_vib
+
 from .materials import to_solver_units
 from .meshing import group_name
 
@@ -62,7 +64,13 @@ def _env_sphere(b: CommBuild, name: str, xyz, r: float) -> None:
 
 
 def _prelude(b: CommBuild, setup: dict, meta: dict, mesh_stats: dict,
-             need_probes: bool, analysis: dict = None, ai: int = 1) -> None:
+             need_probes: bool, analysis: dict = None, ai: int = 1,
+             glue_contacts: bool = False) -> None:
+    """`glue_contacts` is the linear-dynamics case: modal, harmonic, random and
+    shock all solve on one constant stiffness matrix, so an interface whose
+    status is part of the answer cannot be represented. Every active contact is
+    tied instead — see `glued_for_dynamics`, which names the ones that were
+    glued so the run can say so."""
     bolts = _active_bolts(setup, mesh_stats)
     remotes = _active_remotes(analysis or {}, ai, mesh_stats)
 
@@ -179,8 +187,14 @@ def _prelude(b: CommBuild, setup: dict, meta: dict, mesh_stats: dict,
     # status to solve for, so paying for a Newton loop would buy nothing.
     # A frictional interface being checked rather than solved is glued for
     # the solve: stuck and bonded are the same constraint.
+    # In linear dynamics every interface is tied, not just the linear ones.
+    # Leaving a frictionless or separating pair out of the deck does not make
+    # it frictionless — it disconnects the parts entirely, and the eigenvalue
+    # problem then returns the modes of a structure that was never modelled.
+    # Gluing is stiff, and that is the error the user is warned about; silence
+    # is not.
     bonded = [c for c in active_contacts(setup, mesh_stats)
-              if solves_linearly(c)]
+              if glue_contacts or solves_linearly(c)]
     if ties or bonded:
         b.w("# tied (glued) face-to-volume constraints for non-conformal interfaces")
         b.w("tiec = AFFE_CHAR_MECA(MODELE=model, LIAISON_MAIL=(")
@@ -481,7 +495,10 @@ SLIDING_KINDS = ("frictionless", "friction", "noseparation")
 # results computed under the old meaning are marked out of date.
 # 1: frictional contact defaults to a bonded solve with a slip check, where it
 #    previously always ran nonlinear.
-DECK_FORMAT = 1
+# 2: modal, harmonic, random and shock tie EVERY active contact. A sliding or
+#    separating interface used to be dropped from those decks entirely, which
+#    disconnected the parts rather than releasing them.
+DECK_FORMAT = 2
 
 
 def active_contacts(setup: dict, mesh_stats: dict) -> list:
@@ -518,6 +535,21 @@ def solves_linearly(c: dict) -> bool:
     if kind == "bonded":
         return True
     return kind == "friction" and (c.get("solve") or "linear") == "linear"
+
+
+def glued_for_dynamics(setup: dict, mesh_stats: dict) -> list:
+    """Contacts that a linear-dynamics deck has to tie despite not being bonded.
+
+    Modal, harmonic, random and shock are solved on one constant stiffness
+    matrix, so an interface whose open/closed/sliding status is part of the
+    answer cannot be represented. Tying it is the standard linearisation, and
+    it is stiff: frequencies come out high, and a mode that exists only because
+    a joint can slide will not appear at all. That is a real modelling
+    assumption, so the run states it rather than leaving the user to infer it
+    from a deck they did not read.
+    """
+    return [c for c in active_contacts(setup, mesh_stats)
+            if not solves_linearly(c)]
 
 
 def slip_checked(contacts: list) -> list:
@@ -766,7 +798,8 @@ def _write_nonlinear_static(b: CommBuild, fix, load, preload, contacts, analysis
 def write_modal(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
                 analysis: dict = None, ai: int = 1, **kw) -> CommBuild:
     b = CommBuild()
-    _prelude(b, setup, meta, mesh_stats, need_probes=False, analysis=analysis, ai=ai)
+    _prelude(b, setup, meta, mesh_stats, need_probes=False, analysis=analysis, ai=ai,
+             glue_contacts=True)
     fix = _supports(b, analysis, ai)
     _modal_core(b, setup, cfg, fix)
 
@@ -834,7 +867,8 @@ def write_harmonic(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
                 "accel": float(cfg.get("base_g", 1.0)) * G_MM}   # g -> mm/s^2
 
     b = CommBuild()
-    _prelude(b, setup, meta, mesh_stats, need_probes=True, analysis=analysis, ai=ai)
+    _prelude(b, setup, meta, mesh_stats, need_probes=True, analysis=analysis, ai=ai,
+             glue_contacts=True)
     fix = _supports(b, analysis, ai)
     load = None
     if base is None:
@@ -922,7 +956,7 @@ def write_random(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
     operator chain.
     """
     spec = cfg.get("spec") or []
-    pts = sorted((float(a), float(b)) for a, b in spec if float(a) > 0)
+    pts = random_vib.sorted_breakpoints(spec, "g^2/Hz")
     if len(pts) < 2:
         raise ValueError("Random vibration needs at least two PSD breakpoints.")
     f0, f1 = pts[0][0], pts[-1][0]
@@ -961,7 +995,7 @@ def write_shock(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
 
     b = CommBuild()
     _prelude(b, setup, meta, mesh_stats, need_probes=bool(probes),
-             analysis=analysis, ai=ai)
+             analysis=analysis, ai=ai, glue_contacts=True)
     fix = _supports(b, analysis, ai)
     if not fix:
         raise ValueError("Shock analysis needs a support — the spectrum is "

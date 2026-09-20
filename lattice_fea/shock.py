@@ -30,6 +30,8 @@ import math
 
 import numpy as np
 
+from .random_vib import sorted_breakpoints
+
 G_MM = 9810.0     # 1 g in mm/s^2
 
 TRAPEZOID_RISE = 0.1        # fraction of the pulse spent rising, and falling
@@ -62,7 +64,9 @@ RULES = {
 # ----------------------------------------------------------------- the input
 
 def _sorted_spec(spec) -> list:
-    return sorted((float(a), float(b)) for a, b in spec if float(a) > 0)
+    # Shared with random vibration so the two readers cannot drift: a bad
+    # breakpoint is refused, never quietly dropped.
+    return sorted_breakpoints(spec, "g")
 
 
 def srs_at(spec, f: float, _pts=None) -> float:

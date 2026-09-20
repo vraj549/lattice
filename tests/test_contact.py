@@ -238,3 +238,69 @@ def test_a_mixed_model_keeps_each_interface_on_its_own_terms():
     assert "GROUP_MA_ESCL=('CTB1',)" in comm            # 1 glued
     assert re.findall(r"GROUP_MA_MAIT='(CTA\d)'", comm) == ["CTA2"]   # 2 solved
     assert re.findall(r"INTITULE='(CONTACT\d)'", comm) == ["CONTACT1"]
+
+
+# ------------------------------------------------- contact in linear dynamics
+
+DYNAMIC = {
+    "modal": {"n_modes": 6},
+    "harmonic": {"excitation": "base", "base_dir": [0, 0, 1], "base_g": 1.0,
+                 "f_min": 10.0, "f_max": 200.0, "n_steps": 20},
+    "random": {"excitation": "base", "base_dir": [0, 0, 1],
+               "spec": [[20.0, 0.01], [2000.0, 0.01]], "n_steps": 20},
+    "shock": {"n_modes": 6, "spec": [[10.0, 5.0], [2000.0, 20.0]],
+              "dir": [0, 0, 1]},
+}
+
+
+def build_dynamic(atype, kind, solve=None):
+    setup, meta, stats = base(kind, mu=0.2, solve=solve)
+    setup["probes"] = [{"id": "p1", "name": "tip", "x": 0.0, "y": 0.0, "z": 0.0}]
+    stats["probes"] = [{"id": "p1", "name": "tip", "node_xyz": [0.0, 0.0, 0.0],
+                        "snap_dist": 0.1}]
+    setup["analyses"] = [{
+        "id": "a1", "type": atype, "name": atype, "config": DYNAMIC[atype],
+        "supports": [{"id": "s1", "name": "fix", "type": "fixed", "faces": [5]}],
+        "loads": [],
+    }]
+    comm, _ = comm_writer.build_run(setup["analyses"][0], setup, meta, stats,
+                                    SolverConfig())
+    return comm
+
+
+@pytest.mark.parametrize("atype", ["modal", "harmonic", "random", "shock"])
+@pytest.mark.parametrize("kind,solve", [
+    ("frictionless", None),
+    ("noseparation", None),
+    ("friction", "nonlinear"),
+    ("friction", "linear"),
+    ("bonded", None),
+])
+def test_every_contact_is_tied_in_a_linear_dynamic_deck(atype, kind, solve):
+    """One stiffness matrix means no interface can have a status.
+
+    Dropping a sliding pair from the deck does not release it — it disconnects
+    the two solids, and the eigenproblem then describes a structure nobody
+    modelled. Tying is stiff and wrong in a way the user is told about; the
+    silent version was wrong in a way nothing reported.
+    """
+    comm = build_dynamic(atype, kind, solve)
+    assert "LIAISON_MAIL" in comm, f"{atype}/{kind}: no tie written at all"
+    assert "GROUP_MA_ESCL=('CTB1',)" in comm, f"{atype}/{kind}: contact absent from the deck"
+    assert "DEFI_CONTACT" not in comm, f"{atype}/{kind}: nonlinear contact in a linear deck"
+
+
+@pytest.mark.parametrize("kind,solve,glued", [
+    ("frictionless", None, True),
+    ("noseparation", None, True),
+    ("friction", "nonlinear", True),
+    ("friction", "linear", False),
+    ("bonded", None, False),
+])
+def test_glued_for_dynamics_names_exactly_the_linearised_interfaces(kind, solve, glued):
+    """What the run reports has to match what the deck did: the interfaces
+    named are the ones that would have solved with a status, and nothing else.
+    A bonded pair is not an assumption and must not be reported as one."""
+    setup, meta, stats = base(kind, mu=0.2, solve=solve)
+    names = [c["name"] for c in comm_writer.glued_for_dynamics(setup, stats)]
+    assert names == (["plate/plate"] if glued else [])
