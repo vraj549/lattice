@@ -151,7 +151,8 @@ def test_scale_is_capped():
 
 def test_no_bolts_is_a_no_op():
     out = preload.calibrate({}, lambda s: pytest.fail("must not solve"))
-    assert out == {"scale": {}, "achieved": {}, "passes": 0, "max_error": 0.0}
+    assert out == {"scale": {}, "achieved": {}, "passes": 0, "max_error": 0.0,
+                   "converged": True, "tol": 0.01}
 
 
 def test_already_correct_joint_stops_after_one_pass():
@@ -198,3 +199,38 @@ def test_secant_beats_proportional_on_the_third_pass():
                                 tol=0, max_passes=3)["max_error"]
         prop = proportional(targets, Joint(1.0e5, 6.0e5, targets, **kw), 3)
         assert sec < prop
+
+
+def test_running_out_of_passes_is_not_the_same_as_converging():
+    """The loop returns its best measurement when it runs out of passes, which
+    is right — a partly-corrected preload beats an uncorrected one. What was
+    wrong was returning it in the same shape as a converged result, so a run
+    3.3% away from the requested force was reported to the engineer as
+    calibrated.
+
+    A joint that keeps taking a fixed fraction back never closes, so it is the
+    clean case for this.
+    """
+    calls = []
+
+    def saturating(scale):
+        # Diminishing returns: more imposed strain always helps, but the joint
+        # takes a growing share, so the target is approached and never met.
+        calls.append(dict(scale))
+        return {1: 8000.0 * (1.0 - 0.5 ** scale[1])}
+
+    out = preload.calibrate({1: 8000.0}, saturating, tol=1e-6, max_passes=3)
+    assert len(calls) == 3, "it has to spend every pass before giving up"
+    assert out["converged"] is False
+    assert out["max_error"] > 1e-6
+    # and what it reports is a real measurement of the scale it returns
+    assert out["achieved"][1] == pytest.approx(
+        8000.0 * (1.0 - 0.5 ** out["scale"][1]))
+
+
+def test_a_converged_run_says_so():
+    def easy(scale):
+        return {1: 8000.0 * scale[1]}
+    out = preload.calibrate({1: 8000.0}, easy, tol=0.01, max_passes=3)
+    assert out["converged"] is True and out["passes"] == 1
+    assert out["max_error"] <= 0.01

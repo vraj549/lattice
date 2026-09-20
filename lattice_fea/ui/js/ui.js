@@ -2000,10 +2000,15 @@ function secBolts(S, A, a) {
             el("td", { class: err != null && Math.abs(err) > 0.01 ? "bad" : "" },
                err == null ? "\u2014" : `${(100 * err).toFixed(1)}%`));
         })),
-      P.calibrated
-        ? null
-        : el("div", { class: "hint bad" },
-             "Not calibrated \u2014 the bolts carry less than the requested force.")));
+      P.calibrated ? null
+        : P.achieved == null
+          ? el("div", { class: "hint bad" },
+               "Not calibrated \u2014 the bolts carry less than the requested force.")
+          : el("div", { class: "hint bad" },
+               `Calibration ran out of passes ${(100 * P.max_error).toFixed(1)}% ` +
+               `from the requested force (tolerance ${(100 * (P.tol ?? 0.01)).toFixed(1)}%). ` +
+               "The correction is applied and the column above is what the run " +
+               "actually contains \u2014 treat the preload as approximate.")));
   }
   const boltBlocks = meta.tables?.bolt_forces || [];
   if (boltBlocks.length) {

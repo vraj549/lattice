@@ -50,9 +50,16 @@ def calibrate(targets: dict, solve, tol: float = 0.01,
     `solve`     solve(scale) -> {bolt index: achieved axial force, N};
                 called once per pass, with `scale` keyed the same as targets.
 
-    Returns {"scale", "achieved", "passes", "max_error"} — `achieved` is
-    always a real measurement of the returned `scale`, never an extrapolation,
-    so what is reported is what the run will contain.
+    Returns {"scale", "achieved", "passes", "max_error", "converged", "tol"} —
+    `achieved` is always a real measurement of the returned `scale`, never an
+    extrapolation, so what is reported is what the run will contain.
+
+    `converged` says whether `max_error` actually met `tol`. Running out of
+    passes returns the best measurement so far, which is the right thing to do
+    — it is still much closer than no correction at all — but it is not the
+    same outcome as hitting the tolerance, and the caller must not present it
+    as one. This used to return the same shape either way, so a run 3.3 % off
+    a requested preload was reported as calibrated.
 
     The first correction is proportional, which is exact for a single bolt.
     After that there are two measurements on the path and the response is
@@ -71,7 +78,8 @@ def calibrate(targets: dict, solve, tol: float = 0.01,
     wild correction.
     """
     if not targets:
-        return {"scale": {}, "achieved": {}, "passes": 0, "max_error": 0.0}
+        return {"scale": {}, "achieved": {}, "passes": 0, "max_error": 0.0,
+                "converged": True, "tol": tol}
 
     scale = {i: 1.0 for i in targets}
     prev = None
@@ -85,7 +93,8 @@ def calibrate(targets: dict, solve, tol: float = 0.01,
         worst = max(abs(achieved[i] / targets[i] - 1.0) for i in targets)
         if worst <= tol or p == max(1, max_passes) - 1:
             return {"scale": scale, "achieved": achieved,
-                    "passes": p + 1, "max_error": worst}
+                    "passes": p + 1, "max_error": worst,
+                    "converged": worst <= tol, "tol": tol}
 
         # A bolt that barely responds is not a stiff-joint effect, it is a
         # modelling error, and scaling by requested/achieved would turn it

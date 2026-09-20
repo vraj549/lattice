@@ -463,8 +463,16 @@ which is **15% low on a steel joint and 35% low on aluminium**. So Lattice
 measures it: a preload-only solve reads the axial force the beams ended up
 with, the imposed strain is rescaled, and it solves again — proportionally on
 the first correction, then by a secant step, since several bolts in one joint
-pull on each other. It stops within 1%, and the results panel reports what the
-run actually contains rather than what was asked for.
+pull on each other. It stops as soon as every bolt is within 1%, and the
+results panel reports what the run actually contains rather than what was
+asked for.
+
+Three passes is the budget. A tightly coupled pattern can run out of them
+before reaching 1% — the table above shows just under 1% residual at a
+coupling ratio of 1.5 — and when that happens the run says so and gives the
+actual residual instead of reporting the preload as calibrated. The correction
+is still applied: being 2% low is much better than being 15% low. It is simply
+not the same claim.
 
 This costs one to three extra solves, each stripped to the bolt forces (no
 stress recovery, no field output). Set `preload_calibration: false` in the

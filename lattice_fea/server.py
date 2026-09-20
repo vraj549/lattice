@@ -404,11 +404,20 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                 meta = results.build_results(run_dir, geo["bbox"],
                                              mesh_stats.get("geo_volume"))
                 if cal_targets:
+                    # "calibrated" answers the question an engineer is actually
+                    # asking — is the preload in this run the preload I asked
+                    # for — so running out of passes does not count. The
+                    # correction is still applied and still much better than
+                    # none; it is simply not within tolerance, and saying so is
+                    # the difference between a number and a number you can use.
+                    converged = bool(cal and cal.get("converged"))
                     meta["preload"] = {
                         "requested": {str(i): F for i, F in cal_targets.items()},
-                        "calibrated": bool(cal),
+                        "calibrated": converged,
                         **({"achieved": {str(i): v for i, v in cal["achieved"].items()},
                             "passes": cal["passes"],
+                            "converged": cal.get("converged", True),
+                            "tol": cal.get("tol"),
                             "max_error": cal["max_error"]} if cal else {}),
                     }
                     if not cal:
@@ -416,6 +425,15 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                             "Preload was not calibrated: the bolts carry less "
                             "than the requested force by the joint's share of "
                             "the imposed strain.")
+                    elif not converged:
+                        meta.setdefault("warnings", []).append(
+                            f"Preload calibration stopped after {cal['passes']} "
+                            f"passes still {cal['max_error'] * 100:.1f}% from the "
+                            f"requested force, against a tolerance of "
+                            f"{float(cal.get('tol') or 0.01) * 100:.1f}%. The "
+                            "correction is applied and the achieved forces are "
+                            "reported — treat the preload as approximate, and "
+                            "check the bolt forces before relying on the margin.")
             if analysis.get("type") in ("modal", "harmonic", "random", "shock"):
                 glued = comm_writer.glued_for_dynamics(proj["setup"], mesh_stats)
                 if glued:
