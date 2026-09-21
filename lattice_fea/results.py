@@ -9,6 +9,7 @@ import re
 
 import numpy as np
 
+from . import bolt_sizing
 from .med_reader import MedFile
 
 
@@ -482,11 +483,13 @@ def _vec(v) -> str:
     return "(" + ", ".join(f"{x:.4g}" for x in v) + ")"
 
 
-def bolt_loads(meta: dict) -> dict:
-    """{bolt index: {N, V, M}} — worst end of each bolt.
+def bolt_load_ends(meta: dict) -> dict:
+    """{bolt index: [{end, N, V, M}, ...]} — every beam end, unreduced.
 
-    Both beam ends are reported; the governing one is the larger axial force,
-    which is the end that decides the joint.
+    Choosing between the ends needs the bolt's diameter (a moment and an axial
+    force are only comparable once they are stresses), and that is not in the
+    results. So the reduction happens where the geometry is known — see
+    `bolt_sizing.worst_end`.
     """
     out = {}
     for blk in (meta.get("tables") or {}).get("bolt_forces", []) or []:
@@ -504,9 +507,34 @@ def bolt_loads(meta: dict) -> dict:
             k = int(m.group(1))
             num = lambda c: (row[idx[c]] if c in idx
                              and isinstance(row[idx[c]], (int, float)) else 0.0)
-            rec = {"N": num("N"),
+            rec = {"end": label.split("_")[-1] if "_" in label else label,
+                   "N": num("N"),
                    "V": math.hypot(num("VY"), num("VZ")),
                    "M": math.hypot(num("MFY"), num("MFZ"))}
-            if k not in out or abs(rec["N"]) > abs(out[k]["N"]):
-                out[k] = rec
+            out.setdefault(k, []).append(rec)
+    return out
+
+
+def bolt_loads(meta: dict, bolts: dict = None) -> dict:
+    """{bolt index: {end, N, V, M}} — the governing end of each bolt.
+
+    `bolts` maps the bolt index to {"d_mm", "pitch"}; where it has an entry,
+    the end is chosen on combined stress. Without it the choice falls back to
+    the larger axial force, which is right for the one caller that only reads
+    N — preload calibration — and wrong for anything that also reads M. That
+    fallback used to be the only rule there was, so an end with less tension
+    and a dominant moment was discarded in both the sizing table and the shock
+    combination, and the joint was reported against its gentler end.
+    """
+    out = {}
+    for k, ends in bolt_load_ends(meta).items():
+        if not ends:
+            continue
+        spec = (bolts or {}).get(k)
+        if spec and spec.get("d_mm"):
+            out[k] = bolt_sizing.worst_end(ends, float(spec["d_mm"]),
+                                           spec.get("pitch"),
+                                           spec.get("size"))
+        else:
+            out[k] = max(ends, key=lambda e: abs(e["N"]))
     return out

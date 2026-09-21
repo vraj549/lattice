@@ -685,7 +685,13 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         mesh_stats = (store.read_json(pid, "mesh/stats.json")
                       if store.exists(pid, "mesh/stats.json") else {})
         records = {r.get("id"): r for r in mesh_stats.get("bolts", [])}
-        loads = results.bolt_loads(meta_r)
+        # Give the reader the geometry so it can pick the governing END of each
+        # beam on combined stress. Without it the choice is the larger axial
+        # force, which discards an end carrying less tension and a dominant
+        # moment — the case a bracket bolted at its edge actually produces.
+        geom = {i: {"d_mm": b.get("d_mm"), "size": b.get("size")}
+                for i, b in enumerate(setup.get("bolts", []), start=1)}
+        loads = results.bolt_loads(meta_r, geom)
         cfg = bolt_sizing.assumptions(setup.get("bolt_sizing"))
 
         rows, warnings = [], []
@@ -888,7 +894,9 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             if len(pts) < 2:
                 raise HTTPException(422, "analysis has no shock spectrum")
         try:
-            out = shock.response(meta, cfg)
+            out = shock.response(meta, cfg, {
+                i: {"d_mm": b.get("d_mm"), "size": b.get("size")}
+                for i, b in enumerate(proj["setup"].get("bolts", []), start=1)})
         except ValueError as e:
             raise HTTPException(422, str(e))
         # the input curve itself, for the chart and to check the table was

@@ -437,6 +437,38 @@ def _pitch_for(d: float, size_id: str = None) -> float:
     return _COARSE[best] if abs(best - d) < 0.3 else 0.15 * d
 
 
+def worst_end(ends: list, d: float, pitch: float = None,
+              size_id: str = None) -> dict:
+    """Of a beam's two ends, the one that governs the bolt.
+
+    Not the one with the larger axial force. A bolt's working stress is
+    sqrt((sigma_z + sigma_b)^2 + 3 tau^2), and an end with less tension but a
+    larger moment can be far worse — which is exactly the case a fitting
+    bracket produces. Selecting on abs(N) discarded it silently, in both the
+    sizing table and the shock combination, so the joint was reported against
+    the gentler of the two ends.
+
+    Ranked on the combined stress with the preload term left out, which is the
+    part that differs between the ends: the preload is one number for the whole
+    bolt, so including it would shift both sides equally. Shear is carried by
+    friction rather than by the shank in a properly preloaded joint, but it is
+    kept here because this is a comparison, not a verification.
+    """
+    if not ends:
+        return {}
+    g = thread_geometry(d, pitch or _pitch_for(d, size_id))
+    ds = math.sqrt(4.0 * g["A_s"] / math.pi)
+    W_b = math.pi * ds ** 3 / 32.0          # elastic section modulus in bending
+
+    def severity(e):
+        sigma = abs(float(e.get("N") or 0.0)) / g["A_s"]
+        sigma += abs(float(e.get("M") or 0.0)) / W_b
+        tau = abs(float(e.get("V") or 0.0)) / g["A_s"]
+        return math.sqrt(sigma ** 2 + 3.0 * tau ** 2)
+
+    return max(ends, key=severity)
+
+
 def size_from_run(bolt: dict, record: dict, setup: dict, meta: dict,
                   F_A: float, F_Q: float, M_b: float = 0.0,
                   **overrides) -> dict:

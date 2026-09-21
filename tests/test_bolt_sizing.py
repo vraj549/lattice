@@ -428,3 +428,69 @@ def test_passes_is_false_whenever_any_check_fired():
         assert not r["passes"], f"checks fired but the verdict was ok: {kw}"
     clean = base(F_Q=1000.0, p_G=600.0)
     assert clean["passes"] and not clean["checks"]
+
+
+# --------------------------------------------- which end of the beam governs
+
+def _ends(N_a, M_a, N_b, M_b, V=0.0):
+    return [{"end": "A", "N": N_a, "V": V, "M": M_a},
+            {"end": "B", "N": N_b, "V": V, "M": M_b}]
+
+
+def test_the_governing_end_is_the_one_with_the_higher_combined_stress():
+    """Both ends of a bolt beam are reported and one has to be picked. The
+    rule was `larger abs(N)`, so an end carrying less tension and a dominant
+    moment was discarded — which is what a bracket bolted at its edge
+    produces, and it was discarded in the sizing table and in the shock
+    combination alike.
+    """
+    # tension-dominated: A wins, and the old rule agreed
+    assert BS.worst_end(_ends(5000.0, 0.0, 1000.0, 2000.0), 8.0)["end"] == "A"
+    # moment-dominated: B wins, and the old rule would still have said A
+    assert BS.worst_end(_ends(5000.0, 0.0, 1000.0, 40000.0), 8.0)["end"] == "B"
+
+
+def test_the_choice_depends_on_the_bolt_and_not_only_on_the_loads():
+    """A moment and an axial force are only comparable once they are stresses,
+    which is why this needs the diameter: bending falls off as d^3 and tension
+    as d^2, so the same pair of ends can swap on a larger bolt."""
+    ends = _ends(5000.0, 0.0, 1000.0, 9000.0)
+    small = BS.worst_end(ends, 8.0)["end"]
+    large = BS.worst_end(ends, 30.0)["end"]
+    assert (small, large) == ("B", "A"), (small, large)
+    # and the crossover is where the two stresses meet, not at an arbitrary
+    # size: sigma_bend = M/(pi ds^3/32) equals the tension difference over
+    # A_s = pi ds^2/4 at ds = 8 M / dN, which is 18 mm here — between M20 and
+    # M24 once ds is the stress-area diameter rather than the nominal one.
+    assert BS.worst_end(ends, 20.0)["end"] == "B"
+    assert BS.worst_end(ends, 24.0)["end"] == "A"
+
+
+def test_no_ends_is_not_a_crash():
+    assert BS.worst_end([], 8.0) == {}
+    only = [{"end": "A", "N": 1.0, "V": 0.0, "M": 0.0}]
+    assert BS.worst_end(only, 8.0)["end"] == "A"
+
+
+def test_bolt_loads_keeps_both_ends_and_reduces_with_the_geometry():
+    """The reader must not throw an end away before anything knows the bolt's
+    diameter — a moment and an axial force are not comparable until they are
+    stresses. With equal tension, the moment decides; the old rule kept
+    whichever end came first in the table.
+    """
+    from lattice_fea import results
+
+    meta = {"tables": {"bolt_forces": [{
+        "columns": ["INTITULE", "N", "VY", "VZ", "MFY", "MFZ"],
+        "rows": [["BOLT1_A", 6000.0, 0.0, 0.0, 100.0, 0.0],
+                 ["BOLT1_B", 6000.0, 0.0, 0.0, 900.0, 0.0]],
+    }]}}
+    ends = results.bolt_load_ends(meta)
+    assert [e["end"] for e in ends[1]] == ["A", "B"], "an end was dropped"
+
+    # No geometry: the historical rule, which is right for the one caller that
+    # reads only N (preload calibration) and cannot see the moment at all.
+    assert results.bolt_loads(meta)[1]["end"] == "A"
+    # With it: the end that actually governs.
+    got = results.bolt_loads(meta, {1: {"d_mm": 6.0}})[1]
+    assert got["end"] == "B" and got["M"] == pytest.approx(900.0)

@@ -30,6 +30,7 @@ import math
 
 import numpy as np
 
+from . import bolt_sizing
 from .random_vib import sorted_breakpoints
 
 G_MM = 9810.0     # 1 g in mm/s^2
@@ -510,7 +511,7 @@ def bolt_shapes(meta: dict) -> dict:
     return out
 
 
-def response(meta: dict, cfg: dict) -> dict:
+def response(meta: dict, cfg: dict, bolt_geom: dict = None) -> dict:
     """Everything a shock run reports, from the tables the modal deck wrote."""
     axis = int(cfg.get("axis", 2))
     rule = cfg.get("rule", "srss")
@@ -573,14 +574,25 @@ def response(meta: dict, cfg: dict) -> dict:
     # Combine at each bolt END and only then take the worse of the two: the
     # governing end can differ mode to mode, and picking per mode first would
     # build a bolt force out of two different places.
-    bolts = {}
+    ends = {}
     for label, per in bolt_shapes(meta).items():
         idx = int(label.split("_")[0][4:])
         N = split(lambda m: (per.get(m) or [0] * 5)[0] * q[m])[0]
         V = split(lambda m: math.hypot(*(per.get(m) or [0] * 5)[1:3]) * q[m])[0]
         M = split(lambda m: math.hypot(*(per.get(m) or [0] * 5)[3:5]) * q[m])[0]
-        cur = bolts.get(idx)
-        if cur is None or N > cur["N"]:
-            bolts[idx] = {"bolt": idx, "end": label[-1], "N": N, "V": V, "M": M}
+        ends.setdefault(idx, []).append(
+            {"bolt": idx, "end": label[-1], "N": N, "V": V, "M": M})
+
+    # Then the governing end, on combined stress rather than on axial force
+    # alone. An SRS peak at the end with less tension and a dominant moment is
+    # exactly what a shock case produces, and picking on N discarded it.
+    bolts = {}
+    for idx, es in ends.items():
+        spec = (bolt_geom or {}).get(idx) or {}
+        if spec.get("d_mm"):
+            bolts[idx] = bolt_sizing.worst_end(es, float(spec["d_mm"]),
+                                               spec.get("pitch"), spec.get("size"))
+        else:
+            bolts[idx] = max(es, key=lambda e: e["N"])
     out["bolts"] = [bolts[k] for k in sorted(bolts)]
     return out
