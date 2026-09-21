@@ -161,6 +161,24 @@ export function staleForAnalyses(S) {
 export const MESH_FORMAT = 3;
 const meshFormat = (S) => S.config?.mesh_format ?? MESH_FORMAT;
 
+/**
+ * A derived result — slip, shock, random, bolt sizing — that still belongs to
+ * the run currently loaded.
+ *
+ * These are computed from one run and are valid only for THAT run. Keyed by
+ * analysis id alone, a re-run replaced the numbers the contour panel read
+ * while these kept the previous ones: the staleness badge went green and the
+ * shock table underneath it still showed the old model's bolt loads. The
+ * server already publishes a signature for exactly this purpose — every input
+ * that changes the answer, hashed — so a stale entry simply cannot be read.
+ */
+export function derived(S, name, aid) {
+  const hit = S[name]?.[aid];
+  if (!hit) return null;
+  const sig = S.results?.[aid]?.signature;
+  return hit.sig === sig ? hit.data : null;
+}
+
 export function meshIssues(S) {
   const stats = S.meshData?.stats;
   if (!stats) return [];
@@ -1135,7 +1153,7 @@ function probeReadout(S, A, p) {
     const meta = S.results[a.id];
     if (!meta) continue;
     if (a.type === "shock") {
-      const R = S.shockResults?.[a.id];
+      const R = derived(S, "shockResults", a.id);
       if (!R) {
         // Same on-demand fetch the shock panel does, guarded by shockPending,
         // so asking here does not mean opening the result node first.
@@ -2169,7 +2187,7 @@ function boltStress(cfg, r) {
  * where the arithmetic is unit-tested.
  */
 function secSizing(S, A, a) {
-  const R = S.sizing?.[a.id];
+  const R = derived(S, "sizing", a.id);
   if (!R) {
     A.loadSizing(a.id);
     return [sec(null, el("div", { class: "hint" }, "Sizing\u2026"))];
@@ -2284,7 +2302,7 @@ function secWarnings(S, A, a) {
  * approximation of the nonlinear one, it is the nonlinear one.
  */
 function slipSections(S, A, a) {
-  const R = S.slipResults?.[a.id];
+  const R = derived(S, "slipResults", a.id);
   if (!R) {
     A.loadSlip(a.id);
     return [sec("Slip check", el("div", { class: "hint" }, "Checking\u2026"))];
@@ -2336,7 +2354,7 @@ function slipSections(S, A, a) {
 }
 
 function shockSections(S, A, a) {
-  const R = S.shockResults?.[a.id];
+  const R = derived(S, "shockResults", a.id);
   if (!R) {
     A.loadShock(a.id);
     return [sec("Shock response", el("div", { class: "hint" }, "Computing\u2026"))];
@@ -2430,7 +2448,7 @@ function shockSections(S, A, a) {
 }
 
 function randomSections(S, A, a) {
-  const R = S.randomResults?.[a.id];
+  const R = derived(S, "randomResults", a.id);
   if (!R) {
     A.loadRandom(a.id);
     return [sec("Random response", el("div", { class: "hint" }, "Computing…"))];

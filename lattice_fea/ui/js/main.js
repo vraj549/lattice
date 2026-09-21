@@ -562,12 +562,16 @@ const A = {
     logLine(`PSD spec: ${rows.length} breakpoints loaded.`);
   },
 
+  // Stamp a derived result with the signature of the run it came from, so
+  // `derived()` in ui.js can refuse it once that run has been replaced. See
+  // the comment there: these used to be keyed by analysis id alone and
+  // survived a re-solve.
   async loadSizing(aid) {
     if (S.sizingPending?.[aid]) return;
     (S.sizingPending ||= {})[aid] = true;
     try {
-      (S.sizing ||= {})[aid] =
-        await api.get(`/api/projects/${S.project.id}/results/${aid}/bolt-sizing`);
+      stashDerived("sizing", aid,
+        await api.get(`/api/projects/${S.project.id}/results/${aid}/bolt-sizing`));
       refresh();
     } catch (e) {
       logLine(`bolt sizing: ${e.message}`, "badln");
@@ -588,8 +592,8 @@ const A = {
     if (S.slipPending?.[aid]) return;
     (S.slipPending ||= {})[aid] = true;
     try {
-      const r = await api.get(`/api/projects/${S.project.id}/results/${aid}/slip`);
-      (S.slipResults ||= {})[aid] = r;
+      stashDerived("slipResults", aid,
+        await api.get(`/api/projects/${S.project.id}/results/${aid}/slip`));
       refresh();
     } catch (e) {
       logLine(`slip check: ${e.message}`, "badln");
@@ -600,8 +604,8 @@ const A = {
     if (S.shockPending?.[aid]) return;
     (S.shockPending ||= {})[aid] = true;
     try {
-      const r = await api.get(`/api/projects/${S.project.id}/results/${aid}/shock`);
-      (S.shockResults ||= {})[aid] = r;
+      stashDerived("shockResults", aid,
+        await api.get(`/api/projects/${S.project.id}/results/${aid}/shock`));
       refresh();
     } catch (e) {
       logLine(`shock response: ${e.message}`, "badln");
@@ -612,8 +616,8 @@ const A = {
     if (S.randomPending?.[aid]) return;
     (S.randomPending ||= {})[aid] = true;
     try {
-      const r = await api.get(`/api/projects/${S.project.id}/results/${aid}/random`);
-      (S.randomResults ||= {})[aid] = r;
+      stashDerived("randomResults", aid,
+        await api.get(`/api/projects/${S.project.id}/results/${aid}/random`));
       refresh();
     } catch (e) {
       logLine(`random response: ${e.message}`, "badln");
@@ -1009,6 +1013,10 @@ document.getElementById("logToggle").addEventListener("click", (e) => {
 });
 
 // ---------------- save ----------------
+function stashDerived(name, aid, data) {
+  (S[name] ||= {})[aid] = { sig: S.results?.[aid]?.signature, data };
+}
+
 function scheduleSave() {
   clearTimeout(S.saveTimer);
   S.saveTimer = setTimeout(saveNow, 700);
@@ -1203,6 +1211,8 @@ async function openProject(pid) {
   document.getElementById("projName").textContent = S.project.name;
   document.getElementById("overlay").hidden = true;
   S.results = {}; S.runStatus = {}; S.meshData = null; S.activeResult = null; shown = null;
+  // Derived results belong to a run, and this is a different project.
+  S.sizing = {}; S.slipResults = {}; S.shockResults = {}; S.randomResults = {};
   S.selection = { kind: "model", id: "root" };
   try { S.expanded = JSON.parse(localStorage.getItem(`lattice-tree-${pid}`) || "{}"); }
   catch { S.expanded = {}; }
