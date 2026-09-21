@@ -17,12 +17,12 @@ from fastapi.staticfiles import StaticFiles
 
 import hashlib
 
-from . import (__version__, bolt_sizing, ccx_writer, comm_writer, config,
+from . import (__version__, bolt_sizing, ccx_writer, comm_writer, config, meshing,
                preload as preload_mod, random_vib, results, shock,
                slip)
 from .materials import LIBRARY
 from .projects import ProjectStore, SetupInvalid, validate_setup
-from .solver import (JobManager, extract_errors, popen_isolated, reap,
+from .solver import (JobManager, extract_errors, headline, popen_isolated, reap,
                      run_ccx, run_solver, summarise_failure)
 
 UI_DIR = os.path.join(os.path.dirname(__file__), "ui")
@@ -50,7 +50,7 @@ def run_gmsh_worker(job, args: dict) -> None:
             tail = extract_errors(job.log[-400:])
             for ln in tail:
                 job.append(ln)
-            head = tail[0].strip() if tail else f"exit code {rc}"
+            head = headline(tail) or f"exit code {rc}"
             raise RuntimeError(f"{head}  (worker exit {rc})")
     finally:
         try:
@@ -101,6 +101,9 @@ def create_app(workspace: str = "workspace") -> FastAPI:
 
     store = ProjectStore(workspace)
     jobs = JobManager()
+    # Reachable from the app so tests can arrange a job state that is awkward
+    # to produce by racing two real ones.
+    app.state.jobs = jobs
     solver_cfg = config.detect(workspace)
     print(f"[lattice] solver: {solver_cfg.mode} — {solver_cfg.detail}")
     for n in solver_cfg.notes:
@@ -111,6 +114,11 @@ def create_app(workspace: str = "workspace") -> FastAPI:
     def get_config():
         return {"version": __version__, "solver": solver_cfg.as_dict(),
                 "capabilities": {"ccx": ccx_writer.CAPABILITIES},
+                # The UI kept its own copy of this and it drifted: the server
+                # was on 3 while the browser still compared against 2, so a
+                # mesh that genuinely needed rewriting was reported as current.
+                # One definition, sent to whoever needs it.
+                "mesh_format": meshing.MESH_FORMAT,
                 "workspace": os.path.abspath(workspace)}
 
     @app.post("/api/config/recheck")
@@ -229,8 +237,12 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         if not proj.get("geometry"):
             raise HTTPException(409, "import geometry first")
 
-        if jobs.is_running("mesh", pid):
-            raise HTTPException(409, "this project is already meshing")
+        busy = jobs.owner_of_mesh(pid)
+        if busy:
+            raise HTTPException(409, (
+                f"'{busy}' is using this project's mesh. Re-meshing under a "
+                "running solve gives results computed on one discretisation "
+                "and reported against another — wait for it, or cancel it."))
 
         def work(job):
             run_gmsh_worker(job, {
@@ -321,6 +333,9 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         # enough to do it.
         if jobs.is_running("solve", f"{pid}/{aid}"):
             raise HTTPException(409, "this analysis is already running")
+        if jobs.meshing(pid):
+            raise HTTPException(409, "this project is meshing — the solve would "
+                                     "read a mesh that is still being written")
 
         mesh_stats = store.read_json(pid, "mesh/stats.json")
         run_dir = store.path(pid, "runs", aid)

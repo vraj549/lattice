@@ -128,6 +128,32 @@ class JobManager:
             return any(j.status == "running" and j.kind == kind and j.key == key
                        for j in self.jobs.values())
 
+    def owner_of_mesh(self, pid: str) -> "str|None":
+        """Label of a running job that is reading or writing this project's
+        mesh, or None.
+
+        The mesh is one set of files shared by every analysis, and a solve
+        reads it for its whole life — the preload calibration re-copies
+        mesh.unv part-way through. So a re-mesh during a solve produces a
+        preload calibrated on one discretisation and applied to another, and
+        exits 0. The two must exclude each other at the project level; solves
+        of different analyses need not, and should not, exclude each other.
+        """
+        with self._lock:
+            for j in self.jobs.values():
+                if j.status != "running":
+                    continue
+                if j.kind == "mesh" and j.key == pid:
+                    return j.label
+                if j.kind == "solve" and j.key.split("/", 1)[0] == pid:
+                    return j.label
+        return None
+
+    def meshing(self, pid: str) -> bool:
+        with self._lock:
+            return any(j.status == "running" and j.kind == "mesh" and j.key == pid
+                       for j in self.jobs.values())
+
     def submit(self, kind: str, label: str, fn, key: str = "") -> Job:
         job = Job(kind, label, key)
         with self._lock:
@@ -264,7 +290,38 @@ _ERROR_MARKERS = (
     "<EXCEPTION>", "<F>_", "<S>_ERROR", "DIAGNOSTIC JOB",
     "Traceback (most recent call last)", "Error   :", "*ERROR",
     "ValueError", "RuntimeError", "erreur", "ERREUR",
+    # OpenCASCADE's STEP/IGES readers print their diagnosis on lines of this
+    # shape, and gmsh then prints its own generic "Could not read file". The
+    # generic one used to be the whole message the user saw.
+    "**** ERR", "Incorrect syntax", "Unknown entity",
 )
+
+# Lines that say only THAT something failed. Fine to keep in the log, useless
+# as the headline when a more specific line is available.
+_GENERIC_HEADLINES = (
+    "Could not read file", "Unable to open file", "exit code",
+)
+
+
+def headline(lines) -> "str|None":
+    """The one line to put in front of the user from a failed run's output.
+
+    Prefers a line that says what is wrong over one that says only that
+    something is. A text file renamed .step reported "Could not read file
+    '…/geometry.step'" while the line that actually diagnosed it — "Incorrect
+    syntax: unexpected TYPE, expecting STEP" — sat further up the log.
+    """
+    picked = [ln.strip() for ln in lines if ln.strip()]
+    if not picked:
+        return None
+    # extract_errors keeps a few lines of context around each match, so the
+    # first line it returns is often an ordinary "Info : Reading …". Only a
+    # line that actually carries an error marker can be the headline.
+    flagged = [ln for ln in picked if any(m in ln for m in _ERROR_MARKERS)]
+    specific = [ln for ln in flagged
+                if not any(g in ln for g in _GENERIC_HEADLINES)
+                and not ln.lstrip().startswith(("File \"", "Traceback"))]
+    return (specific or flagged or picked)[0]
 
 
 def extract_errors(lines, limit: int = 24) -> list:

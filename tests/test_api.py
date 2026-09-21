@@ -39,6 +39,11 @@ def client(tmp_path, monkeypatch):
         yield c
 
 
+def server_jobs(c):
+    """The live JobManager behind this client."""
+    return c.app.state.jobs
+
+
 def wait(c, job, timeout=600):
     """Block until a job finishes; return its final state."""
     t0 = time.time()
@@ -419,3 +424,68 @@ def test_a_valid_setup_still_saves(client):
         setup["contacts"] = [{"id": "c", "name": "p/p", "kind": kind,
                               "faces_a": [1], "faces_b": [2], "solids": [1, 2]}]
         assert c.put(f"/api/projects/{pid}/setup", json=setup).status_code == 200, kind
+
+
+# ------------------------------- the mesh is one shared file, not per analysis
+
+def test_remeshing_is_refused_while_a_solve_is_reading_the_mesh(client, monkeypatch):
+    """A solve reads mesh.unv for its whole life — the preload calibration
+    re-copies it part-way through — so a re-mesh during one gives a preload
+    calibrated on one discretisation and applied to another, at exit code 0.
+
+    Solves of different analyses share nothing and must still run together.
+    """
+    c = client
+    pid = _shock_project(c)
+
+    class FakeJob:
+        status, kind, key, label = "running", "solve", f"{pid}/a1", "shock a1"
+
+    jobs = server_jobs(c)
+    jobs.jobs["fake"] = FakeJob()
+    try:
+        r = c.post(f"/api/projects/{pid}/mesh")
+        assert r.status_code == 409, r.text
+        assert "mesh" in r.text.lower()
+    finally:
+        jobs.jobs.pop("fake", None)
+
+    # and with nothing running it is allowed again
+    r = c.post(f"/api/projects/{pid}/mesh")
+    assert r.status_code == 200, r.text
+    assert wait(c, r.json()["job"])["status"] == "done"
+
+
+def test_solving_is_refused_while_the_mesh_is_being_written(client):
+    c = client
+    pid = _shock_project(c)
+
+    class FakeMesh:
+        status, kind, key, label = "running", "mesh", pid, f"mesh {pid}"
+
+    jobs = server_jobs(c)
+    jobs.jobs["fakemesh"] = FakeMesh()
+    try:
+        r = c.post(f"/api/projects/{pid}/solve/a1")
+        assert r.status_code == 409, r.text
+    finally:
+        jobs.jobs.pop("fakemesh", None)
+
+
+def test_two_analyses_may_solve_at_once(client):
+    """Different analyses write different run directories and only read the
+    mesh. Serialising them would be a real cost for no reason."""
+    c = client
+    pid = _shock_project(c)
+
+    class FakeOther:
+        status, kind, key, label = "running", "solve", f"{pid}/a2", "static a2"
+
+    jobs = server_jobs(c)
+    jobs.jobs["other"] = FakeOther()
+    try:
+        r = c.post(f"/api/projects/{pid}/solve/a1")
+        assert r.status_code == 200, r.text
+        assert wait(c, r.json()["job"])["status"] == "done"
+    finally:
+        jobs.jobs.pop("other", None)

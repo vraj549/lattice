@@ -123,6 +123,26 @@ const A = {
     refresh();
   },
 
+  /**
+   * Record an edit that has ALREADY been applied to the document.
+   *
+   * The counterpart to mutate(fn), for the call sites that cannot wrap the
+   * change in a callback: a face pick returns from the viewer, a bolt pattern
+   * builds a list across several helpers, a probe lands where the ray hit.
+   * Those used to call scheduleSave() on their own, so the model was written
+   * to disk but no undo step existed — picking faces and patterning bolts,
+   * which are the two edits most worth taking back, were the two that could
+   * not be. This works because `baseline` is the state at the END of the
+   * previous edit, so it is still the right thing to go back to after the
+   * change has happened.
+   */
+  recordEdit() {
+    pushUndo();
+    commitBaseline();
+    scheduleSave();
+    refresh();
+  },
+
   undo() { stepHistory("undo", "Nothing to undo"); },
   redo() { stepHistory("redo", "Nothing to redo"); },
 
@@ -156,7 +176,7 @@ const A = {
     const s = { id: uid(), name: `Support ${a.supports.length + 1}`, type: "fixed", faces: [] };
     a.supports.push(s);
     S.selection = { kind: "support", id: s.id };
-    A.mutate(() => {});
+    A.recordEdit();
     A.pickFaces(s, "faces");
   },
   addLoad(aid) {
@@ -167,7 +187,7 @@ const A = {
                 type: "force", faces: [], fx: 0, fy: 0, fz: -100 };
     a.loads.push(l);
     S.selection = { kind: "load", id: l.id };
-    A.mutate(() => {});
+    A.recordEdit();
     A.pickFaces(l, "faces");
   },
   addBolt() {
@@ -176,7 +196,7 @@ const A = {
                  E_GPa: 210, preload_N: null };
     (S.project.setup.bolts ||= []).push(bl);
     S.selection = { kind: "bolt", id: bl.id };
-    A.mutate(() => {});
+    A.recordEdit();
     A.pickFaces(bl, "side_a_faces");
   },
   /** Turn the interfaces found at import into editable contacts. */
@@ -210,7 +230,7 @@ const A = {
       });
       made++;
     }
-    A.mutate(() => {});
+    A.recordEdit();
     logLine(made
       ? "Detected " + made + " contact interface(s), all set to bonded. "
         + "Change any that can slide or separate."
@@ -222,14 +242,14 @@ const A = {
                 slave_faces: [], master_solid: null };
     (S.project.setup.ties ||= []).push(t);
     S.selection = { kind: "tie", id: t.id };
-    A.mutate(() => {});
+    A.recordEdit();
   },
   addProbe() {
     const p = { id: uid(), name: `Probe ${S.project.setup.probes.length + 1}`,
                 x: 0, y: 0, z: 0 };
     S.project.setup.probes.push(p);
     S.selection = { kind: "probe", id: p.id };
-    A.mutate(() => {});
+    A.recordEdit();
     A.pickPoint(p);
   },
   addAnalysis() { showAnalysisDialog(); },
@@ -242,7 +262,7 @@ const A = {
     S.project.setup.analyses.push(a);
     S.selection = { kind: "analysis", id: a.id };
     S.expanded[`an:${a.id}`] = true;   // a new branch opens to show its parts
-    A.mutate(() => {});
+    A.recordEdit();
     A.addSupport(a.id);          // every analysis needs at least one support
   },
   /** Copy an item in place, keeping every setting. */
@@ -254,7 +274,7 @@ const A = {
     copy.name = nextCopyName(list, list[index].name || listName);
     list.splice(index + 1, 0, copy);
     S.selection = { kind: SINGULAR[listName] || listName, id: copy.id };
-    A.mutate(() => {});
+    A.recordEdit();
     logLine(`Duplicated “${list[index].name || listName}” → “${copy.name}”.`);
   },
 
@@ -296,12 +316,12 @@ const A = {
       if (i >= 0) list.splice(i, 1);
     }
     S.selection = { kind: "model", id: "root" };
-    A.mutate(() => {});
+    A.recordEdit();
   },
 
   assignMaterial(solidTag, value) {
     const setup = S.project.setup;
-    if (!value) { delete setup.assignments[String(solidTag)]; A.mutate(() => {}); return; }
+    if (!value) { delete setup.assignments[String(solidTag)]; A.recordEdit(); return; }
     let mid = value;
     if (value.startsWith("lib:")) {
       const libId = value.slice(4);
@@ -312,7 +332,7 @@ const A = {
       }
     }
     setup.assignments[String(solidTag)] = mid;
-    A.mutate(() => {});
+    A.recordEdit();
   },
 
   /** Define a material that is not in the library. */
@@ -559,7 +579,7 @@ const A = {
   setSizing(aid, patch) {
     const cfg = (S.project.setup.bolt_sizing ||= {});
     Object.assign(cfg, patch);
-    scheduleSave();
+    A.recordEdit();
     delete (S.sizing || {})[aid];
     A.loadSizing(aid);
   },
@@ -814,7 +834,7 @@ function showMaterialDialog(existing, assignTo) {
         if (i >= 0) list[i] = draft; else list.push(draft);
         if (assignTo != null) S.project.setup.assignments[String(assignTo)] = draft.id;
         closeDialog();
-        A.mutate(() => {});
+        A.recordEdit();
         logLine(`Material “${draft.name}” saved.`);
       } }, existing ? "Save" : "Create"),
       el("button", { class: "btn", onclick: () => closeDialog() }, "Cancel")));
@@ -855,7 +875,7 @@ document.getElementById("pickDone").addEventListener("click", () => {
     applyBoltPattern(pickCtx.patternBolt, pickCtx.ref, viewer.endPick());
   } else if (pickCtx?.item) {
     pickCtx.item[pickCtx.key] = viewer.endPick();
-    scheduleSave();
+    A.recordEdit();
   } else viewer.endPick();
   pickCtx = null;
   hidePickBar();
@@ -905,7 +925,7 @@ function applyBoltPattern(template, ref, targets) {
   for (const p of partial) logLine(`  incomplete — ${p}`, "warnln");
   if (!made) logLine("Pattern: nothing created.", "warnln");
   if (made) logLine("  Re-mesh before running: bolt beams are built at mesh time.", "warnln");
-  scheduleSave();
+  A.recordEdit();
 }
 
 /** "Bolt @25" -> "Bolt @25 (2)", avoiding names already in the list. */
@@ -2103,8 +2123,7 @@ async function boot() {
           : `Probe placed on the surface at `
             + `${fmtVal(pt.x)}, ${fmtVal(pt.y)}, ${fmtVal(pt.z)} — no feature `
             + `was within snapping distance.`);
-        scheduleSave();
-        refresh();
+        A.recordEdit();
       }
     },
   });

@@ -107,3 +107,59 @@ def test_install_warns_about_the_pip_version(docs):
     for name in ("README.md", "docs/INSTALL.md"):
         assert "--upgrade pip" in docs[name], (
             f"{name} tells people to run an install that fails on stock pip")
+
+
+# ------------------------------------------------ what a failure says it is
+
+def test_the_headline_is_the_line_that_says_what_is_wrong():
+    """A text file renamed .step reported "Could not read file
+    '…/geometry.step'" — true, and useless. The line that actually diagnosed
+    it sat further up the log. extract_errors keeps context around each match,
+    so the first line it returns is often an ordinary Info line; only a line
+    carrying an error marker can be the headline.
+    """
+    from lattice_fea.solver import extract_errors, headline
+
+    log = [
+        "Info    : Reading '/tmp/x/geometry.step'...",
+        " **** ERR StepFile : Undefined Parsing: Line 2: Incorrect syntax: "
+        "unexpected TYPE, expecting STEP ****",
+        "Error   : Could not read file '/tmp/x/geometry.step'",
+        "Traceback (most recent call last):",
+        '  File "/x/gmsh_worker.py", line 10, in <module>',
+        "RuntimeError: geometry import failed",
+    ]
+    h = headline(extract_errors(log))
+    assert "Incorrect syntax" in h, h
+    assert "Could not read file" not in h, h
+
+
+def test_a_generic_line_is_still_used_when_it_is_all_there_is():
+    """Preferring the specific line must not mean printing nothing when there
+    is no specific line."""
+    from lattice_fea.solver import extract_errors, headline
+
+    log = ["Info    : Reading", "Error   : Could not read file '/tmp/x.step'"]
+    assert "Could not read file" in headline(extract_errors(log))
+    assert headline([]) is None
+
+
+def test_the_ui_does_not_keep_its_own_copy_of_mesh_format():
+    """MESH_FORMAT lived in two places and drifted: the writer moved to 3
+    while the browser still compared against 2, so a mesh that genuinely
+    needed rewriting was reported as current. The server now sends it, and the
+    literal left in the UI is only a floor for the moment before /api/config
+    arrives — it must still not be behind.
+    """
+    import re
+
+    from lattice_fea import meshing
+
+    ui = open(os.path.join(ROOT, "lattice_fea", "ui", "js", "ui.js"),
+              encoding="utf-8").read()
+    m = re.search(r"export const MESH_FORMAT = (\d+);", ui)
+    assert m, "the UI fallback constant went missing"
+    assert int(m.group(1)) == meshing.MESH_FORMAT, (
+        f"ui.js says {m.group(1)}, meshing.py says {meshing.MESH_FORMAT}")
+    assert "S.config?.mesh_format" in ui, (
+        "the UI must prefer the value the server sends over its own literal")

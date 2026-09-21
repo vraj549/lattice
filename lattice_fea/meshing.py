@@ -32,6 +32,15 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
     diag = meta["diag"]
     mcfg = setup.get("mesh", {})
     size = mcfg.get("size_mm") or diag / 25.0
+    # A requested size at or above the model's own diagonal cannot be honoured
+    # — gmsh falls back to whatever the smallest feature forces — so the mesh
+    # that comes out has nothing to do with the number that was typed. It used
+    # to succeed silently: 1e9 mm produced a 270-element mesh and said nothing.
+    if size >= diag:
+        progress(f"warning: the requested element size ({size:g} mm) is at "
+                 f"least the whole model ({diag:.3g} mm across). gmsh will use "
+                 f"whatever the smallest feature allows, so the element count "
+                 f"is set by the geometry, not by this number.")
     minsize = max(size / 12.0, diag * 1e-5)
     curvdiv = int(mcfg.get("curvature") or 16)
     order = int(mcfg.get("order") or 2)

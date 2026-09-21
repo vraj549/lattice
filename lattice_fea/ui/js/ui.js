@@ -153,7 +153,13 @@ export function staleForAnalyses(S) {
  * the tree and in none of the matrices — the load path would silently not be
  * there, which is worse than a failed run.
  */
-export const MESH_FORMAT = 2;
+// The server owns this number; it is sent in /api/config. The UI used to
+// keep its own copy and it drifted — the writer moved to 3 while the browser
+// still compared against 2, so a mesh that genuinely needed rewriting was
+// reported as current. The literal here is only a floor for the moment before
+// the config arrives.
+export const MESH_FORMAT = 3;
+const meshFormat = (S) => S.config?.mesh_format ?? MESH_FORMAT;
 
 export function meshIssues(S) {
   const stats = S.meshData?.stats;
@@ -161,7 +167,7 @@ export function meshIssues(S) {
   const out = [];
 
   // A mesh from an older build may be unusable rather than merely stale.
-  if ((stats.mesh_format || 0) < MESH_FORMAT) {
+  if ((stats.mesh_format || 0) < meshFormat(S)) {
     out.push({ scope: "all",
       text: "this mesh was written by an earlier version of Lattice whose "
           + "group records could confuse code_aster (duplicate GROUP_NO). "
@@ -374,6 +380,24 @@ function textInput(label, value, oninput) {
   return el("label", { class: "frm" }, label,
     liveInput({ type: "text", value: value ?? "" }, (t) => oninput(t.value)));
 }
+/** One cell of a spectrum table.
+ *
+ * These were raw inputs saving on every keystroke, which meant two things:
+ * no undo step was ever recorded for a spectrum edit (the panel's other
+ * fields get one on blur, through liveInput), and a half-typed value was
+ * written to the model. `Number("") || 0` turned a cleared cell into a
+ * breakpoint at 0 Hz, which is not a frequency — so a blank field now leaves
+ * the previous value alone instead of inventing one.
+ */
+function specCell(row, k, onedit) {
+  return liveInput({ type: "number", step: "any", value: row[k] }, (t) => {
+    const v = Number(t.value);
+    if (t.value === "" || !Number.isFinite(v)) return;
+    row[k] = v;
+    onedit();
+  });
+}
+
 function selInput(label, value, options, onchange) {
   // A value that matches no option would otherwise select the first one, so
   // the panel would show "Bonded" for a contact the tree lists as something
@@ -1486,13 +1510,9 @@ function panelSettings(S, A, put, id) {
     const specTable = el("table", { class: "rtable psd" },
       el("tr", {},
         el("th", {}, "Hz"), el("th", {}, "g²/Hz"), el("th", {}, "")),
-      spec.map((rowv, i) => el("tr", {},
-        el("td", {}, el("input", {
-          type: "number", step: "any", value: rowv[0],
-          oninput: (e) => { spec[i][0] = Number(e.target.value) || 0; A.saveOnly(); } })),
-        el("td", {}, el("input", {
-          type: "number", step: "any", value: rowv[1],
-          oninput: (e) => { spec[i][1] = Number(e.target.value) || 0; A.saveOnly(); } })),
+      spec.map((_row, i) => el("tr", {},
+        el("td", {}, specCell(spec[i], 0, () => A.saveOnly())),
+        el("td", {}, specCell(spec[i], 1, () => A.saveOnly())),
         el("td", {}, el("button", {
           class: "btn btn-small btn-danger",
           onclick: () => A.mutate(() => { spec.splice(i, 1); }) }, "✕")))));
@@ -1559,13 +1579,9 @@ function panelSettings(S, A, put, id) {
       secs.push(sec("Input spectrum",
         el("table", { class: "rtable psd" },
           el("tr", {}, el("th", {}, "Hz"), el("th", {}, "g"), el("th", {}, "")),
-          spec.map((rowv, i) => el("tr", {},
-            el("td", {}, el("input", {
-              type: "number", step: "any", value: rowv[0],
-              oninput: (e) => { spec[i][0] = Number(e.target.value) || 0; A.saveOnly(); } })),
-            el("td", {}, el("input", {
-              type: "number", step: "any", value: rowv[1],
-              oninput: (e) => { spec[i][1] = Number(e.target.value) || 0; A.saveOnly(); } })),
+          spec.map((_row, i) => el("tr", {},
+            el("td", {}, specCell(spec[i], 0, () => A.saveOnly())),
+            el("td", {}, specCell(spec[i], 1, () => A.saveOnly())),
             el("td", {}, el("button", {
               class: "btn btn-small btn-danger",
               onclick: () => A.mutate(() => { spec.splice(i, 1); }) }, "\u2715"))))),
