@@ -1,5 +1,114 @@
 # Changelog
 
+## 0.28.0
+
+Ten reviewers went through the codebase as if the prototype were being turned
+into a product. This release is the fix pass: every wrong answer they
+demonstrated, plus seven more found while fixing those. `docs/REVIEW-2026-09.md`
+is the backlog with the status of each.
+
+### Nonlinear contact was missing from every dynamic deck
+
+A frictionless, no-separation or sliding-friction interface was written into
+the static deck and **left out of modal, harmonic, random and shock
+altogether**. That does not release the interface — it disconnects the two
+solids, so the eigenproblem described a structure nobody had modelled, with
+spurious mechanisms and frequencies to match. The UI had been stating the
+opposite for months ("modal and harmonic use the bonded state").
+
+Linear dynamics has one stiffness matrix, so an interface whose status is part
+of the answer cannot be represented. Every active contact is now tied, and the
+run names the ones it linearised — gluing is stiff, frequencies come out high,
+and a mode that exists only because a joint can slide will not appear at all.
+That is a modelling assumption, so it is stated rather than left in the deck.
+
+### Bolted joints
+
+- **Bending never gated feasibility.** `size_bolt(d=10, M_b=60000)` reported a
+  feasible joint with the bolt at 170 % of yield: the working stress was
+  computed, reported as a percentage, and never compared to anything.
+  `feasible` keeps its narrow meaning — a preload window exists — and `passes`
+  is the verdict for the joint, so the table cannot print "ok" beside a list of
+  reasons it is not.
+- **The wrong end of the bolt was chosen.** Both beam ends are reported and the
+  rule was "larger axial force", which discards an end carrying less tension
+  and a dominant moment. They are ranked on combined stress now, which needs
+  the diameter — bending falls off as d³ and tension as d², so the same pair of
+  ends swaps between M20 and M24.
+- **A deleted bolt shifted the others onto its forces.** Forces are keyed by
+  the mesh group, whose number was the bolt's position when the mesh was
+  written; the table looked them up by its position now. Delete the first of
+  two and the second was sized at the first's 8120 N instead of its own 8360 N.
+- **Preload calibration reported unconverged runs as calibrated.** Running out
+  of passes returned the same shape as hitting the tolerance, so a run 3.3 %
+  from the requested preload was presented as the preload you asked for. The
+  correction is still applied — 2 % beats the 15 % a steel joint loses
+  uncorrected — but it now says which it is.
+
+### Inputs are refused rather than absorbed
+
+A spectrum breakpoint at or below zero was filtered out rather than rejected,
+while the only gate in front counted the raw rows: a two-row PSD with a
+mistyped first frequency passed "needs two breakpoints", arrived as one usable
+point, and reported g_RMS of zero — a qualification that looks like it passes
+by an enormous margin.
+
+More generally, every writer treated an unrecognised enum as a default. An
+unknown support type became a prescribed displacement holding nothing, an
+unknown load type matched no branch and was never applied, an unknown contact
+kind became a contact zone with no friction, and a mesh size of 0 meant
+"unset". All four finished, reported numbers, and described a different
+structure from the one on screen. They are refused at the boundary now, which
+is the last point at which a typo is still a typo.
+
+### You can tell where a number came from
+
+- **A demo run is marked as one, permanently.** `is_demo()` is a property of
+  the live session, so the red banner vanished on restart while the fabricated
+  numbers stayed in the workspace. Provenance is written into the run and
+  travels with it, into the results panel and onto the first line of every CSV.
+- **Derived results no longer outlive their run.** The shock, random, slip and
+  sizing panels cached by analysis id and were never invalidated: re-run, and
+  the staleness badge went green over the previous model's numbers. Each cached
+  payload carries the signature of the run it came from.
+- **Selecting a result shows that result.** Picking a mode while looking at a
+  static contour left the static field on screen under the modal panel, legend
+  and all, because the branch that should have reloaded it could not be
+  reached.
+- **A failed import says what is wrong with the file.** "Could not read file
+  '…/geometry.step'" was true and useless; "Incorrect syntax: unexpected TYPE,
+  expecting STEP" was in the log.
+
+### Undo
+
+Undo did not work. `pushUndo()` runs before the change, so the document still
+equalled the baseline at that moment, and the guard — `if (doc === baseline &&
+!stack.length) return` — could only ever refuse, while the stack could only
+stop being empty through that same function. Every edit made through `mutate()`
+was dropped and the button stayed greyed out for the whole session.
+
+Face picking and bolt patterning, the two most laborious actions in the app,
+bypassed the undo path entirely and left the baseline stale, so the *next* edit
+took itself and all fourteen picks back together. Spectrum cells recorded
+nothing and wrote a breakpoint at 0 Hz when you cleared one.
+
+The history is its own module now, with tests, which is why this was found:
+none of it could be imported before, let alone exercised.
+
+### Also
+
+- `LATTICE_ASTER_MODE=none` was ignored — the one setting whose purpose is to
+  keep the solver off fell through to auto-detect and switched it back on.
+- Re-meshing during a solve was permitted, and the preload calibration re-reads
+  the shared mesh part-way through, so the preload came out calibrated on one
+  discretisation and applied to another at exit code 0.
+- CalculiX read the first analysis's face groups whatever was running, so a
+  pressure-loaded second analysis checked equilibrium against the wrong face.
+- A probe's panel showed where it was and nothing it measured.
+- Undo and Redo were drawn at 12 px and 35 % opacity on a transparent toolbar.
+- `MESH_FORMAT` was defined twice and had drifted, so a mesh that needed
+  rewriting was reported as current.
+
 ## 0.27.0
 
 ### The toolbar follows the selection
