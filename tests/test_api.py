@@ -489,3 +489,70 @@ def test_two_analyses_may_solve_at_once(client):
         assert wait(c, r.json()["job"])["status"] == "done"
     finally:
         jobs.jobs.pop("other", None)
+
+
+def test_sizing_follows_the_bolt_not_its_position_in_the_list(client):
+    """Bolt forces come back keyed by the BOLT<k> group the mesh created, and
+    k was the bolt's position when the mesh was written. The table joined on
+    its position NOW, so deleting a bolt after solving shifted every later one
+    down and sized it against its neighbour's forces.
+
+    The two bolts here are given deliberately different diameters, so a
+    mis-join is visible in the answer rather than only in the bookkeeping.
+    """
+    c = client
+    proj = make_project(c)
+    pid = proj["id"]
+    p = c.get(f"/api/projects/{pid}").json()
+    meta = p["geometry"]
+    cyls = sorted((f for f in meta["faces"]
+                   if (f.get("fit") or {}).get("kind") == "cylinder"),
+                  key=lambda f: f["com"][2])
+    flat = sorted((f for f in meta["faces"]
+                   if (f.get("fit") or {}).get("kind") == "plane"),
+                  key=lambda f: -f["area"])
+    assert len(cyls) >= 4, "this fixture needs two bolt holes"
+
+    setup = p["setup"]
+    setup["materials"] = [{"id": "st", "name": "Steel", "E_GPa": 210.0,
+                           "nu": 0.3, "rho_kgm3": 7850}]
+    setup["assignments"] = {str(s["tag"]): "st" for s in meta["solids"]}
+    tops = [f for f in cyls if f["com"][2] == cyls[-1]["com"][2]]
+    bots = [f for f in cyls if f["com"][2] == cyls[0]["com"][2]]
+    assert len(tops) >= 2 and len(bots) >= 2
+    setup["bolts"] = [
+        {"id": "b1", "name": "Bolt 1", "size": "M6", "d_mm": 6, "E_GPa": 210,
+         "yield_MPa": 640, "preload_N": 0,
+         "side_a_faces": [tops[0]["tag"]], "side_b_faces": [bots[0]["tag"]]},
+        {"id": "b2", "name": "Bolt 2", "size": "M10", "d_mm": 10, "E_GPa": 210,
+         "yield_MPa": 640, "preload_N": 0,
+         "side_a_faces": [tops[1]["tag"]], "side_b_faces": [bots[1]["tag"]]},
+    ]
+    setup["analyses"] = [{
+        "id": "a1", "type": "static", "name": "Static", "config": {},
+        "supports": [{"id": "s1", "name": "fix", "type": "fixed",
+                      "faces": [flat[0]["tag"]]}],
+        "loads": [{"id": "l1", "name": "pull", "type": "force",
+                   "faces": [flat[1]["tag"]], "fx": 0, "fy": 0, "fz": 900}]}]
+    assert c.put(f"/api/projects/{pid}/setup", json=setup).status_code == 200
+    assert wait(c, c.post(f"/api/projects/{pid}/mesh").json()["job"])["status"] == "done"
+    assert wait(c, c.post(f"/api/projects/{pid}/solve/a1").json()["job"])["status"] == "done"
+
+    both = c.get(f"/api/projects/{pid}/results/a1/bolt-sizing").json()
+    assert len(both["rows"]) == 2, both
+    by_name = {r["name"]: r for r in both["rows"]}
+    forces = {n: (r["F_A"], r["F_Q"]) for n, r in by_name.items()}
+
+    # Drop the FIRST bolt. Bolt 2 keeps its mesh group (BOLT2) but is now at
+    # position 1, which is where the old join looked.
+    setup["bolts"] = [setup["bolts"][1]]
+    assert c.put(f"/api/projects/{pid}/setup", json=setup).status_code == 200
+
+    after = c.get(f"/api/projects/{pid}/results/a1/bolt-sizing").json()
+    assert len(after["rows"]) == 1, after
+    row = after["rows"][0]
+    assert row["name"] == "Bolt 2"
+    assert (row["F_A"], row["F_Q"]) == forces["Bolt 2"], (
+        "Bolt 2 was sized against another bolt's forces: "
+        f"{(row['F_A'], row['F_Q'])} vs its own {forces['Bolt 2']} "
+        f"(Bolt 1 carried {forces['Bolt 1']})")

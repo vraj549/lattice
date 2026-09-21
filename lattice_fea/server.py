@@ -689,8 +689,18 @@ def create_app(workspace: str = "workspace") -> FastAPI:
         # beam on combined stress. Without it the choice is the larger axial
         # force, which discards an end carrying less tension and a dominant
         # moment — the case a bracket bolted at its edge actually produces.
-        geom = {i: {"d_mm": b.get("d_mm"), "size": b.get("size")}
-                for i, b in enumerate(setup.get("bolts", []), start=1)}
+        #
+        # Keyed by the bolt's MESH index, which is what the BOLT<k> groups in
+        # the results are numbered by — not by its position in the list now.
+        # Those agree until a bolt is deleted, after which every later bolt
+        # shifts down one and is matched against its neighbour's forces.
+        by_id = {b.get("id"): b for b in setup.get("bolts", [])}
+        geom = {}
+        for r_ in mesh_stats.get("bolts", []):
+            b_ = by_id.get(r_.get("id"))
+            if b_:
+                geom[int(r_["index"])] = {"d_mm": b_.get("d_mm"),
+                                          "size": b_.get("size")}
         loads = results.bolt_loads(meta_r, geom)
         cfg = bolt_sizing.assumptions(setup.get("bolt_sizing"))
 
@@ -721,7 +731,9 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             rec = records.get(b.get("id"))
             if rec is None:
                 continue
-            load = loads.get(i) or {}
+            # The forces belong to the group this bolt was meshed as, not to
+            # wherever it sits in the list today.
+            load = loads.get(int(rec["index"])) or {}
             try:
                 r = bolt_sizing.size_from_run(
                     b, rec, setup, proj["geometry"],
