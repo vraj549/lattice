@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { Orbit } from "./orbit.js";
+import { Navigator } from "./nav.js";
 import { decode } from "./b64.js";
 import { makeTexture, contourStyle } from "./colormap.js";
 import { AxisTriad } from "./axes.js";
@@ -61,7 +61,7 @@ export class Viewer {
     this.scene = new THREE.Scene();
     this.applyTheme();
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10000);
-    this.orbit = new Orbit(this.camera, canvas, () => this.requestRender());
+    this.orbit = new Navigator(this.camera, canvas, () => this.requestRender());
 
     this._hemi = new THREE.HemisphereLight(0xcfd8e0, 0x4a5560, 0.9);
     this.scene.add(this._hemi);
@@ -137,8 +137,22 @@ export class Viewer {
   // ---------------- render loop ----------------
   requestRender() { this._needsRender = true; }
 
+  /**
+   * Feed 6-DOF motion in, from a SpaceMouse.
+   *
+   * Stored rather than applied: the device reports far faster than the
+   * viewport draws, and applying every report would both waste frames and
+   * make the speed depend on how chatty the device is. The render loop
+   * integrates it once per frame against real elapsed time instead.
+   */
+  setMotion(m) { this._motion = m; }
+
   _loop() {
     requestAnimationFrame(() => this._loop());
+    const now = performance.now();
+    const dt = Math.min((now - (this._lastFrame || now)) / 1000, 0.1);
+    this._lastFrame = now;
+    if (this._motion) this.orbit.applyMotion(this._motion, dt);
     if (this.anim) {
       const t = performance.now() / 1000;
       const mat = this._resultMaterial;

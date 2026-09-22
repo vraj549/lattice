@@ -5,6 +5,7 @@ import { renderPanel, defaultAnalysis, solutionItems, el, solidName,
          dependentsOfSolid } from "./ui.js";
 import { renderTree, installTreeKeys } from "./tree.js";
 import { History } from "./history.js";
+import { SpaceMouse, available as smAvail } from "./spacemouse.js";
 import { mapBoltToTarget, defaultReferenceFace, describeFace,
          claimedFaces } from "./pattern.js";
 import { renderLegend, fmtVal, contourStyle } from "./colormap.js";
@@ -1528,6 +1529,59 @@ function showResources() {
   openDialog(body);
 }
 
+// ---------------- SpaceMouse ----------------
+
+function smAvailable() { return smAvail(); }
+
+function spaceMouseTitle() {
+  if (!smAvail()) {
+    return "SpaceMouse needs WebHID — available in Chrome, Edge and other "
+         + "Chromium browsers, not in Firefox or Safari";
+  }
+  return S.spaceMouse?.connected
+    ? `Disconnect ${S.spaceMouseName || "SpaceMouse"}`
+    : "Connect a 3Dconnexion SpaceMouse";
+}
+
+async function toggleSpaceMouse() {
+  if (!S.spaceMouse) {
+    S.spaceMouse = new SpaceMouse(
+      (m) => viewer.setMotion(m),
+      (st) => {
+        S.spaceMouseName = st.name;
+        renderToolbar();
+        logLine(st.connected ? `SpaceMouse: ${st.name} connected.`
+                             : "SpaceMouse: disconnected.");
+      });
+  }
+  try {
+    if (S.spaceMouse.connected) {
+      viewer.setMotion(null);
+      await S.spaceMouse.disconnect();
+    } else {
+      // WebHID needs a user gesture, which is why this is a button and not
+      // something the app can do on load.
+      const dev = await S.spaceMouse.connect();
+      if (!dev) logLine("SpaceMouse: no device chosen.", "warnln");
+    }
+  } catch (e) {
+    logLine(`SpaceMouse: ${e.message}`, "badln");
+  }
+  renderToolbar();
+}
+
+/** Reopen a device the user has already granted — no prompt, no gesture. */
+async function restoreSpaceMouse() {
+  if (!smAvail()) return;
+  S.spaceMouse = new SpaceMouse(
+    (m) => viewer.setMotion(m),
+    (st) => { S.spaceMouseName = st.name; renderToolbar(); });
+  try {
+    const dev = await S.spaceMouse.reconnect();
+    if (dev) logLine(`SpaceMouse: ${dev.productName || "device"} reconnected.`);
+  } catch { /* nothing granted yet, which is the normal case */ }
+}
+
 function openDialog(node) {
   closeDialog();
   const ov = el("div", { class: "overlay", id: "dialog",
@@ -1796,7 +1850,11 @@ function renderToolbar() {
            onclick: () => A.undo() }),
     tbtn({ glyph: "↷", title: "Redo  (\u21e7\u2318Z)", disabled: !history.canRedo,
            onclick: () => A.redo() }),
-    tbtn({ glyph: "⌨", title: "Keyboard shortcuts  (?)",
+    tbtn({ glyph: "\u2295", pressed: S.spaceMouse?.connected,
+           title: spaceMouseTitle(),
+           disabled: !smAvailable(),
+           onclick: () => toggleSpaceMouse() }),
+    tbtn({ glyph: "⌨", title: "Navigation and keyboard shortcuts  (?)",
            onclick: () => showShortcuts() }),
     tbtn({ glyph: "?", pressed: document.body.classList.contains("show-help"),
            title: "Show the explanatory notes in every panel",
@@ -1981,7 +2039,48 @@ const SHORTCUTS = [
 function showShortcuts() {
   const old = document.getElementById("kbOverlay");
   if (old) { old.remove(); return; }
+  const MOUSE = [
+    ["MB2 drag", "Rotate"],
+    ["Shift + MB2", "Pan"],
+    ["MB2 + MB3", "Pan"],
+    ["Ctrl + MB2", "Zoom"],
+    ["MB1 + MB2", "Zoom"],
+    ["Wheel", "Zoom, toward the cursor"],
+    ["MB1", "Select"],
+  ];
+  const EDGES = [
+    ["Left or right edge", "Rotate about the screen's horizontal axis only"],
+    ["Bottom edge", "Rotate about the screen's vertical axis only"],
+    ["Top edge", "Spin about the axis normal to the screen"],
+  ];
+  let ldr = false;
+  try { ldr = localStorage.getItem("lattice.leftDragRotates") === "1"; } catch { /**/ }
   const card = el("div", { class: "kbcard" },
+    el("h2", {}, "Navigation"),
+    el("div", { class: "kbcols" },
+      el("div", { class: "kbgroup" },
+        el("span", { class: "lbl" }, "Mouse — as in NX"),
+        MOUSE.map(([k, what]) => el("div", { class: "kbrow" },
+          el("kbd", {}, k), el("span", {}, what)))),
+      el("div", { class: "kbgroup" },
+        el("span", { class: "lbl" }, "Where the drag starts"),
+        EDGES.map(([k, what]) => el("div", { class: "kbrow" },
+          el("kbd", {}, k), el("span", {}, what))))),
+    el("div", { class: "hint" },
+      "Rotation is a free trackball: the drag axes are the screen's own, so "
+      + "there is no orientation in which it stops responding and the model "
+      + "can be tumbled without limit. Use a standard view to get back."),
+    el("label", { class: "frm frm-inline" },
+      el("input", { type: "checkbox", checked: ldr ? "checked" : null,
+        onchange: (e) => {
+          const on = !!e.target.checked;
+          viewer.orbit.leftDragRotates = on;
+          try { localStorage.setItem("lattice.leftDragRotates", on ? "1" : "0"); }
+          catch { /* private mode */ }
+        } }),
+      el("span", {}, "Left button also rotates \u2014 for trackpads and mice "
+                   + "with no middle button. NX does not do this: with it on, "
+                   + "MB1 can no longer be a selection drag.")),
     el("h2", {}, "Keyboard"),
     el("div", { class: "kbcols" }, SHORTCUTS.map(([group, rows]) =>
       el("div", { class: "kbgroup" },
@@ -2114,7 +2213,7 @@ function renderStatus() {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.29.0";   // kept in step with __version__ by tests/test_docs.py
+const UI_BUILD = "0.30.0";   // kept in step with __version__ by tests/test_docs.py
 
 function checkVersionSkew() {
   const server = S.config?.version;
@@ -2251,6 +2350,12 @@ async function boot() {
   // `mutate`, so without this a field edit would be swept into whatever the
   // next model change happened to be.
   setPanelThaw(() => { commitIfChanged(); if (S.project) renderPanel(S, A); });
+  restoreSpaceMouse();
+  // A trackpad has no middle button, and NX's map gives MB2 every navigation
+  // verb. Off by default so MB1 stays a plain selection drag, as in NX.
+  try {
+    viewer.orbit.leftDragRotates = localStorage.getItem("lattice.leftDragRotates") === "1";
+  } catch { /* private mode */ }
   await showOverlay();
 }
 

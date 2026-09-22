@@ -380,6 +380,13 @@ select.vbtn { padding-right: 4px; }
 .hint { color: var(--faint); font-size: 11px; margin-top: 5px; line-height: 1.4; }
 .hint.warn { color: var(--run); }
 .hint.bad  { color: var(--crit); }
+/* a checkbox and its explanation on one line */
+.frm.frm-inline {
+  display: grid; grid-template-columns: auto 1fr; gap: 7px;
+  align-items: start; margin: 8px 0 2px; font-size: 11.5px; color: var(--dim);
+}
+.frm.frm-inline input { margin-top: 2px; }
+
 /* a tree row for something excluded from the analysis */
 .nm.gone { text-decoration: line-through; color: var(--faint); }
 

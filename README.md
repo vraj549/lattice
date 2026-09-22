@@ -76,6 +76,8 @@ examples with `python examples/make_examples.py`).
   covers, how to choose, and why CalculiX runs single-threaded.
 - **[docs/METHODS.md](docs/METHODS.md)** — what each result is, how it is
   computed, and where it stops being valid.
+- **[docs/NAVIGATION.md](docs/NAVIGATION.md)** — the viewport mouse map, which
+  is Siemens NX's, and connecting a 3Dconnexion SpaceMouse.
 
 ---
 
