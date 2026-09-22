@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.0.2
+
+Three faults from one failed run on Windows.
+
+**The log was unreadable.** `text=True` decodes a subprocess with the locale
+codec, which is cp1252 on Windows, and code_aster writes UTF-8 — so every
+box-drawing character in an error frame came back as mojibake, and the frame
+is exactly where the diagnosis lives. Every subprocess that reads solver or
+mesher output now names UTF-8 explicitly.
+
+**The app blamed its own deck.** A failed run reported `DEBUT(LANG='EN',
+ERREUR=_F(ERREUR_F='EXCEPTION'))` as the reason. "ERREUR" is a marker for
+code_aster's French messages, and the `ERREUR_F='EXCEPTION'` added in 0.29 —
+to make error recovery work at all — put that word into the first line of
+every generated deck, which is echoed back in the log. Lines this project
+generates can never be the headline now. code_aster also frames its diagnosis
+and splits it, message id on one line and the sentence naming the group two
+lines below, so the two are read together.
+
+**The guard that should have caught it checked the wrong thing.** The real
+fault was `le GROUP_MA SUP1_1 ne fait pas partie du maillage` — a support
+group the mesh did not contain, which `check_mesh_current` exists to catch
+before the solver runs. It missed because `face_groups` recorded that gmsh
+had been *asked* to create a physical group, which is not the same as the
+group reaching the file the solver opens. Group names are read back out of
+the written UNV now, so the guard checks the artifact rather than the intent,
+and a group that was created but did not reach the file is reported at mesh
+time, by name.
+
 ## 1.0.1
 
 A robustness pass over what was already there — no new features, no new
