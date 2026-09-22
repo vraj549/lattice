@@ -387,6 +387,10 @@ select.vbtn { padding-right: 4px; }
 }
 .frm.frm-inline input { margin-top: 2px; }
 
+/* a project whose index cannot be read; its files are still on disk */
+.proj-item.damaged { color: var(--faint); }
+.proj-item.damaged .mt { color: var(--crit); }
+
 /* the model checklist on the root panel */
 .steps { display: flex; flex-direction: column; gap: 2px; }
 .step {

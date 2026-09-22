@@ -539,3 +539,35 @@ def test_a_meaningless_input_names_itself(kw, names):
     with pytest.raises(BS.JointInputError) as e:
         BS.size_bolt(**args)
     assert names in str(e.value)
+
+
+def test_a_truncated_results_table_does_not_crash_the_reader():
+    """A solve killed mid-write, or a full disk, leaves a row shorter than its
+    header. Rows are indexed by column position everywhere downstream, so that
+    was an IndexError reaching the user as a 500 from the results endpoint.
+
+    Both ends are covered: the parser pads rows to their header, and the
+    reader is index-safe anyway, because meta.json is read back from disk and
+    an older one may hold rows written before the parser did.
+    """
+    from lattice_fea import results
+
+    short = {"tables": {"bolt_forces": [{
+        "columns": ["INTITULE", "N", "VY", "VZ", "MFY", "MFZ"],
+        "rows": [["BOLT1_A", 6000.0, 0.0]]}]}}
+    got = results.bolt_load_ends(short)
+    assert got[1][0]["N"] == 6000.0
+    assert got[1][0]["V"] == 0.0 and got[1][0]["M"] == 0.0
+
+    # and the parser itself makes rows match their header, both ways
+    padded = results.parse_tableau("A,B,C\n1,2\n")
+    assert padded[0]["rows"] == [[1.0, 2.0, None]]
+    trimmed = results.parse_tableau("A,B\n1,2,3,4\n")
+    assert trimmed[0]["rows"] == [[1.0, 2.0]]
+
+    # a complete row is still read correctly
+    full = results.bolt_load_ends({"tables": {"bolt_forces": [{
+        "columns": ["INTITULE", "N", "VY", "VZ", "MFY", "MFZ"],
+        "rows": [["BOLT1_A", 6000.0, 3.0, 4.0, 10.0, 0.0]]}]}})
+    assert full[1][0]["V"] == pytest.approx(5.0)
+    assert full[1][0]["M"] == pytest.approx(10.0)

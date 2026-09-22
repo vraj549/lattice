@@ -212,6 +212,14 @@ def parse_tableau(text: str) -> list:
         # data row = at least one numeric cell under known columns;
         # an all-string row starts a new block header
         if n_numeric > 0 and cur_cols:
+            # Rows are indexed by column position everywhere downstream, so a
+            # row that does not match its header is a latent IndexError rather
+            # than a smaller row. A solve killed mid-write leaves exactly that,
+            # and it used to surface as a 500 from the results endpoint.
+            if len(parsed) < len(cur_cols):
+                parsed += [None] * (len(cur_cols) - len(parsed))
+            elif len(parsed) > len(cur_cols):
+                parsed = parsed[:len(cur_cols)]
             cur_rows.append(parsed)
         else:
             flush()
@@ -505,8 +513,15 @@ def bolt_load_ends(meta: dict) -> dict:
             if not m:
                 continue
             k = int(m.group(1))
-            num = lambda c: (row[idx[c]] if c in idx
-                             and isinstance(row[idx[c]], (int, float)) else 0.0)
+            # Index-safe on purpose as well as at the parser: meta.json is read
+            # back from disk and an older one may hold rows written before the
+            # parser padded them to their header.
+            def num(c, _row=row, _idx=idx):
+                i = _idx.get(c)
+                if i is None or i >= len(_row):
+                    return 0.0
+                v = _row[i]
+                return float(v) if isinstance(v, (int, float)) else 0.0
             rec = {"end": label.split("_")[-1] if "_" in label else label,
                    "N": num("N"),
                    "V": math.hypot(num("VY"), num("VZ")),

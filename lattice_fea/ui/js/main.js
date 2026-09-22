@@ -1317,9 +1317,26 @@ async function showOverlay() {
   const projects = await api.get("/api/projects");
   if (!projects.length) list.append(el("div", { class: "hint" }, "No projects yet — import a STEP to start."));
   for (const p of projects) {
-    const item = el("button", { class: "proj-item", onclick: () => openProject(p.id) },
+    // A damaged project.json means the index is unreadable; the geometry, the
+    // mesh and every run are untouched beside it. Show it, say so, and say
+    // where — deleting it is the user's call, not something to imply by
+    // hiding the row.
+    const item = el("button", {
+      class: `proj-item${p.damaged ? " damaged" : ""}`,
+      title: p.damaged
+        ? `${p.damaged}\nThe files are still in workspace/projects/${p.id}`
+        : "",
+      onclick: () => {
+        if (p.damaged) {
+          logLine(`${p.id}: project.json cannot be read (${p.damaged}). `
+                + `Everything else is still in workspace/projects/${p.id}.`, "badln");
+          return;
+        }
+        openProject(p.id);
+      } },
       el("span", {}, p.name),
-      el("span", { class: "mt" }, p.has_geometry ? "" : "importing…"));
+      el("span", { class: "mt" },
+         p.damaged ? "damaged" : (p.has_geometry ? "" : "importing…")));
     const del = el("button", { class: "proj-del", title: "Delete project",
       onclick: async (e) => {
         e.stopPropagation();

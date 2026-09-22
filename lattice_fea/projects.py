@@ -73,8 +73,16 @@ class ProjectStore:
                     out.append({"id": pid, "name": j.get("name", pid),
                                 "created": j.get("created"),
                                 "has_geometry": bool(j.get("geometry"))})
-                except Exception:  # noqa: BLE001
-                    continue
+                except Exception as e:  # noqa: BLE001
+                    # Still list it. The geometry, the mesh and every run are
+                    # untouched on disk; only the index is damaged. Dropping
+                    # the row silently made the whole project disappear from
+                    # the app while the work sat in the workspace, which is a
+                    # worse failure than showing a row that cannot be opened.
+                    out.append({"id": pid, "name": pid, "created": None,
+                                "has_geometry": os.path.isfile(
+                                    os.path.join(self.root, pid, "geometry.brep")),
+                                "damaged": f"{type(e).__name__}: {e}"})
         out.sort(key=lambda x: -(x.get("created") or 0))
         return out
 
@@ -98,6 +106,12 @@ class ProjectStore:
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f)
+                # Rename is atomic against a crash, but not against power
+                # loss: the directory entry can land before the data does,
+                # leaving a zero-length project. This is the only file in the
+                # workspace whose loss costs the user their model.
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp, p)
         finally:
             if os.path.exists(tmp):

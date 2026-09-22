@@ -740,3 +740,23 @@ def test_a_malformed_setup_is_refused_not_a_500(client, patch, fragment):
     r = c.put(f"/api/projects/{pid}/setup", json=setup)
     assert r.status_code == 422, f"{r.status_code}: {r.text[:300]}"
     assert fragment in r.text, r.text
+
+
+def test_a_project_with_a_damaged_index_is_still_listed(client):
+    """Only project.json is unreadable; the geometry, the mesh and every run
+    are untouched beside it. The listing caught the parse error and dropped
+    the row, so the whole project disappeared from the app while the work sat
+    in the workspace — a worse failure than a row that will not open.
+    """
+    c = client
+    pid = make_project(c)["id"]
+    path = os.path.join(c.workspace, "projects", pid, "project.json")
+    with open(path, "w") as fh:
+        fh.write("{ this is not json")
+
+    rows = c.get("/api/projects").json()
+    row = next((r for r in rows if r["id"] == pid), None)
+    assert row is not None, "the project vanished from the listing"
+    assert row.get("damaged"), row
+    # opening it still fails honestly rather than serving half a project
+    assert c.get(f"/api/projects/{pid}").status_code == 404
