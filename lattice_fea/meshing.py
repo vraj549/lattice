@@ -514,13 +514,24 @@ def _rebuild_as_sweep(gmsh, plan: dict, size: float, progress) -> "dict|None":
     return {"faces": fmap, "volumes": vmap}
 
 
+# gmsh names elements "Tetrahedron 10"; every solver, deck and textbook calls
+# that TET10. Report the name the engineer reading the deck will recognise.
+_ELEMENT_NAMES = {
+    "Tetrahedron 4": "TET4", "Tetrahedron 10": "TET10",
+    "Hexahedron 8": "HEX8", "Hexahedron 20": "HEX20", "Hexahedron 27": "HEX27",
+    "Prism 6": "PENTA6", "Prism 15": "PENTA15",
+    "Pyramid 5": "PYRAM5", "Pyramid 13": "PYRAM13",
+}
+
+
 def _element_kinds(gmsh) -> dict:
     """{element name: count} over the solid mesh, for reporting what was made."""
     out = {}
     for _, tag in gmsh.model.getEntities(3):
         for et in gmsh.model.mesh.getElementTypes(3, int(tag)):
             tags, _ = gmsh.model.mesh.getElementsByType(et, int(tag))
-            name = gmsh.model.mesh.getElementProperties(et)[0]
+            raw = gmsh.model.mesh.getElementProperties(et)[0]
+            name = _ELEMENT_NAMES.get(raw, raw)
             out[name] = out.get(name, 0) + len(tags)
     return out
 

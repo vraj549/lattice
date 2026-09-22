@@ -399,7 +399,7 @@ def test_hex_meshing_works_where_the_shape_sweeps(tmp_path):
     """A thin plate is the case hexes are for: tets there are slivers."""
     out, notes = _mesh_shape(str(tmp_path), _box, elements="hex")
     kinds = out["stats"]["element_kinds"]
-    assert any("Hex" in k for k in kinds), kinds
+    assert any(k.startswith("HEX") for k in kinds), kinds
     assert any("hexahedra:" in n for n in notes), notes
 
 
@@ -412,7 +412,7 @@ def test_a_hole_does_not_stop_the_sweep(tmp_path):
     """
     hexed, notes = _mesh_shape(str(tmp_path), _box_with_hole, elements="hex")
     tets, _ = _mesh_shape(str(tmp_path), _box_with_hole, elements="tet")
-    assert all("Hex" in k for k in hexed["stats"]["element_kinds"])
+    assert all(k.startswith("HEX") for k in hexed["stats"]["element_kinds"])
     assert any("sweeping" in n for n in notes), notes
     # and it is the better mesh, not merely a different one
     assert hexed["stats"]["nodes"] < tets["stats"]["nodes"]
@@ -423,14 +423,14 @@ def test_quadratic_hexes_have_twenty_nodes_not_twenty_seven(tmp_path):
     """HEXA20 / C3D20 is what code_aster and CalculiX both read. The interior
     nodes of a complete HEX27 buy nothing here and CalculiX will not take it."""
     out, _ = _mesh_shape(str(tmp_path), _box_with_hole, elements="hex")
-    assert list(out["stats"]["element_kinds"]) == ["Hexahedron 20"]
+    assert list(out["stats"]["element_kinds"]) == ["HEX20"]
 
 
 def test_an_l_section_still_sweeps(tmp_path):
     """"Not a box" is not the same as "not sweepable" — an L-section extruded
     along its length is a prism, and a bracket like that hex-meshes fine."""
     out, _ = _mesh_shape(str(tmp_path), _lshape, elements="hex")
-    assert all("Hex" in k for k in out["stats"]["element_kinds"])
+    assert all(k.startswith("HEX") for k in out["stats"]["element_kinds"])
 
 
 def test_a_shape_that_does_not_sweep_falls_back(tmp_path):
@@ -439,13 +439,13 @@ def test_a_shape_that_does_not_sweep_falls_back(tmp_path):
     notice."""
     out, notes = _mesh_shape(str(tmp_path), _blind_pocket, elements="hex")
     kinds = out["stats"]["element_kinds"]
-    assert all("Tetra" in k for k in kinds), kinds
+    assert all(k.startswith("TET") for k in kinds), kinds
     assert any("no sweep" in n for n in notes), notes
 
 
 def test_the_default_is_still_tetrahedra(tmp_path):
     out, _ = _mesh_shape(str(tmp_path), _box)
-    assert all("Tetra" in k for k in out["stats"]["element_kinds"])
+    assert all(k.startswith("TET") for k in out["stats"]["element_kinds"])
 
 
 def test_recombine_does_not_leak_into_the_next_mesh(tmp_path):
@@ -455,7 +455,7 @@ def test_recombine_does_not_leak_into_the_next_mesh(tmp_path):
     _mesh_shape(str(tmp_path), _box, elements="hex")
     out, _ = _mesh_shape(str(tmp_path), _blind_pocket, elements="tet")
     kinds = out["stats"]["element_kinds"]
-    assert all("Tetra" in k for k in kinds), kinds
+    assert all(k.startswith("TET") for k in kinds), kinds
 
 
 @pytest.mark.skipif(not os.path.isfile(os.path.join(
@@ -521,7 +521,7 @@ def test_a_bolted_stack_sweeps_conformally(tmp_path):
     hexed, hnotes, hunv, hcomm = build("hex")
     tets, _, tunv, tcomm = build("tet")
 
-    assert list(hexed["element_kinds"]) == ["Hexahedron 20"], hexed["element_kinds"]
+    assert list(hexed["element_kinds"]) == ["HEX20"], hexed["element_kinds"]
     assert any("sweeping 2 solid" in n for n in hnotes), hnotes
 
     # the rebuild is invisible: same groups, same bolt, same material volumes

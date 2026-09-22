@@ -88,7 +88,8 @@ function buildModel(S, A) {
   const mesh = {
     key: "mesh", kind: "mesh", id: "mesh", icon: "mesh",
     label: "Mesh",
-    meta: ms ? `${ms.nodes.toLocaleString()} n` : "not meshed",
+    // "18,688 n" saved four characters and cost the reader a guess.
+    meta: ms ? `${ms.nodes.toLocaleString()} nodes` : "not meshed",
     warn: !ms,
     badge: issues.length ? { text: "!", cls: "stale",
       title: "This mesh no longer matches the model:\n"
@@ -136,7 +137,7 @@ function analysisNode(S, A, a) {
   const st = analysisStatus(S, a);
   const kids = [{
     key: `set:${a.id}`, kind: "settings", id: a.id, icon: "settings",
-    label: "Analysis Settings", meta: settingsMeta(a),
+    label: "Analysis settings", meta: settingsMeta(a),
   }];
 
   for (const sup of a.supports) {

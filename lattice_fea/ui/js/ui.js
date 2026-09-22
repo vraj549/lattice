@@ -33,10 +33,6 @@ const uid = () => Math.random().toString(36).slice(2, 8);
 // blockers can never give three different answers to the same question.
 
 
-export const TYPE_SHORT = { static: "static", modal: "modal",
-                     harmonic: "harmonic", random: "random",
-                     shock: "shock" };
-
 /** Does this analysis take applied loads?
  *
  *  Modal has none by definition; random is driven entirely by its input
@@ -334,6 +330,19 @@ function renderPanelBody(S, A, put, kind, id) {
  * A name set here survives a reload, and a re-import keeps it as long as the
  * tag does.
  */
+/** "1 face", "2 faces" — never "1 face(s)", which is how a tool announces
+ *  that nobody read its own output. */
+export function interfaceArea(S, c) {
+  const byTag = new Map((S.project?.geometry?.faces || []).map((f) => [f.tag, f.area || 0]));
+  const side = (list) => (list || []).reduce((t, x) => t + (byTag.get(x) || 0), 0);
+  const a = side(c.faces_a), b = side(c.faces_b);
+  return a && b ? Math.min(a, b) : (a || b);
+}
+
+export function plural(n, one, many = null) {
+  return `${n.toLocaleString()} ${n === 1 ? one : (many || one + "s")}`;
+}
+
 export function solidName(S, tag) {
   const t = String(tag);
   const named = S.project?.setup?.solid_names?.[t];
@@ -356,10 +365,16 @@ export function solidName(S, tag) {
  */
 const sec = (label, ...kids) => {
   const body = kids.filter(Boolean);
-  const explains = body.some((k) => k?.classList?.contains?.("hint")
+  const neutralHint = (k) => k?.classList?.contains?.("hint")
     && !k.classList.contains("warn") && !k.classList.contains("bad")
-    && !k.classList.contains("good"));
-  return el("div", { class: "sec" },
+    && !k.classList.contains("good");
+  const explains = body.some(neutralHint);
+  // A section whose entire content is explanatory prose is hidden with that
+  // prose. It used to leave its heading and its "?" behind with nothing under
+  // them, which is how a panel comes to look unfinished — the Workflow
+  // section on the model panel was a heading and a question mark.
+  const onlyExplains = body.length > 0 && body.every(neutralHint);
+  return el("div", { class: `sec${onlyExplains ? " sec-help" : ""}` },
     label || explains
       ? el("span", { class: "lbl" },
           label || "",
@@ -490,7 +505,7 @@ function pickBtn(S, A, item, key = "faces") {
     el("div", { class: "btnrow" },
       el("button", { class: "btn btn-accent", onclick: () => A.pickFaces(item, key) },
         n ? `Re-pick faces (${n})` : "Pick faces")),
-    el("div", { class: "hint" }, n ? `${n} face(s) assigned — shown highlighted in the viewport.`
+    el("div", { class: "hint" }, n ? `${plural(n, "face")} assigned — shown highlighted in the viewport.`
                                    : "Click faces in the viewport, then press Done."));
 }
 
@@ -509,10 +524,44 @@ function panelModel(S, A, put) {
       ["Bonded interfaces", geo.interfaces.length],
       ["Bounding box", `${fmtVal(geo.bbox[3] - geo.bbox[0])} × ${fmtVal(geo.bbox[4] - geo.bbox[1])} × ${fmtVal(geo.bbox[5] - geo.bbox[2])} mm`],
     ])),
-    sec("Workflow", el("div", { class: "hint" },
-      "1. Assign a material to every solid · 2. Add supports and loads · " +
-      "3. Generate the mesh · 4. Add an analysis and run it.")),
+    workflow(S),
     validation(S));
+}
+
+/**
+ * Where the model actually is, on the one panel a project opens to.
+ *
+ * This was four numbered steps of static prose, classed as explanatory, which
+ * meant it was hidden by default — so the panel a project opens to was four
+ * geometry statistics and nothing else. A list that reads the model is worth
+ * the space; a list that recites the manual is not.
+ */
+function workflow(S) {
+  const setup = S.project.setup;
+  const gone = new Set((setup.suppressed_solids || []).map(Number));
+  const solids = (S.project.geometry.solids || []).filter((x) => !gone.has(Number(x.tag)));
+  const analyses = setup.analyses || [];
+  const meshed = !!S.meshData?.stats;
+
+  const steps = [
+    ["Material on every body",
+     solids.length > 0 && solids.every((x) => setup.assignments[String(x.tag)]),
+     `${solids.filter((x) => setup.assignments[String(x.tag)]).length} of ${solids.length}`],
+    ["An analysis, with supports",
+     analyses.length > 0 && analyses.every((a) => (a.supports || []).some((x) => x.faces?.length)),
+     analyses.length ? plural(analyses.length, "analysis", "analyses") : "none yet"],
+    ["Mesh", meshed && !meshIssues(S).length,
+     meshed ? plural(S.meshData.stats.nodes, "node") : "not generated"],
+    ["Results", analyses.some((a) => S.results[a.id] && !S.results[a.id].stale),
+     analyses.filter((a) => S.results[a.id] && !S.results[a.id].stale).length
+       ? `${analyses.filter((a) => S.results[a.id] && !S.results[a.id].stale).length} current`
+       : "none current"],
+  ];
+  return sec("Model", el("div", { class: "steps" }, steps.map(([label, done, note]) =>
+    el("div", { class: `step${done ? " done" : ""}` },
+      el("span", { class: "tick" }, done ? "\u2713" : "\u00b7"),
+      el("span", { class: "what" }, label),
+      el("span", { class: "note" }, note)))));
 }
 
 function validation(S) {
@@ -1183,9 +1232,16 @@ function panelContact(S, A, put, id) {
               + "joint slips and you need to know how far.")
         : null),
     sec("Faces", dl([
-      ["Side A", `${(c.faces_a || []).length} face(s) on ${nameOf((c.solids || [])[0])}`],
-      ["Side B", `${(c.faces_b || []).length} face(s) on ${nameOf((c.solids || [])[1])}`],
-      ["Interface area", c.area ? `${fmtVal(c.area)} mm²` : "—"],
+      ["Side A", `${plural((c.faces_a || []).length, "face")} on ${nameOf((c.solids || [])[0])}`],
+      ["Side B", `${plural((c.faces_b || []).length, "face")} on ${nameOf((c.solids || [])[1])}`],
+      // The stored area is only ever set on the auto-detect path, so a contact
+      // made by hand or by a script showed a dash forever. The face areas are
+      // in the geometry either way; take the smaller side, which is what the
+      // detector records and what actually bears.
+      ["Interface area", (() => {
+        const a = c.area ?? interfaceArea(S, c);
+        return a ? `${fmtVal(a)} mm²` : "not meshed yet";
+      })()],
     ]),
       el("div", { class: "btnrow" },
         el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
@@ -1194,7 +1250,7 @@ function panelContact(S, A, put, id) {
         }) }, "Swap sides"),
         el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
           c.suppressed = !c.suppressed;
-        }) }, c.suppressed ? "Un-suppress" : "Suppress")),
+        }) }, c.suppressed ? "Restore to the analysis" : "Remove from the analysis")),
       el("div", { class: "hint" },
         "Side B is the slave — give that side the finer mesh. Suppressing a "
         + "contact leaves the parts free of each other entirely.")),
@@ -1350,7 +1406,7 @@ function panelMesh(S, A, put) {
       ["DOF", stats.dof.toLocaleString()],
       ["Order", stats.order === 2 ? "quadratic" : "linear"],
       ...(stats.element_kinds
-        ? [["Elements of", Object.entries(stats.element_kinds)
+        ? [["Element type", Object.entries(stats.element_kinds)
               .map(([k, v]) => `${v.toLocaleString()} ${k}`).join(", ")]] : []),
       ...(stats.quality_min != null
         ? [["Element quality (min / avg)",
@@ -1569,7 +1625,7 @@ function engineSection(S, A, a, c) {
 
 function panelSettings(S, A, put, id) {
   const a = S.project.setup.analyses.find((x) => x.id === id);
-  if (!a) return put("Analysis Settings", "");
+  if (!a) return put("Analysis settings", "");
   const c = a.config || {};
   const secs = [engineSection(S, A, a, c)];
 
@@ -1773,7 +1829,7 @@ function panelSettings(S, A, put, id) {
   secs.push(sec(null, el("div", { class: "btnrow" },
     el("button", { class: "btn", onclick: () => A.select("analysis", a.id) },
       "Back to analysis"))));
-  put("Analysis Settings", a.name || a.type, ...secs);
+  put("Analysis settings", a.name || a.type, ...secs);
 }
 
 /** Everything the run needs to be allowed to start. Stated explicitly — a
@@ -1906,6 +1962,13 @@ function drivenBy(a) {
   if (a.type === "harmonic") {
     return (a.config?.excitation || "force") === "base" ? "base acceleration" : "applied force";
   }
+  // Shock is applied at the restrained base — the deck refuses to build
+  // without a support for exactly that reason. It was falling through to
+  // "applied loads", which is the one thing it is not.
+  if (a.type === "shock") {
+    return (a.config?.input || "spectrum") === "pulse"
+      ? "base pulse" : "base shock spectrum";
+  }
   return "applied loads";
 }
 
@@ -1958,7 +2021,7 @@ function panelSolution(S, A, put, id) {
       el("div", { class: "btnrow" },
         el("button", { class: "btn", onclick: () => A.runAnalysis(a.id) }, "Run again"),
         el("button", { class: "btn", onclick: () => A.select("settings", a.id) },
-          "Analysis Settings"))));
+          "Analysis settings"))));
 }
 
 /** Banner shown above every panel that presents results, saying whether they
@@ -2002,7 +2065,7 @@ function statusHead(S, A, a) {
       "boundary conditions. These numbers describe the older model.",
       el("div", { class: "btnrow" },
         el("button", { class: "btn btn-small btn-accent",
-          onclick: () => A.runAnalysis(a.id) }, "Re-run analysis")))];
+          onclick: () => A.runAnalysis(a.id) }, "Run again")))];
   }
   if (meta.no_signature) {
     return [el("div", { class: "stalebar" },

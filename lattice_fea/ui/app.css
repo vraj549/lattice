@@ -387,6 +387,18 @@ select.vbtn { padding-right: 4px; }
 }
 .frm.frm-inline input { margin-top: 2px; }
 
+/* the model checklist on the root panel */
+.steps { display: flex; flex-direction: column; gap: 2px; }
+.step {
+  display: grid; grid-template-columns: 14px 1fr auto; gap: 6px;
+  align-items: baseline; font-size: var(--t-body); color: var(--dim);
+  padding: 1px 0;
+}
+.step .tick { color: var(--line-2); text-align: center; }
+.step.done .tick { color: var(--ok); }
+.step.done .what { color: var(--text); }
+.step .note { font-family: var(--mono); font-size: var(--t-micro); color: var(--faint); }
+
 /* a tree row for something excluded from the analysis */
 .nm.gone { text-decoration: line-through; color: var(--faint); }
 
@@ -694,6 +706,9 @@ body.resizing-v { cursor: row-resize; user-select: none; }
 .helpq:hover { border-color: var(--line-2); color: var(--text); }
 .helpq[aria-expanded="true"] { background: var(--panel-4); color: var(--text); }
 body:not(.show-help) .sec:not(.show-help) .hint:not(.warn):not(.bad):not(.good) { display: none; }
+/* and a section that is nothing but that prose goes with it, rather than
+   leaving a heading and a "?" standing over nothing */
+body:not(.show-help) .sec.sec-help:not(.show-help) { display: none; }
 body.show-help .helpq { background: var(--panel-4); color: var(--text); }
 
 

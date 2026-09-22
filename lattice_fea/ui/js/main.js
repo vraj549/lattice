@@ -2,7 +2,7 @@ import { api } from "./api.js";
 import { Viewer } from "./viewer.js";
 import { renderPanel, defaultAnalysis, solutionItems, el, solidName,
          compOptions, panelIsFrozen, setPanelThaw,
-         dependentsOfSolid } from "./ui.js";
+         dependentsOfSolid, plural } from "./ui.js";
 import { renderTree, installTreeKeys } from "./tree.js";
 import { History } from "./history.js";
 import { SpaceMouse, available as smAvail } from "./spacemouse.js";
@@ -234,7 +234,7 @@ const A = {
     }
     A.recordEdit();
     logLine(made
-      ? "Detected " + made + " contact interface(s), all set to bonded. "
+      ? `Detected ${made} contact ${made === 1 ? "interface" : "interfaces"}, all set to bonded. `
         + "Change any that can slide or separate."
       : "Every detected interface already has a contact.");
   },
@@ -1161,7 +1161,8 @@ function updateStat() {
     // happened to contain — otherwise removing a body changes nothing anybody
     // can see in a number.
     const gone = (S.project.setup.suppressed_solids || []).length;
-    s.innerHTML = `${g.solids.length - gone} solid(s) · ${g.faces.length} faces`
+    s.innerHTML = `${plural(g.solids.length - gone, "solid")} · `
+      + `${plural(g.faces.length, "face")}`
       + (gone ? ` · ${gone} removed` : "");
   } else s.innerHTML = "";
 }
@@ -1908,7 +1909,7 @@ function contextGroup() {
                  const a = c.faces_a; c.faces_a = c.faces_b; c.faces_b = a;
                  c.solids = [(c.solids || [])[1], (c.solids || [])[0]];
                }) }),
-        tbtn({ glyph: "⊘", label: c.suppressed ? "Un-suppress" : "Suppress",
+        tbtn({ glyph: "⊘", label: c.suppressed ? "Restore" : "Remove",
                pressed: !!c.suppressed,
                title: "Leave the parts free of each other",
                onclick: () => A.mutate(() => { c.suppressed = !c.suppressed; }) }),
