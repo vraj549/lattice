@@ -1353,7 +1353,8 @@ function panelMesh(S, A, put) {
         ? [["Elements of", Object.entries(stats.element_kinds)
               .map(([k, v]) => `${v.toLocaleString()} ${k}`).join(", ")]] : []),
       ...(stats.quality_min != null
-        ? [["Quality min/avg (SICN)", `${stats.quality_min.toFixed(2)} / ${stats.quality_avg.toFixed(2)}`]] : []),
+        ? [["Element quality (min / avg)",
+            `${stats.quality_min.toFixed(2)} / ${stats.quality_avg.toFixed(2)}`]] : []),
       ["Mesh time", `${stats.wall_s}s`],
       ["Est. solve memory", `${stats.mem_gb_est} GB`],
     ])));
@@ -1361,6 +1362,25 @@ function panelMesh(S, A, put) {
       secs.push(sec(null, el("div", { class: "hint warn" },
         `⚠ Estimated factorization memory (${stats.mem_gb_est} GB) is close to the ` +
         `solver limit (${memLimit} GB). Consider a coarser mesh.`)));
+    }
+    const q = stats.quality_counts || {};
+    if (q.inverted) {
+      secs.push(sec(null, el("div", { class: "hint bad" },
+        `\u26a0 ${q.inverted} element${q.inverted > 1 ? "s are" : " is"} inverted. `
+        + "The stiffness matrix would be wrong and the results would look "
+        + "normal anyway, so this mesh will not solve. Re-mesh with a smaller "
+        + "element size, or without the hex sweep.")));
+    } else if (q.sliver) {
+      secs.push(sec(null, el("div", { class: "hint warn" },
+        `\u26a0 ${q.sliver} sliver element${q.sliver > 1 ? "s" : ""} `
+        + `(quality below ${0.05}). Displacement is usually still sound; `
+        + "stress read at or near them is noise. Refine there, or read the "
+        + "stress somewhere else.")));
+    } else if (q.poor > stats.elements * 0.02) {
+      secs.push(sec(null, el("div", { class: "hint warn" },
+        `\u26a0 ${q.poor.toLocaleString()} elements `
+        + `(${(100 * q.poor / stats.elements).toFixed(1)}%) are below 0.2 `
+        + "quality. Stress in those regions is not worth reading closely.")));
     }
     if (stats.islands > 1) {
       secs.push(sec(null, el("div", { class: "hint bad" },

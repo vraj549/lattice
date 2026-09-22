@@ -331,6 +331,19 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             raise HTTPException(404, "analysis not found")
         if not store.exists(pid, "mesh/stats.json"):
             raise HTTPException(409, "mesh the model first")
+        # An inverted element has a Jacobian that changes sign inside it. Its
+        # stiffness contribution is wrong rather than merely inaccurate, and
+        # the solver will not say so — it will return a full set of plausible
+        # numbers. This is the one mesh defect worth refusing outright.
+        bad = ((store.read_json(pid, "mesh/stats.json").get("quality_counts")
+                or {}).get("inverted") or 0)
+        if bad:
+            raise HTTPException(422, (
+                f"{bad} element{'s' if bad > 1 else ''} in this mesh "
+                f"{'are' if bad > 1 else 'is'} inverted, so the stiffness "
+                "matrix would be wrong and the results would look normal "
+                "anyway. Re-mesh, usually with a smaller element size or "
+                "without the hex sweep."))
         if not solver_cfg.engines():
             raise HTTPException(409, f"no solver configured: {solver_cfg.detail}")
         # Two solves writing one run directory interleave their output and

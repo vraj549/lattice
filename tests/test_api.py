@@ -680,3 +680,36 @@ def test_removing_every_body_is_refused_rather_than_meshing_nothing(client):
     job = wait(c, c.post(f"/api/projects/{pid}/mesh").json()["job"])
     assert job["status"] == "failed"
     assert "nothing left to mesh" in json.dumps(job), json.dumps(job)[:1500]
+
+
+# ------------------------------------------------------- mesh quality gating
+
+def test_a_mesh_with_inverted_elements_will_not_solve(client):
+    """An inverted element has a Jacobian that changes sign inside it, so its
+    stiffness contribution is wrong rather than inaccurate — and the solver
+    returns a full set of plausible numbers anyway. Quality was measured and
+    printed in a table cell; nothing ever looked at it.
+    """
+    c = client
+    pid = _plates_static(c)
+    path = os.path.join(c.workspace, "projects", pid, "mesh", "stats.json")
+    with open(path) as fh:
+        stats = json.load(fh)
+    assert stats.get("quality_counts"), "quality is not being counted at all"
+    assert stats["quality_counts"]["inverted"] == 0, "this fixture should be clean"
+
+    stats["quality_counts"]["inverted"] = 3
+    with open(path, "w") as fh:
+        json.dump(stats, fh)
+    r = c.post(f"/api/projects/{pid}/solve/a1")
+    assert r.status_code == 422, r.text
+    assert "inverted" in r.text
+
+
+def test_a_clean_mesh_still_solves(client):
+    """A gate that refuses good meshes is worse than no gate."""
+    c = client
+    pid = _plates_static(c)
+    r = c.post(f"/api/projects/{pid}/solve/a1")
+    assert r.status_code == 200, r.text
+    assert wait(c, r.json()["job"])["status"] == "done"

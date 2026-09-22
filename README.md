@@ -78,6 +78,8 @@ examples with `python examples/make_examples.py`).
   computed, and where it stops being valid.
 - **[docs/NAVIGATION.md](docs/NAVIGATION.md)** — the viewport mouse map, which
   is Siemens NX's, and connecting a 3Dconnexion SpaceMouse.
+- **[docs/VERIFICATION.md](docs/VERIFICATION.md)** — solved answers against
+  closed-form ones, and an explicit list of what has *not* been checked.
 
 ---
 

@@ -775,23 +775,44 @@ def _add_remote_stubs(gmsh, setup: dict, meta: dict, progress) -> list:
     return out
 
 
+# Signed inverse condition number, as gmsh reports it. 1 is a perfect
+# element, 0 is flat, and below 0 the element is inside out.
+#
+#   <= 0    inverted or flat. The Jacobian changes sign inside it, so its
+#           stiffness contribution is wrong — not inaccurate, wrong — and
+#           nothing downstream of it can be believed.
+#   < 0.05  a sliver. It solves, and the stress it reports is noise.
+#   < 0.2   poor. Displacement is usually still fine; stress at that element
+#           is not worth reading.
+QUALITY_INVERTED = 0.0
+QUALITY_SLIVER = 0.05
+QUALITY_POOR = 0.2
+
+
 def _stats(gmsh, order: int) -> dict:
     node_tags, _, _ = gmsh.model.mesh.getNodes()
     n_nodes = len(node_tags)
     etypes, etags, _ = gmsh.model.mesh.getElements(3)
     n_elems = sum(len(t) for t in etags)
     qmin = qavg = None
+    counts = {}
     try:
         all_tags = np.concatenate([np.asarray(t) for t in etags]) if etags else np.array([])
         if all_tags.size:
-            q = gmsh.model.mesh.getElementQualities(all_tags.tolist(), "minSICN")
-            q = np.asarray(q)
+            q = np.asarray(gmsh.model.mesh.getElementQualities(
+                all_tags.tolist(), "minSICN"))
             qmin, qavg = float(q.min()), float(q.mean())
+            # How many, not just the worst one. A single sliver in a corner and
+            # four hundred through the load path are the same number in a
+            # "min quality" cell, and they are not the same mesh.
+            counts = {"inverted": int((q <= QUALITY_INVERTED).sum()),
+                      "sliver": int((q < QUALITY_SLIVER).sum()),
+                      "poor": int((q < QUALITY_POOR).sum())}
     except Exception:  # noqa: BLE001
         pass
     dof = 3 * n_nodes
     return {"nodes": n_nodes, "elements": n_elems, "order": order, "dof": dof,
-            "quality_min": qmin, "quality_avg": qavg,
+            "quality_min": qmin, "quality_avg": qavg, "quality_counts": counts,
             "mem_gb_est": round(dof * 8e3 / 1e9, 2)}  # ~8 KB/DOF MUMPS factor, rough
 
 
