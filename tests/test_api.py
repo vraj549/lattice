@@ -556,3 +556,77 @@ def test_sizing_follows_the_bolt_not_its_position_in_the_list(client):
         "Bolt 2 was sized against another bolt's forces: "
         f"{(row['F_A'], row['F_Q'])} vs its own {forces['Bolt 2']} "
         f"(Bolt 1 carried {forces['Bolt 1']})")
+
+
+# ---------------------------------------------- a run that fails, end to end
+
+def _plates_static(c):
+    """A meshed project with one static analysis, not yet solved."""
+    proj = make_project(c)
+    pid = proj["id"]
+    p = c.get(f"/api/projects/{pid}").json()
+    meta = p["geometry"]
+    flat = sorted((f for f in meta["faces"]
+                   if (f.get("fit") or {}).get("kind") == "plane"),
+                  key=lambda f: -f["area"])
+    setup = p["setup"]
+    setup["materials"] = [{"id": "st", "name": "Steel", "E_GPa": 210.0,
+                           "nu": 0.3, "rho_kgm3": 7850}]
+    setup["assignments"] = {str(s["tag"]): "st" for s in meta["solids"]}
+    setup["analyses"] = [{
+        "id": "a1", "type": "static", "name": "Static", "config": {},
+        "supports": [{"id": "s1", "name": "fix", "type": "fixed",
+                      "faces": [flat[0]["tag"]]}],
+        "loads": [{"id": "l1", "name": "pull", "type": "force",
+                   "faces": [flat[1]["tag"]], "fx": 0, "fy": 0, "fz": 500}]}]
+    assert c.put(f"/api/projects/{pid}/setup", json=setup).status_code == 200
+    assert wait(c, c.post(f"/api/projects/{pid}/mesh").json()["job"])["status"] == "done"
+    return pid
+
+
+def test_a_run_that_produced_nothing_does_not_claim_results(client, monkeypatch):
+    """meta.json was written whether or not anything came back, and
+    results-status answered has_results from the file's existence. So a run
+    that produced nothing still badged the analysis done — reopen the project
+    the next day and it claimed a finished analysis with an empty panel and the
+    reason nowhere on screen.
+    """
+    c = client
+    monkeypatch.setenv("LATTICE_MOCK_FAIL", "immediately")
+    pid = _plates_static(c)
+    st = wait(c, c.post(f"/api/projects/{pid}/solve/a1").json()["job"])
+    assert st["status"] == "failed", json.dumps(st)[:2000]
+
+    status = c.get(f"/api/projects/{pid}/results-status").json()
+    assert status["a1"]["failed"] is True
+    assert status["a1"]["has_results"] is False, "an empty run claimed results"
+
+    meta = c.get(f"/api/projects/{pid}/results/a1").json()
+    assert meta["failed"] is True and meta["recovered"] is False
+    # the reason is stored with the run, because the job log is pruned
+    assert "FACTOR_10" in meta["error"], meta["error"]
+
+
+def test_a_run_that_died_after_writing_its_fields_keeps_them(client, monkeypatch):
+    """The recoverable case, and the one the whole guarded-deck change exists
+    for: the solve finished, the MED was written, and something after it fell
+    over. Those fields are real and must survive — but the analysis is still
+    reported as failed, so nobody reads a fragment as a finished answer.
+    """
+    c = client
+    monkeypatch.setenv("LATTICE_MOCK_FAIL", "after_fields")
+    pid = _plates_static(c)
+    st = wait(c, c.post(f"/api/projects/{pid}/solve/a1").json()["job"])
+
+    meta = c.get(f"/api/projects/{pid}/results/a1").json()
+    assert meta["fields"], "the fields it had already written were thrown away"
+    assert meta["recovered"] is True
+    assert meta["failed"] is True, "a partial run must not read as complete"
+    assert meta["exit_code"] != 0
+
+    status = c.get(f"/api/projects/{pid}/results-status").json()
+    assert status["a1"] == {"has_results": True, "failed": True,
+                            "no_signature": False, "stale": False}
+    # and the job did not pretend to succeed
+    assert st["status"] in ("done", "failed")
+    assert any("recover" in ln.lower() for ln in st.get("log") or []), st.get("log")

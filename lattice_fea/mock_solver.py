@@ -173,8 +173,25 @@ def synth_fields(xyz: np.ndarray, kind: str, nmodes: int, freqs):
     return out, steps
 
 
+def _maybe_fail(stage: str) -> None:
+    """Abort here if LATTICE_MOCK_FAIL names this stage.
+
+    A stand-in solver whose purpose is exercising the application has to be
+    able to exercise the failure path too. The interesting case is not a run
+    that dies immediately — it is one that computes a result, writes it, and
+    then falls over, because that is the run whose output should still be
+    recoverable and used not to be.
+    """
+    if os.environ.get("LATTICE_MOCK_FAIL") != stage:
+        return
+    log(" <F> <FACTOR_10> La matrice est singuliere ou presque singuliere.")
+    log("   MOCK: failing deliberately at stage " + stage)
+    sys.exit(1)
+
+
 def main():
     units = parse_export()
+    _maybe_fail("immediately")
     comm = open("run.comm", errors="replace").read()
     kind = analysis_kind(comm)
 
@@ -208,6 +225,7 @@ def main():
         if kind == "static":
             add_nodal_field(f, "MOCK____SIEQ_NOEU", ["VMIS"], vm, steps)
     log("IMPR_RESU  MED written to unit 80")
+    _maybe_fail("after_fields")
 
     # ---- tables ----
     if 38 in units or kind != "static":

@@ -163,3 +163,31 @@ def test_the_ui_does_not_keep_its_own_copy_of_mesh_format():
         f"ui.js says {m.group(1)}, meshing.py says {meshing.MESH_FORMAT}")
     assert "S.config?.mesh_format" in ui, (
         "the UI must prefer the value the server sends over its own literal")
+
+
+@pytest.mark.parametrize("log,want", [
+    # code_aster's own fatal message, as it appears in the .mess file
+    ([" <F> <FACTOR_10> La matrice est singuliere ou presque singuliere.",
+      "   Le noeud N123 a un pivot nul."], "FACTOR_10"),
+    # as_run's status code, a different shape entirely
+    (["running", "<F>_ERROR", "done"], "<F>_ERROR"),
+    # and the same failure under ERREUR_F='EXCEPTION', as a Python exception
+    (["Traceback (most recent call last):",
+      '  File "run.comm", line 42, in <module>',
+      "AsterError: <FACTOR_10> matrix is singular"], "AsterError"),
+])
+def test_a_failed_solve_names_the_line_that_says_why(log, want):
+    """Only as_run's status codes ("<F>_ERROR") were recognised. code_aster's
+    own messages use "<F> <MESSAGE_ID>" — space, not underscore — so the line
+    that actually named the failure was never picked out of the log, and the
+    user got an exit code. <A> is a warning and is deliberately not matched.
+    """
+    from lattice_fea.solver import extract_errors, headline
+    assert want in (headline(extract_errors(log)) or "")
+
+
+def test_a_warning_is_not_reported_as_the_failure():
+    from lattice_fea.solver import extract_errors, headline
+    log = ["<A> <CALCULEL_11> a warning nobody needs as a headline",
+           "<F> <FACTOR_10> the actual failure"]
+    assert "FACTOR_10" in headline(extract_errors(log))

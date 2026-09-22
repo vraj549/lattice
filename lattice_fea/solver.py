@@ -287,7 +287,18 @@ def run_ccx(cfg: SolverConfig, jobdir: str, job: Job, jobname: str = "job") -> i
 # diagnostic; gmsh and Python print a traceback. "exit code 1" on its own
 # sends you looking through thousands of lines for the twenty that matter.
 _ERROR_MARKERS = (
+    # as_run's own status codes are "<F>_ERROR", "<S>_NO_RESULT_FILE" and the
+    # like — underscore, no space.
     "<EXCEPTION>", "<F>_", "<S>_ERROR", "DIAGNOSTIC JOB",
+    # code_aster's own messages in the .mess file are a different shape:
+    # "<F> <FACTOR_10>", with a space and a message id. Only the runner's form
+    # was matched, so the line that actually named the failure — a singular
+    # matrix, a missing group — was never picked out of the log. <A> is a
+    # warning and stays out of this list on purpose.
+    "<F> <", "<E> <",
+    # and with ERREUR_F='EXCEPTION' the same failure arrives as a Python
+    # exception instead
+    "AsterError", "aster.error",
     "Traceback (most recent call last)", "Error   :", "*ERROR",
     "ValueError", "RuntimeError", "erreur", "ERREUR",
     # OpenCASCADE's STEP/IGES readers print their diagnosis on lines of this
@@ -366,5 +377,8 @@ def summarise_failure(job, logfile: str, rc: int) -> str:
     for ln in detail:
         job.append(ln)
     job.append(f"Full output: {logfile}")
-    head = detail[0].strip() if detail else f"exit code {rc}"
+    # The first line extract_errors returns is often context, not the
+    # diagnosis — the same reason geometry import used to report "Could not
+    # read file" instead of the parse error two lines above it.
+    head = headline(detail) or f"exit code {rc}"
     return f"{head}  (exit {rc}; full output in {logfile})"

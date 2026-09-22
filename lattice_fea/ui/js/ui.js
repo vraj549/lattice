@@ -73,6 +73,17 @@ export function analysisStatus(S, a) {
   if (st === "running") {
     return { dot: "run", badge: null, title: "Running…" };
   }
+  // Failure is checked BEFORE the presence of results. A run that died after
+  // writing some of its output leaves a payload behind, and the ✓ branch
+  // claimed it — so the one badge that answers "can I trust this" said yes
+  // about a fragment of a run that had aborted.
+  if (st === "failed" || res?.failed) {
+    const why = res?.recovered
+      ? "The last run FAILED. What it left behind is a fragment, not a result."
+      : "The last run failed and produced nothing.";
+    return { dot: "bad", title: why,
+      badge: { text: "\u2715", cls: "bad", title: why } };
+  }
   if (res && res.stale) {
     return { dot: "warn", title: "Results are OUT OF DATE",
       badge: { text: "!", cls: "stale",
@@ -83,10 +94,6 @@ export function analysisStatus(S, a) {
   if (res) {
     return { dot: "ok", title: "Results are current for this model",
       badge: { text: "✓", cls: "ok", title: "Results are current for this model" } };
-  }
-  if (st === "failed") {
-    return { dot: "bad", title: "The last run failed — see Job output",
-      badge: { text: "✕", cls: "bad", title: "The last run failed — see Job output" } };
   }
   return { dot: "idle", badge: null, title: "Not run yet" };
 }
@@ -123,8 +130,11 @@ export function solutionItems(S, a) {
   if (a.type === "static" && reactionRow(meta)) {
     out.push({ what: "reactions", label: "Reactions", meta: "N" });
   }
-  if (meta.warnings?.length) {
-    out.push({ what: "warnings", label: "Solver messages", meta: String(meta.warnings.length) });
+  // A failed run often has no warnings at all — the failure IS the message —
+  // so the node has to exist for the error too, or there is nowhere to read it.
+  if (meta.warnings?.length || meta.error) {
+    out.push({ what: "warnings", label: "Solver messages",
+               meta: meta.error ? "failed" : String(meta.warnings.length) });
   }
   return out;
 }
@@ -1847,7 +1857,25 @@ function panelSolution(S, A, put, id) {
 function statusHead(S, A, a) {
   const meta = S.results[a.id];
   if (!meta) return [];
-  // Demo first: it outranks staleness, and unlike the red session banner this
+  // A failed run outranks everything: whatever is below it is a fragment, not
+  // an answer. This used to show nothing at all — meta.json was written either
+  // way, so the tree badged the analysis done and the panel was simply empty.
+  if (meta.failed) {
+    return [el("div", { class: "stalebar fakebar" },
+      el("b", {}, "\u26a0 This run failed. "),
+      meta.recovered
+        ? "What is shown below is what could be recovered from it, not a "
+          + "complete result. Treat nothing here as final."
+        : "Nothing could be recovered from it.",
+      el("div", { class: "hint" }, meta.error || `exit code ${meta.exit_code}`),
+      el("div", { class: "btnrow" },
+        el("button", { class: "btn btn-small btn-accent",
+          onclick: () => A.runAnalysis(a.id) }, "Run again"),
+        el("button", { class: "btn btn-small",
+          onclick: () => A.select("result", `${a.id}|warnings`) },
+          "Why it failed")))];
+  }
+  // Demo next: it outranks staleness, and unlike the red session banner this
   // is a property of the run, so it survives a restart with a real solver.
   if (meta.demo) {
     return [el("div", { class: "stalebar fakebar" },
@@ -2281,9 +2309,21 @@ function secReactions(S, A, a) {
 
 function secWarnings(S, A, a) {
   const meta = S.results[a.id];
-  if (!meta.warnings?.length) return [];
-  return [sec("Solver messages",
-    ...meta.warnings.map((w) => el("div", { class: "hint warn" }, w)))];
+  if (!meta.warnings?.length && !meta.error) return [];
+  const secs = [];
+  if (meta.error) {
+    secs.push(sec("Why the run failed",
+      el("div", { class: "hint bad" }, meta.error),
+      meta.log_path
+        ? el("div", { class: "hint" },
+            "The solver's full output is in " + meta.log_path)
+        : null));
+  }
+  if (meta.warnings?.length) {
+    secs.push(sec("Solver messages",
+      ...meta.warnings.map((w) => el("div", { class: "hint warn" }, w))));
+  }
+  return secs;
 }
 
 /**

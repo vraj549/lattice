@@ -304,3 +304,57 @@ def test_glued_for_dynamics_names_exactly_the_linearised_interfaces(kind, solve,
     setup, meta, stats = base(kind, mu=0.2, solve=solve)
     names = [c["name"] for c in comm_writer.glued_for_dynamics(setup, stats)]
     assert names == (["plate/plate"] if glued else [])
+
+
+# ------------------------------------------- the deck survives its own errors
+
+def _deck(atype):
+    if atype == "static":
+        setup, meta, stats = base("bonded")
+        return comm_writer.build_run(setup["analyses"][0], setup, meta, stats,
+                                     SolverConfig())[0]
+    return build_dynamic(atype, "bonded")
+
+
+@pytest.mark.parametrize("atype", ["static", "modal", "harmonic", "random", "shock"])
+def test_the_deck_is_valid_python(atype):
+    """A .comm is executed as a Python script, so an indentation mistake in the
+    writer is a run that dies before code_aster is even reached. The body is
+    wrapped in a try block to keep FIN() reachable, and re-indenting a whole
+    deck is exactly the kind of transformation that silently breaks one branch.
+    """
+    compile(_deck(atype), "run.comm", "exec")
+
+
+@pytest.mark.parametrize("atype", ["static", "modal", "harmonic", "random", "shock"])
+def test_errors_are_catchable_and_fin_is_always_reached(atype):
+    """code_aster defaults to ERREUR_F='ABORT', which terminates the process
+    from Fortran: the Python handler never runs, FIN() is never called, and the
+    result files are never flushed. Every try/except in this writer — including
+    the ones wrapping optional post-processing tables — was decoration until
+    the mode was set.
+
+    FIN() is what closes the MED. A run that dies after IMPR_RESU must still
+    reach it, or the fields it computed exist only in memory.
+    """
+    deck = _deck(atype)
+    assert "ERREUR_F='EXCEPTION'" in deck, "fatal errors would abort, not raise"
+    assert deck.count("FIN()") >= 1
+
+    # FIN() is reached on both paths, and the failure is re-raised rather than
+    # swallowed — a partial result is for inspection, not a finished answer.
+    tail = deck[deck.index("except Exception as _lattice_e:"):]
+    assert "if _lattice_failure is None:\n    FIN()" in tail
+    assert "raise _lattice_failure" in tail
+    assert tail.index("FIN()") < tail.index("raise _lattice_failure")
+
+
+def test_a_failing_optional_block_cannot_take_the_run_with_it():
+    """The incident this guard exists for: a modal run computed all ten modes
+    and threw them away because one table used a parameter that version did
+    not publish. Each optional block is contained, and the containment is now
+    reachable."""
+    deck = _deck("modal")
+    assert "# optional:" in deck
+    for blk in deck.split("# optional:")[1:]:
+        assert "except Exception as _e:" in blk.split("# optional:")[0]

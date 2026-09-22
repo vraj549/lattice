@@ -483,12 +483,28 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                     "and must not be used for any engineering decision.")
             meta["exit_code"] = rc
             meta["signature"] = solve_signature(analysis, proj["setup"], mesh_stats)
-            store.write_json(pid, f"runs/{aid}/meta.json", meta)
-            if rc != 0 and not meta["fields"] and not meta["tables"]:
-                logfile = os.path.join(run_dir, "log.txt")
-                raise RuntimeError(summarise_failure(job, logfile, rc))
+            # What is actually here, as opposed to whether a file was written.
+            # meta.json used to be saved either way, so a run that produced
+            # nothing still answered "has results" and the tree badged it done
+            # — reopen the project the next day and it claimed a finished
+            # analysis with an empty panel and no reason given anywhere.
+            recovered = bool(meta.get("fields") or meta.get("tables")
+                             or meta.get("frf"))
+            meta["recovered"] = recovered
+            meta["failed"] = rc != 0
             if rc != 0:
-                job.append("Solver exited non-zero but partial results were recovered.")
+                logfile = os.path.join(run_dir, "log.txt")
+                # The job log is pruned; this is written beside the run so the
+                # reason survives as long as the run does.
+                meta["error"] = summarise_failure(job, logfile, rc)
+                meta["log_path"] = logfile
+            store.write_json(pid, f"runs/{aid}/meta.json", meta)
+            if rc != 0 and not recovered:
+                raise RuntimeError(meta["error"])
+            if rc != 0:
+                job.append("Solver exited non-zero. What follows is what could "
+                           "be recovered from the run, not a complete result — "
+                           "the analysis is marked failed.")
             for w in meta.get("warnings", []):
                 job.append(f"warning: {w}")
             job.append("Done.")
@@ -532,8 +548,15 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                 continue
             meta = store.read_json(pid, f"runs/{aid}/meta.json")
             sig = meta.get("signature")
+            # `recovered` is absent on runs written before it existed; those
+            # all completed, so treat the payload itself as the answer.
+            recovered = meta.get("recovered")
+            if recovered is None:
+                recovered = bool(meta.get("fields") or meta.get("tables")
+                                 or meta.get("frf"))
             out[aid] = {
-                "has_results": True,
+                "has_results": bool(recovered),
+                "failed": bool(meta.get("failed")),
                 "no_signature": not sig,
                 "stale": bool(sig) and sig != solve_signature(a, proj["setup"], mesh_stats),
             }

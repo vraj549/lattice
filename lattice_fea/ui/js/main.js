@@ -1045,6 +1045,9 @@ async function refreshResultStatus() {
       if (!meta) continue;
       if (meta.stale !== s.stale) { meta.stale = s.stale; changed = true; }
       meta.no_signature = s.no_signature;
+      if (S.runStatus[aid] !== "running") {
+        S.runStatus[aid] = s.failed ? "failed" : "done";
+      }
     }
     // an analysis whose results vanished from disk should stop claiming them
     for (const aid of Object.keys(S.results)) {
@@ -1226,9 +1229,12 @@ async function openProject(pid) {
   // probing each one and eating a 404 for every analysis that has never run.
   try {
     const status = await api.get(`/api/projects/${pid}/results-status`);
-    for (const aid of Object.keys(status)) {
+    for (const [aid, st] of Object.entries(status)) {
       S.results[aid] = await api.get(`/api/projects/${pid}/results/${aid}`);
-      S.runStatus[aid] = "done";
+      // A run that failed is not "done". Reopening a project marked every run
+      // that had a meta.json done, so a failed one came back looking finished
+      // with an empty panel and the reason nowhere on screen.
+      S.runStatus[aid] = st.failed ? "failed" : "done";
     }
   } catch (e) { logLine(`results: ${e.message}`, "warnln"); }
   updateStat();
