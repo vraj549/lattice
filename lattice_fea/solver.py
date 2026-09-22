@@ -212,7 +212,7 @@ def run_solver(cfg: SolverConfig, jobdir: str, job: Job) -> int:
     with open(logfile, "w", encoding="utf-8", errors="replace") as lf:
         proc = popen_isolated(argv, cwd=cwd, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True,
-                              errors="replace", bufsize=1)
+                              encoding="utf-8", errors="replace", bufsize=1)
         job._proc = proc
         try:
             assert proc.stdout is not None
@@ -266,7 +266,8 @@ def run_ccx(cfg: SolverConfig, jobdir: str, job: Job, jobname: str = "job") -> i
     with open(logfile, "w", encoding="utf-8", errors="replace") as lf:
         proc = popen_isolated(argv, cwd=jobdir, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True,
-                              errors="replace", bufsize=1, env=env)
+                              encoding="utf-8", errors="replace",
+                              bufsize=1, env=env)
         job._proc = proc
         try:
             assert proc.stdout is not None
@@ -314,6 +315,26 @@ _GENERIC_HEADLINES = (
 )
 
 
+# code_aster frames its messages in box-drawing characters. The frame is not
+# part of the message.
+_BOX_CHARS = "\u2500\u2502\u2550\u2551\u2552\u2555\u2558\u255b\u255e\u2561" \
+             "\u250c\u2510\u2514\u2518\u251c\u2524|+-= \t"
+
+# Lines from the deck this module generated, echoed back in the log. The
+# DEBUT line carries ERREUR_F='EXCEPTION', which contains "ERREUR" and so
+# matched the French-message marker — so the app reported its own deck line
+# as the reason a run failed, with the real diagnosis further down.
+_DECK_ECHO = ("ERREUR_F=", "=_F(", "DEBUT(", "FIN()", "_lattice_failure")
+
+
+def _unbox(line: str) -> str:
+    return line.strip().strip(_BOX_CHARS).strip()
+
+
+def _is_deck_echo(text: str) -> bool:
+    return any(k in text for k in _DECK_ECHO)
+
+
 def headline(lines) -> "str|None":
     """The one line to put in front of the user from a failed run's output.
 
@@ -321,30 +342,44 @@ def headline(lines) -> "str|None":
     something is. A text file renamed .step reported "Could not read file
     '…/geometry.step'" while the line that actually diagnosed it — "Incorrect
     syntax: unexpected TYPE, expecting STEP" — sat further up the log.
+
+    code_aster is the awkward one: it frames its diagnosis in box-drawing
+    characters and puts the message id on one line and the human sentence two
+    lines below, so neither line alone is the answer.
     """
-    picked = [ln.strip() for ln in lines if ln.strip()]
+    picked = [ln.rstrip() for ln in lines if ln.strip()]
     if not picked:
         return None
-    # extract_errors keeps a few lines of context around each match, so the
-    # first line it returns is often an ordinary "Info : Reading …". Only a
-    # line that actually carries an error marker can be the headline.
-    flagged = [ln for ln in picked if any(m in ln for m in _ERROR_MARKERS)]
-    specific = [ln for ln in flagged
-                if not any(g in ln for g in _GENERIC_HEADLINES)
-                and not ln.lstrip().startswith(("File \"", "Traceback"))]
+    clean = [_unbox(ln) for ln in picked]
+
+    # 1. A framed code_aster exception. The id names the message and the
+    #    sentence under it says which group, which node, which operator.
+    for i, text in enumerate(clean):
+        if "<EXCEPTION>" in text or text.startswith(("<F> <", "<E> <")):
+            body = [c for c in clean[i + 1:i + 6] if c and not _is_deck_echo(c)]
+            return f"{text} {body[0]}" if body else text
+
+    # 2. Any other marked line that is not this module's own deck echoed back,
+    #    and not a line that says only that something failed.
+    flagged = [(c, ln) for c, ln in zip(clean, picked)
+               if any(m in ln for m in _ERROR_MARKERS)]
+    specific = [ln for c, ln in flagged
+                if not _is_deck_echo(c)
+                and not any(g in ln for g in _GENERIC_HEADLINES)
+                and not c.startswith(("File \"", "Traceback"))]
     if specific:
         return specific[0]
-    # Nothing but traceback scaffolding. The useful line in a Python traceback
-    # is the LAST one — "FileNotFoundError: ..." — not the header, which says
-    # only that something raised. Falling back to flagged[0] reported
-    # "Traceback (most recent call last):" as the reason a job failed.
-    if any(ln.lstrip().startswith("Traceback") for ln in picked):
-        tail = [ln for ln in picked
-                if not ln.lstrip().startswith(("File \"", "Traceback"))
-                and not ln.startswith(("    ", "\t"))]
+
+    # 3. Nothing but traceback scaffolding. The useful line in a Python
+    #    traceback is the LAST one, not the header.
+    if any(c.startswith("Traceback") for c in clean):
+        tail = [ln for c, ln in zip(clean, picked)
+                if not c.startswith(("File \"", "Traceback"))
+                and not ln.startswith(("    ", "\t"))
+                and not _is_deck_echo(c)]
         if tail:
             return tail[-1]
-    return (flagged or picked)[0]
+    return ([ln for _c, ln in flagged] or picked)[0]
 
 
 def extract_errors(lines, limit: int = 24) -> list:

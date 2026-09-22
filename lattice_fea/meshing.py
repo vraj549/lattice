@@ -58,6 +58,41 @@ def _drop_suppressed(gmsh, setup: dict, meta: dict, progress) -> None:
                          "there is nothing left to mesh.")
 
 
+def unv_group_names(unv_path: str) -> set:
+    """Group names actually present in a written UNV file.
+
+    `written` below records that gmsh was ASKED to create a physical group,
+    which is not the same as the group reaching the file the solver reads.
+    The stale-mesh guard trusted the request, so a group that never made it
+    into the UNV passed the guard and code_aster aborted minutes later with
+    "le GROUP_MA SUP1_1 ne fait pas partie du maillage".
+
+    Groups live in dataset 2477 (or the older 2467): a numeric header line,
+    then the name on a line of its own, then the entity records.
+    """
+    names, in_block = set(), False
+    try:
+        with open(unv_path, encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.rstrip("\n")
+                tag = line.strip()
+                if tag in ("2477", "2467"):
+                    in_block = True
+                    continue
+                if not in_block:
+                    continue
+                if tag == "-1":
+                    in_block = False
+                    continue
+                # inside the block, anything that is not a row of integers is
+                # a group name
+                if tag and not all(t.lstrip("-").isdigit() for t in tag.split()):
+                    names.add(tag)
+    except OSError:
+        return set()
+    return names
+
+
 def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
                  progress=lambda s: None) -> dict:
     diag = meta["diag"]
@@ -259,7 +294,20 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
         # Only what was actually written. Recording every REQUESTED group
         # let the stale-mesh guard pass for a group that does not exist,
         # and the solver then aborted on GROUP_MA not found.
-        stats["face_groups"] = sorted(written)
+        # Check the artifact, not the intent. `written` records that gmsh was
+        # ASKED to create a physical group, which is not the same as the group
+        # reaching the file the solver opens — and when they differed the only
+        # symptom was an abort minutes into the run, in French, about a
+        # GROUP_MA that was not in the mesh.
+        in_file = unv_group_names(unv_path)
+        confirmed = [g for g in written if g in in_file] if in_file else list(written)
+        for g in written:
+            if in_file and g not in in_file:
+                progress(f"warning: group {g} was created but is not in the "
+                         f"written mesh file — anything using it will not run")
+        stats["face_groups"] = sorted(confirmed)
+        stats["requested_groups"] = sorted(face_sets.keys())
+        stats["unv_groups"] = sorted(in_file)
 
         # Consistent nodal loads for every face group.
         #

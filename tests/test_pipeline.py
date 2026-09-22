@@ -591,3 +591,52 @@ def test_circumcentre_is_the_circle_centre():
     # collinear points define no circle
     assert geometry._circumcentre(_np.zeros(3), _np.array([1.0, 0, 0]),
                                   _np.array([2.0, 0, 0])) is None
+
+
+def test_face_groups_are_confirmed_against_the_written_mesh(tmp_path):
+    """The stale-mesh guard reads stats["face_groups"], which recorded that
+    gmsh had been ASKED to create a physical group. That is not the same as
+    the group reaching the file the solver opens, and when the two differed
+    the guard passed and code_aster aborted minutes into the run with "le
+    GROUP_MA SUP1_1 ne fait pas partie du maillage".
+
+    The names are now read back out of the written UNV, so the guard checks
+    the artifact rather than the intent.
+    """
+    tmp = str(tmp_path)
+    brep = os.path.join(tmp, "b.brep")
+    with geometry.GMSH_LOCK:
+        g = geometry._gmsh()
+        geometry._fresh_model(g, "b")
+        g.model.occ.addBox(0, 0, 0, 100, 50, 16)
+        g.model.occ.synchronize()
+        g.write(brep)
+        g.clear()
+    meta = geometry._analyze_brep(brep)
+    faces = sorted(meta["faces"], key=lambda f: f["area"])
+    setup = default_setup()
+    setup["materials"] = [{"id": "st", "name": "S", "E_GPa": 210, "nu": 0.3,
+                           "rho_kgm3": 7850}]
+    setup["assignments"] = {str(s["tag"]): "st" for s in meta["solids"]}
+    setup["mesh"]["size_mm"] = 8.0
+    setup["analyses"] = [{
+        "id": "a1", "type": "static", "name": "S", "config": {},
+        "supports": [{"id": "s1", "name": "Sup", "type": "fixed",
+                      "faces": [f["tag"] for f in faces[:4]]}],
+        "loads": [{"id": "l1", "name": "L", "type": "force",
+                   "faces": [faces[4]["tag"]], "fx": 0, "fy": 0, "fz": 100}]}]
+    unv = os.path.join(tmp, "mesh.unv")
+    stats = meshing.mesh_project(brep, unv, meta, setup)["stats"]
+
+    assert stats["requested_groups"] == ["LOA1_1", "SUP1_1"]
+    assert stats["face_groups"] == ["LOA1_1", "SUP1_1"]
+    # and every confirmed name really is in the file the solver reads
+    names = meshing.unv_group_names(unv)
+    assert set(stats["face_groups"]) <= names
+    assert "V1" in names, "the volume group should be there too"
+
+    # the reader is honest about a file it cannot make sense of
+    empty = os.path.join(tmp, "nothing.unv")
+    open(empty, "w").write("not a unv\n")
+    assert meshing.unv_group_names(empty) == set()
+    assert meshing.unv_group_names(os.path.join(tmp, "missing.unv")) == set()

@@ -233,3 +233,46 @@ def test_a_bare_traceback_reports_the_exception_not_the_header():
             " <F> <FACTOR_10> matrice singuliere ou presque singuliere",
             "RuntimeError: aborted"]
     assert "FACTOR_10" in headline(extract_errors(both))
+
+
+def test_a_framed_aster_exception_reports_the_message_not_the_deck():
+    """Two failures at once, both seen on a real run.
+
+    code_aster frames its diagnosis in box-drawing characters and splits it:
+    the message id on one line, the sentence naming the group two lines below.
+    Neither line alone is the answer.
+
+    And the deck this project generates carries ERREUR_F='EXCEPTION' on its
+    DEBUT line. "ERREUR" is a marker for code_aster's French messages, so the
+    generated deck — echoed back in the log — matched it and the app reported
+    its own first line as the reason the run failed.
+    """
+    from lattice_fea.solver import extract_errors, headline
+
+    log = ["DEBUT(LANG='EN', ERREUR=_F(ERREUR_F='EXCEPTION'))",
+           "_lattice_failure = None",
+           "try:",
+           "                    SOLVEUR=_F(METHODE='MUMPS'),",
+           "╒" + "═" * 40,
+           "│ <EXCEPTION> <MODELISA7_77>                    │",
+           "│                                               │",
+           "│ le GROUP_MA  SUP1_1  ne fait pas partie du maillage :  1 │",
+           "╘" + "═" * 40,
+           "Destruction du concept '00000005' suite à l'erreur précédente."]
+    h = headline(extract_errors(log))
+    assert "MODELISA7_77" in h, h
+    assert "SUP1_1" in h, h
+    assert "DEBUT" not in h and "ERREUR_F" not in h, h
+    # the frame itself is not part of the message
+    assert "│" not in h and "═" not in h, h
+
+
+def test_the_generated_deck_is_never_the_headline():
+    """Every line this module writes into a .comm can appear in the log. None
+    of them is a diagnosis."""
+    from lattice_fea.solver import extract_errors, headline
+
+    log = ["DEBUT(LANG='EN', ERREUR=_F(ERREUR_F='EXCEPTION'))",
+           "fix = AFFE_CHAR_MECA(MODELE=model, DDL_IMPO=_F(GROUP_MA=('SUP1_1',)))",
+           " <F> <FACTOR_10> matrice singuliere"]
+    assert "FACTOR_10" in headline(extract_errors(log))

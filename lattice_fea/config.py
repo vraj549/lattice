@@ -28,7 +28,8 @@ except ImportError:  # pragma: no cover
 
 def _run(cmd, timeout=15) -> "tuple[int, str]":
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except Exception as e:  # noqa: BLE001
         return 999, str(e)

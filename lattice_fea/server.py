@@ -37,7 +37,8 @@ def run_gmsh_worker(job, args: dict) -> None:
     try:
         proc = popen_isolated([sys.executable, "-m", "lattice_fea.gmsh_worker", argfile],
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              text=True, errors="replace", bufsize=1)
+                              text=True, encoding="utf-8",
+                              errors="replace", bufsize=1)
         job._proc = proc
         try:
             assert proc.stdout is not None
