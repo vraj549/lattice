@@ -58,6 +58,56 @@ def _drop_suppressed(gmsh, setup: dict, meta: dict, progress) -> None:
                          "there is nothing left to mesh.")
 
 
+def _inverted_count(gmsh) -> int:
+    """Solid elements that are turned inside out, by either metric."""
+    _et, etags, _ = gmsh.model.mesh.getElements(3)
+    if not etags:
+        return 0
+    tags = np.concatenate([np.asarray(t) for t in etags]).tolist()
+    if not tags:
+        return 0
+    q = np.asarray(gmsh.model.mesh.getElementQualities(tags, "minSICN"))
+    bad = q <= QUALITY_INVERTED
+    try:
+        dj = np.asarray(gmsh.model.mesh.getElementQualities(tags, "minDetJac"))
+        bad = bad | (dj <= 0.0)
+    except Exception:  # noqa: BLE001
+        pass
+    return int(bad.sum())
+
+
+def _untangle_curved(gmsh, progress) -> None:
+    """Repair elements that raising to second order turned inside out.
+
+    Mid-side nodes are projected onto the real geometry, which is what makes a
+    quadratic element follow a fillet or a bore instead of cutting the corner.
+    Where the element is large against the curvature, that projection can pull
+    a mid-node through a face and tangle the element — and gmsh does not undo
+    it. The only lever the user had was to refine the whole model until the
+    tangled ones disappeared, which is why a bolt-hole radius could dictate
+    the size of the entire mesh.
+
+    Run only when there is something to repair: the elastic smoother costs
+    real time on a large mesh, and a clean mesh should not pay for it.
+    """
+    before = _inverted_count(gmsh)
+    if not before:
+        return
+    progress(f"{before} element(s) tangled by curving; untangling…")
+    try:
+        gmsh.model.mesh.optimize("HighOrderElastic")
+    except Exception as e:  # noqa: BLE001
+        progress(f"warning: the high-order untangler failed ({e})")
+        return
+    after = _inverted_count(gmsh)
+    if after:
+        progress(f"warning: {after} element(s) are still inverted after "
+                 f"untangling — refine near the curved faces, or use linear "
+                 f"elements there")
+    else:
+        progress(f"untangled all {before}")
+
+
 def quality_counts(sicn, detjac=None) -> dict:
     """How many elements fall in each band, from the two gmsh metrics.
 
@@ -134,7 +184,19 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
                  f"whatever the smallest feature allows, so the element count "
                  f"is set by the geometry, not by this number.")
     minsize = max(size / 12.0, diag * 1e-5)
-    curvdiv = int(mcfg.get("curvature") or 16)
+    # Elements around a full circle. 16 is the right number for LINEAR
+    # elements, where the only way to follow an arc is with more chords; a
+    # quadratic element carries a mid-side node and follows it with half as
+    # many. Measured on a plate with a 6.6 mm hole in tension, against the
+    # Howland finite-width Kt, peak stress does not improve past about 8:
+    #
+    #     6/2pi   6,702 nodes   +4.5 %      16/2pi  10,214 nodes   +6.3 %
+    #     8/2pi   6,928 nodes   +4.9 %      20/2pi  11,275 nodes   +9.6 %
+    #
+    # The spread is nodal-peak noise, not convergence — so 16 was buying 50 %
+    # more mesh for nothing, and on a part with many holes the hole radius
+    # ended up setting the size of the whole model.
+    curvdiv = int(mcfg.get("curvature") or DEFAULT_CURVATURE)
     order = int(mcfg.get("order") or 2)
 
     face_sets = _collect_face_sets(setup)
@@ -232,6 +294,7 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
             progress("raising to 2nd order…")
             gmsh.option.setNumber("Mesh.SecondOrderLinear", 0)
             gmsh.model.mesh.setOrder(2)
+            _untangle_curved(gmsh, progress)
 
         # bolt beams AFTER setOrder so they stay SEG2 for POU_D_T
         bolt_records = _add_bolt_beams(gmsh, meta, setup, progress, remap)
@@ -875,6 +938,8 @@ def _add_remote_stubs(gmsh, setup: dict, meta: dict, progress) -> list:
 #   < 0.05  a sliver. It solves, and the stress it reports is noise.
 #   < 0.2   poor. Displacement is usually still fine; stress at that element
 #           is not worth reading.
+DEFAULT_CURVATURE = 10
+
 QUALITY_INVERTED = 0.0
 QUALITY_SLIVER = 0.05
 QUALITY_POOR = 0.2

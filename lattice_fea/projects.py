@@ -183,7 +183,7 @@ def default_setup() -> dict:
         # them: a STEP re-import would renumber every tag in the project, so
         # removal is an exclusion the mesher applies, not an edit to the BREP.
         "suppressed_solids": [],
-        "mesh": {"size_mm": None, "curvature": 16, "order": 2,
+        "mesh": {"size_mm": None, "curvature": 10, "order": 2,
                  "elements": "tet", "local": []},
         "analyses": [],         # each: {id, type, name, config, supports[], loads[]}
     }

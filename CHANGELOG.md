@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.0.4
+
+The gate added in 1.0.3 worked — a real mesh came back with minimum quality
+−0.25 and two inverted elements. But clearing them had meant refining the
+whole model to 200,772 nodes and 4.8 GB of estimated factorization memory,
+with most of the mesh piled up around bolt holes that did not need it. The
+gate was right and the mesher was making it expensive to satisfy.
+
+**Curving is now repaired instead of avoided.** Raising to second order
+projects mid-side nodes onto the real geometry, which is what makes a
+quadratic element follow a bore instead of cutting the corner. Where the
+element is large against the curvature, that projection can pull a mid-node
+through a face and tangle the element — and gmsh does not undo it, so the
+only lever was to refine everything until the tangled ones disappeared. The
+elastic high-order smoother now runs when, and only when, there is something
+to untangle; a clean mesh pays nothing for it.
+
+**The curvature default was a linear-element number.** 16 elements around a
+full circle is what you need when the only way to follow an arc is with more
+chords. A quadratic element carries a mid-side node and follows it with about
+half as many. Measured on a plate with a 6.6 mm hole in tension against the
+Howland finite-width Kt:
+
+| elements / 2π | nodes | peak stress | error |
+|---|---|---|---|
+| 6 | 6,702 | 131.97 MPa | +4.5 % |
+| 8 | 6,928 | 132.44 MPa | +4.9 % |
+| 16 (old default) | 10,214 | 134.28 MPa | +6.3 % |
+| 20 | 11,275 | 138.49 MPa | +9.6 % |
+
+The spread is nodal-peak noise rather than convergence: past about 8 the
+answer stops improving and only the element count grows. The default is 10.
+On a plate with eight holes that is 24,021 nodes where 16 built 61,538 — 61 %
+less mesh for the same answer. Existing projects keep whatever they stored,
+and the mesh panel now says what the number costs when it is above 12.
+
 ## 1.0.3
 
 From a full code_aster log of the failed run in 1.0.2. The mesh reported

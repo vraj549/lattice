@@ -700,3 +700,51 @@ def test_an_empty_group_record_is_not_the_same_as_no_record(tmp_path):
         CW.check_mesh_current(a, 1, {"mesh_format": meshing.MESH_FORMAT,
                                      "face_groups": ["SUP2_1"]})
     assert "older than" in str(e.value)
+
+
+def test_curving_to_second_order_untangles_what_it_tangles(tmp_path):
+    """Mid-side nodes are projected onto the real geometry, which is what
+    makes a quadratic element follow a bore instead of cutting the corner.
+    Where the element is large against the curvature that projection can pull
+    a mid-node through a face and tangle the element, and gmsh does not undo
+    it — so the only lever the user had was to refine the entire model until
+    the tangled ones went away, letting a bolt-hole radius dictate the size of
+    the whole mesh.
+    """
+    tmp = str(tmp_path)
+    brep = os.path.join(tmp, "p.brep")
+    with geometry.GMSH_LOCK:
+        g = geometry._gmsh()
+        geometry._fresh_model(g, "p")
+        box = g.model.occ.addBox(0, 0, 0, 120, 60, 8)
+        cuts = [(3, g.model.occ.addCylinder(x, y, -1, 0, 0, 10, 3.3))
+                for x in (20, 45, 70, 95) for y in (18, 42)]
+        g.model.occ.cut([(3, box)], cuts)
+        g.model.occ.synchronize()
+        g.write(brep)
+        g.clear()
+    meta = geometry._analyze_brep(brep)
+    setup = default_setup()
+    setup["materials"] = [{"id": "st", "name": "S", "E_GPa": 210, "nu": 0.3,
+                           "rho_kgm3": 7850}]
+    setup["assignments"] = {str(s["tag"]): "st" for s in meta["solids"]}
+    setup["analyses"] = [{
+        "id": "a1", "type": "modal", "name": "M", "config": {"n_modes": 4},
+        "supports": [{"id": "s", "name": "S", "type": "fixed",
+                      "faces": [meta["faces"][0]["tag"]]}], "loads": []}]
+
+    counts = {}
+    for curv in (16, meshing.DEFAULT_CURVATURE):
+        setup["mesh"].update({"size_mm": 6.0, "curvature": curv})
+        st = meshing.mesh_project(brep, os.path.join(tmp, f"m{curv}.unv"),
+                                  meta, setup)["stats"]
+        assert st["quality_counts"]["inverted"] == 0, curv
+        counts[curv] = st["nodes"]
+
+    # The default is a real saving on hole-rich geometry, not a rounding of
+    # the old one. Measured against the Howland Kt for a hole in tension,
+    # peak stress does not improve past about 8 elements around a circle, so
+    # the extra mesh 16 builds buys element count and nothing else.
+    assert meshing.DEFAULT_CURVATURE == 10
+    saved = 1 - counts[10] / counts[16]
+    assert saved > 0.4, f"only {saved:.0%} smaller: {counts}"
