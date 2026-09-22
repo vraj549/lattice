@@ -2059,7 +2059,7 @@ function showShortcuts() {
     el("h2", {}, "Navigation"),
     el("div", { class: "kbcols" },
       el("div", { class: "kbgroup" },
-        el("span", { class: "lbl" }, "Mouse — as in NX"),
+        el("span", { class: "lbl" }, "Mouse"),
         MOUSE.map(([k, what]) => el("div", { class: "kbrow" },
           el("kbd", {}, k), el("span", {}, what)))),
       el("div", { class: "kbgroup" },
@@ -2079,8 +2079,8 @@ function showShortcuts() {
           catch { /* private mode */ }
         } }),
       el("span", {}, "Left button also rotates \u2014 for trackpads and mice "
-                   + "with no middle button. NX does not do this: with it on, "
-                   + "MB1 can no longer be a selection drag.")),
+                   + "with no middle button. With it on, MB1 can no longer be "
+                   + "a selection drag.")),
     el("h2", {}, "Keyboard"),
     el("div", { class: "kbcols" }, SHORTCUTS.map(([group, rows]) =>
       el("div", { class: "kbgroup" },
@@ -2351,8 +2351,8 @@ async function boot() {
   // next model change happened to be.
   setPanelThaw(() => { commitIfChanged(); if (S.project) renderPanel(S, A); });
   restoreSpaceMouse();
-  // A trackpad has no middle button, and NX's map gives MB2 every navigation
-  // verb. Off by default so MB1 stays a plain selection drag, as in NX.
+  // A trackpad has no middle button, and every navigation verb is on MB2.
+  // Off by default so MB1 stays a plain selection drag.
   try {
     viewer.orbit.leftDragRotates = localStorage.getItem("lattice.leftDragRotates") === "1";
   } catch { /* private mode */ }

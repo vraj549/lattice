@@ -11,13 +11,13 @@ import * as THREE from "three";
  * Bottom views existed to hide the same defect: looking straight down the
  * up-vector leaves roll undefined.
  *
- * NX has no such pole because NX is a free trackball: the drag axes are the
- * screen's own axes, taken from the camera's current orientation, so there is
- * nowhere the controls degrade and the model can be tumbled without limit.
- * Orientation is held as a quaternion for the same reason — Euler angles
- * would put the gimbal back.
+ * A free trackball has no such pole: the drag axes are the screen's own,
+ * taken from the camera's current orientation, so there is nowhere the
+ * controls degrade and the model can be tumbled without limit. Orientation is
+ * held as a quaternion for the same reason — Euler angles would put the
+ * gimbal back.
  *
- * Mouse map (NX defaults):
+ * Mouse map:
  *
  *   MB2 drag ................ rotate
  *   Shift + MB2, MB2 + MB3 .. pan
@@ -25,8 +25,8 @@ import * as THREE from "three";
  *   wheel ................... zoom
  *   MB1 ..................... selection; never navigation
  *
- * and the edge zones, which NX decides from where the cursor was when the
- * drag STARTED:
+ * and the edge zones, decided from where the cursor was when the drag
+ * STARTED:
  *
  *   left or right edge ...... rotate about the view's horizontal axis only
  *   bottom edge ............. rotate about the view's vertical axis only
@@ -66,8 +66,8 @@ export function edgeZone(x, y, w, h, frac = EDGE_FRACTION) {
  * What a drag does, from the buttons held and the modifier keys.
  *
  * Reads the live `buttons` bitmask rather than the button that opened the
- * drag, so NX's chords work the way they do in NX: press MB3 while MB2 is
- * already down and the rotate becomes a pan without letting go.
+ * drag: press MB3 while MB2 is already down and the rotate becomes a pan
+ * without letting go.
  *
  * Returns null for "not navigation" — MB1 alone is selection and MB3 alone
  * opens a menu, and swallowing either would break picking.
@@ -155,8 +155,8 @@ export class Navigator {
         shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey,
         leftDragRotates: this.leftDragRotates });
       if (!mode) return;
-      // NX decides the constrained axis from where the cursor was when the
-      // drag started, not from where it wanders to.
+      // The constrained axis comes from where the cursor was when the drag
+      // started, not from where it wanders to.
       const r = dom.getBoundingClientRect();
       const zone = edgeZone(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
       dom.setPointerCapture(e.pointerId);
@@ -177,9 +177,8 @@ export class Navigator {
         leftDragRotates: this.leftDragRotates });
       if (mode === "rotate") this.rotate(dx, dy, this._drag.zone);
       else if (mode === "pan") this.pan(dx, dy);
-      // Up zooms in, matching the wheel. NX ties the drag-zoom gesture to the
-      // same direction preference as the wheel, and having the two disagree
-      // inside one viewport is worse than either direction on its own.
+      // Up zooms in, matching the wheel. Two zoom gestures disagreeing inside
+      // one viewport is worse than either direction on its own.
       else if (mode === "zoom") this.zoom(Math.exp(dy * ZOOM_PER_PX));
     });
 

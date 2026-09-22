@@ -12,15 +12,15 @@ orbiting, and horizontal dragging simply stopped working. The thousandth of a
 radian the Top and Bottom views were nudged by existed to hide the same defect,
 because looking straight down the up-vector leaves roll undefined.
 
-NX has no such pole because NX rotates as a free trackball: the drag axes are
-the screen's own, taken from the camera's current orientation, so there is
-nowhere the controls degrade and the model can be tumbled without limit.
-Orientation is a quaternion now — Euler angles would put the gimbal back. The
-same measurement on the new controller is 82 % from every standard view, Top
-included, and Top is exactly vertical rather than nudged off.
+A free trackball has no such pole: the drag axes are the screen's own, taken
+from the camera's current orientation, so there is nowhere the controls degrade
+and the model can be tumbled without limit. Orientation is a quaternion now —
+Euler angles would put the gimbal back. The same measurement on the new
+controller is 82 % from every standard view, Top included, and Top is exactly
+vertical rather than nudged off.
 
-The full NX mouse map, with the chords read live so pressing MB3 during a
-rotate pans without letting go:
+The mouse map, with chords read live so pressing MB3 during a rotate pans
+without letting go:
 
 | Input | Action |
 |---|---|
@@ -30,17 +30,15 @@ rotate pans without letting go:
 | Wheel | Zoom, toward the cursor |
 | MB1 | Select — never navigation |
 
-and NX's edge zones, decided from where the drag started: the left or right
-edge locks rotation to the screen's horizontal axis, the bottom edge to its
-vertical axis, and the top edge spins about the axis normal to the screen.
+Starting a drag near an edge constrains it: the left or right edge locks
+rotation to the screen's horizontal axis, the bottom edge to its vertical axis,
+and the top edge spins about the axis normal to the screen.
 
 Dragging up with Ctrl+MB2 now zooms **in**, matching the wheel. It zoomed out
-before, so the two gestures disagreed inside one viewport; NX ties both to the
-same direction preference.
+before, so the two gestures disagreed inside one viewport.
 
-MB1 is selection and nothing else, as in NX. A trackpad has no middle button,
-so the shortcuts panel has a **left button also rotates** option — off by
-default, and flagged as the deviation from NX that it is.
+MB1 is selection and nothing else. A trackpad has no middle button, so the
+shortcuts panel has a **left button also rotates** option, off by default.
 
 ### SpaceMouse
 

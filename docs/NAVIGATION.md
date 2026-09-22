@@ -16,12 +16,11 @@ already works; nothing here should need reading.
 | MB1 | Select — never navigation |
 
 Chords are read live, so pressing MB3 while MB2 is already down turns a rotate
-into a pan without letting go, as in NX.
+into a pan without letting go.
 
 Rolling the wheel forward zooms in, and dragging up with Ctrl+MB2 zooms in.
-NX ties its drag-zoom gesture to the same direction preference as the wheel;
-having the two disagree inside one viewport is worse than either direction on
-its own.
+Two zoom gestures disagreeing inside one viewport is worse than either
+direction on its own.
 
 Zoom is toward the cursor rather than the screen centre. NX offers this as a
 preference; it is the default here because zooming to the centre means
@@ -29,8 +28,8 @@ re-panning constantly to inspect a corner of a model.
 
 ## Where the drag starts
 
-NX decides a constrained rotation from where the cursor was when the drag
-**started**, not from where it wanders to. The same three zones:
+A constrained rotation is decided from where the cursor was when the drag
+**started**, not from where it wanders to:
 
 | Start the drag | Rotation |
 |---|---|
