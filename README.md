@@ -8,24 +8,25 @@ on [code_aster](https://code-aster.org) or
 Everything runs locally; nothing leaves your machine.
 
 ```
-STEP ─▶ OCCT/gmsh import ─▶ tet10 mesh ─▶ code_aster or CalculiX ─▶ contours · modes · FRF
-          bonded or                          static / modal /
-          separate parts                     harmonic / random
+STEP ─▶ OCCT/gmsh import ─▶ mesh ─▶ code_aster or CalculiX ─▶ contours · modes · FRF · bolt loads
+          bonded or            TET10          static / modal / harmonic /
+          separate parts       or HEX20       random / shock
 ```
 
 | | |
 |---|---|
 | Geometry | STEP (AP203/AP214) parts and assemblies. Import bonded (coincident faces merged, conformal) or as separate parts with contact between them |
-| Mesh | quadratic tetrahedra (Tet10), curvature-adaptive, per-face refinement, quality and memory report |
+| Mesh | quadratic tetrahedra (TET10), or hexahedra (HEX20) where the shape sweeps; curvature-adaptive, per-face refinement, element-quality and memory report |
 | Static | force, pressure, remote force/moment, gravity, rotational velocity; fixed / frictionless / prescribed supports; von Mises, principal, displacement, reactions |
 | Modal | frequencies, animated mode shapes, effective-mass participation |
 | Harmonic | force- or base-driven sweep, modal damping ζ, FRF at probes with annotated peaks and Q |
 | Random | PSD breakpoint table in g²/Hz, response PSD, g RMS and 3σ, Miles' cross-check, modal-truncation check |
-| Contacts | bonded, no-separation, frictionless, frictional (μ) |
 | Bolts | beam shank + RBE3 spiders, preload as axial pre-strain, per-bolt force **and stress** vs yield, pattern one joint onto every other hole |
 | Solvers | code_aster (everything) or CalculiX (static, modal), chosen per analysis |
 | Contact | bonded, no-separation, frictionless, and frictional — solved linearly with a slip check, or nonlinear |
+| Shock | response-spectrum or pulse input at the base, NRC RG 1.92 combination, per-mode and per-bolt peaks |
 | Units | mm / N / MPa / tonne·mm⁻³ / Hz |
+| Verified | stress and displacement against closed form on CalculiX; **code_aster is not yet verified against closed form** — [docs/VERIFICATION.md](docs/VERIFICATION.md) |
 
 ---
 

@@ -1,5 +1,86 @@
 # Changelog
 
+## 1.0.0
+
+The version number is a claim, so this entry starts with what it does and does
+not mean.
+
+**It means** the model format is stable, the analysis types are the ones that
+will be there, and the failure modes that produce a wrong number quietly have
+been hunted rather than waited for. Six releases of that hunting are below.
+
+**It does not mean the numbers are all verified.** Verification is the one
+thing a structural tool is finally judged on, so it now has its own document
+rather than a paragraph — `docs/VERIFICATION.md` — and that document leads
+with what is missing.
+
+### Verification, which did not exist
+
+Every solved-answer check in this project used to be a displacement or a
+frequency. **Stress had never been compared to a closed-form answer on either
+engine**, and stress is what the tool is mostly used to read — it also
+converges more slowly than displacement, so a tool can be right about
+deflection and wrong about the number an engineer acts on.
+
+Measured, on CalculiX:
+
+| Case | Solved | Closed form | Error |
+|---|---|---|---|
+| Bar in tension, stress `P/A` | 49.9995 MPa | 50.0000 MPa | 0.001 % |
+| Bar in tension, elongation | 0.023729 mm | 0.023810 mm | 0.34 % |
+| Cantilever bending stress `Mc/I` | 299.832 MPa | 300.000 MPa | 0.06 % |
+| Cantilever tip deflection | −1.90454 mm | −1.91962 mm | 0.79 % |
+| Cantilever first mode | 833.34 Hz | 835.42 Hz | 0.25 % |
+
+A bar in tension has no concentration, no singularity and no shear, so nothing
+can excuse an error there: that row pins the stress-recovery chain and the
+unit system — N and mm in, MPa out — to one part in a hundred thousand.
+Refinement is asserted to reduce the error, which is the property that makes a
+discretisation trustworthy and which a tolerance on a single mesh cannot
+establish.
+
+**code_aster has still never been executed against a closed-form answer**, and
+code_aster is the engine that does bolt pretension, harmonic, random and shock
+— everything CalculiX cannot do. A benchmark is written and runs the same bar,
+against the same closed form, through the same code path the app uses. It has
+not been executed here because there is no working code_aster build for macOS.
+An unexecuted test is a claim, not a verification, and it is counted as one.
+
+### An inverted element will not solve
+
+Element quality was measured, printed in a table cell, and never looked at. An
+inverted element has a Jacobian that changes sign inside it, so its stiffness
+contribution is wrong rather than inaccurate — and the solve returns a full set
+of plausible numbers. That now refuses to run. Slivers warn, with what they
+cost: displacement stays sound, stress at them is noise.
+
+### Text and panels
+
+A pass over what is on screen rather than over the source.
+
+- The shock analysis reported **"Driven by: applied loads"**. A shock spectrum
+  is applied at the restrained base — the deck refuses to build without a
+  support for that reason — and shock was falling through to the default.
+- The contact panel's **interface area** read "—" for any contact not made by
+  the auto-detector, because the area was recorded on only that one path.
+- A section whose whole content was explanatory prose kept its heading and its
+  "?" when the prose was hidden, so a project opened to four geometry
+  statistics and an empty "Workflow". Those sections hide with their content,
+  and the landing panel now shows where the model actually is.
+- `1 face(s)`, `18,688 n`, `Elements of`, `Tetrahedron 10`, `Analysis
+  Settings`, two words for suppression and two labels for re-running.
+- The opening screen led with the dependency list.
+
+### Everything in 0.25 to 0.30
+
+Ten-reviewer audit and the fix pass that followed: nonlinear contact missing
+from every dynamic deck, bending never gating bolt feasibility, a spectrum
+breakpoint at zero silently dropped, demo runs indistinguishable from real
+ones, a typo in any enum absorbed as a default, undo that had never once
+recorded an edit, failed code_aster runs throwing away results they had
+already computed, and viewport rotation that stopped working as you
+approached vertical.
+
 ## 0.30.0
 
 ### The viewport is mapped to NX
