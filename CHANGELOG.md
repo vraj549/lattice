@@ -1,5 +1,57 @@
 # Changelog
 
+## 1.0.1
+
+A robustness pass over what was already there — no new features, no new
+analysis types. Every item below is an existing path that broke, misled, or
+hid something.
+
+**The joint calculation answered with tracebacks.** Four inputs to `size_bolt`
+divided by zero somewhere in the middle of the arithmetic, and the server
+catches that and puts it in the warnings list, so the bolt sizing table read
+"Bolt 1: float division by zero". μ = 0 has a real engineering answer instead
+of a validation message: friction force is μ times clamp, so no preload
+whatever carries a transverse load, and the joint needs a dowel or a fitted
+bolt. Diameter, pitch, grip length and yield strength now name themselves — a
+grip length of zero is not hypothetical, since two coincident faces give a
+bolt beam with no length.
+
+**A damaged project disappeared.** The listing caught any parse error on
+`project.json` and dropped the row, so the whole project vanished from the app
+while the geometry, the mesh and every run sat untouched in the same
+directory. It is listed now, marked damaged, with the path. Saves were atomic
+against a crash but not durable against power loss; `project.json` is the one
+file whose loss costs the user their model, so it is fsynced before the
+rename.
+
+**An unconstrained model said nothing.** A mode at essentially zero frequency
+means the structure is free to move. The shock combination dropped those modes
+silently, leaving only a missing-mass warning that blamed modal truncation and
+advised extracting more modes — which does not fix a model that is not held.
+Both the shock result and the modal table now name them and say what they
+mean, while a free-free check, which is run precisely to produce them, is not
+called an error.
+
+**A malformed setup was a 500.** `validate_setup` walks the analysis and
+contact lists and calls `.get` on every entry, so a string where a list
+belonged iterated its characters and raised `AttributeError`. Face references
+took a bare number without complaint and failed later at mesh time, where the
+message is about mesh groups rather than about the field that was wrong.
+
+**A truncated results table was a 500.** `parse_tableau` kept rows shorter
+than their header and every consumer indexes by column position, so a solve
+killed mid-write produced an `IndexError` from the results endpoint.
+
+**A failed job reported "Traceback (most recent call last):"** — every
+failure's first line and no failure's cause. The useful line in a traceback is
+the last one.
+
+Probed alongside these and found sound: the spectrum combination against zero,
+negative, single and absent modes, zero and unit damping and zero effective
+mass; the table and function parsers against truncated, ragged and binary
+input; and the API against unknown ids, malformed exports, hostile project ids
+and deletion mid-mesh.
+
 ## 1.0.0
 
 The version number is a claim, so this entry starts with what it does and does

@@ -2231,7 +2231,7 @@ function renderStatus() {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "1.0.0";   // kept in step with __version__ by tests/test_docs.py
+const UI_BUILD = "1.0.1";   // kept in step with __version__ by tests/test_docs.py
 
 function checkVersionSkew() {
   const server = S.config?.version;
