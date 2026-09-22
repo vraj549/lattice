@@ -1190,15 +1190,28 @@ def check_mesh_current(analysis: dict, ai: int, mesh_stats: dict) -> None:
             "longer trustworthy — bolt beams spanned half the clamped length, "
             "and group records could contain node entities. Re-mesh, then run "
             "again.")
-    have = set(mesh_stats.get("face_groups") or [])
-    if not have:
+    recorded = mesh_stats.get("face_groups")
+    if recorded is None:
         return                                  # meshed before groups were recorded
+    # An EMPTY list is not the same as no record. `or []` collapsed the two,
+    # so a mesh in which nothing could be written — every requested face group
+    # failing to match a surface — skipped this check as though it were an old
+    # mesh, and the run reached code_aster to abort on the first GROUP_MA.
+    # That is the exact case this guard exists for.
+    have = set(recorded)
     missing = [g for g in required_face_groups(analysis, ai) if g not in have]
-    if missing:
+    if not missing:
+        return
+    if not have:
         raise ValueError(
-            f"The mesh does not contain {', '.join(missing)} — it is older than "
-            "the current boundary conditions. Re-mesh, then run again. "
-            f"(mesh has: {', '.join(sorted(have)) or 'no face groups'})")
+            f"This mesh contains no boundary-condition face groups at all, so "
+            f"{', '.join(missing)} cannot be applied. The faces the supports "
+            f"and loads refer to are not in the geometry that was meshed — "
+            f"re-pick them, or re-mesh if the geometry was re-imported.")
+    raise ValueError(
+        f"The mesh does not contain {', '.join(missing)} — it is older than "
+        "the current boundary conditions. Re-mesh, then run again. "
+        f"(mesh has: {', '.join(sorted(have))})")
 
 
 def build_run(analysis: dict, setup: dict, meta: dict, mesh_stats: dict,

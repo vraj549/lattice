@@ -1419,6 +1419,15 @@ function panelMesh(S, A, put) {
         `⚠ Estimated factorization memory (${stats.mem_gb_est} GB) is close to the ` +
         `solver limit (${memLimit} GB). Consider a coarser mesh.`)));
     }
+    const lost = stats.missing_groups || [];
+    if (lost.length) {
+      secs.push(sec(null, el("div", { class: "hint bad" },
+        `\u26a0 ${plural(lost.length, "boundary-condition group")} could not be `
+        + `written into this mesh: ${lost.join(", ")}. The faces they refer to `
+        + "are not in the geometry that was meshed \u2014 re-pick them, or "
+        + "re-mesh if the geometry was re-imported. An analysis using them "
+        + "will not run.")));
+    }
     const q = stats.quality_counts || {};
     if (q.inverted) {
       secs.push(sec(null, el("div", { class: "hint bad" },

@@ -58,6 +58,32 @@ def _drop_suppressed(gmsh, setup: dict, meta: dict, progress) -> None:
                          "there is nothing left to mesh.")
 
 
+def quality_counts(sicn, detjac=None) -> dict:
+    """How many elements fall in each band, from the two gmsh metrics.
+
+    SHAPE and VALIDITY are different questions and minSICN only answers the
+    first. A quadratic tetrahedron whose mid-side nodes were pulled onto a
+    curved face can have a perfectly reasonable shape score and still be
+    turned inside out between its Gauss points — which is what code_aster
+    reports as "le jacobien n'a pas le meme signe sur tous les points de
+    Gauss". minDetJac is the validity metric, and nothing was looking at it.
+
+    Counts, not just the worst one: a single sliver in a corner and four
+    hundred through the load path are the same number in a "min quality" cell
+    and are not the same mesh.
+    """
+    sicn = np.asarray(sicn)
+    bad = sicn <= QUALITY_INVERTED
+    out = {}
+    if detjac is not None:
+        detjac = np.asarray(detjac)
+        bad = bad | (detjac <= 0.0)
+        out["jacobian_min"] = float(detjac.min())
+    return {"inverted": int(bad.sum()),
+            "sliver": int((sicn < QUALITY_SLIVER).sum()),
+            "poor": int((sicn < QUALITY_POOR).sum()), **out}
+
+
 def unv_group_names(unv_path: str) -> set:
     """Group names actually present in a written UNV file.
 
@@ -308,6 +334,12 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
         stats["face_groups"] = sorted(confirmed)
         stats["requested_groups"] = sorted(face_sets.keys())
         stats["unv_groups"] = sorted(in_file)
+        # Named, not just counted. A support whose faces are not in the meshed
+        # geometry produces a mesh that looks perfectly normal — right node
+        # count, right element type — and fails at the solver on the first
+        # GROUP_MA. The mesh step knows at the moment it happens.
+        stats["missing_groups"] = sorted(
+            g for g in face_sets if g not in set(confirmed))
 
         # Consistent nodal loads for every face group.
         #
@@ -858,15 +890,21 @@ def _stats(gmsh, order: int) -> dict:
     try:
         all_tags = np.concatenate([np.asarray(t) for t in etags]) if etags else np.array([])
         if all_tags.size:
-            q = np.asarray(gmsh.model.mesh.getElementQualities(
-                all_tags.tolist(), "minSICN"))
+            tl = all_tags.tolist()
+            q = np.asarray(gmsh.model.mesh.getElementQualities(tl, "minSICN"))
             qmin, qavg = float(q.min()), float(q.mean())
-            # How many, not just the worst one. A single sliver in a corner and
-            # four hundred through the load path are the same number in a
-            # "min quality" cell, and they are not the same mesh.
-            counts = {"inverted": int((q <= QUALITY_INVERTED).sum()),
-                      "sliver": int((q < QUALITY_SLIVER).sum()),
-                      "poor": int((q < QUALITY_POOR).sum())}
+            # SHAPE and VALIDITY are different questions and minSICN only
+            # answers the first. A quadratic tetrahedron whose mid-side nodes
+            # were pulled onto a curved face can have a perfectly reasonable
+            # shape score and still be turned inside out between its Gauss
+            # points — which is what code_aster reports as "le jacobien n'a pas
+            # le même signe sur tous les points de Gauss". minDetJac is the
+            # validity metric, and nothing was looking at it.
+            try:
+                dj = np.asarray(gmsh.model.mesh.getElementQualities(tl, "minDetJac"))
+            except Exception:  # noqa: BLE001
+                dj = None
+            counts = quality_counts(q, dj)
     except Exception:  # noqa: BLE001
         pass
     dof = 3 * n_nodes

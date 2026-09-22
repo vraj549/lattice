@@ -640,3 +640,63 @@ def test_face_groups_are_confirmed_against_the_written_mesh(tmp_path):
     open(empty, "w").write("not a unv\n")
     assert meshing.unv_group_names(empty) == set()
     assert meshing.unv_group_names(os.path.join(tmp, "missing.unv")) == set()
+
+
+def test_element_validity_is_checked_separately_from_element_shape():
+    """A real run reported four TETRA10 with "le jacobien n'a pas le meme
+    signe sur tous les points de Gauss" — tangled elements — while the mesh
+    passed the quality gate.
+
+    Shape and validity are different questions. minSICN answers the first: a
+    quadratic tetrahedron whose mid-side nodes were pulled onto a curved face
+    can score a perfectly reasonable shape and still be turned inside out
+    between its Gauss points. minDetJac answers the second, and nothing was
+    looking at it.
+    """
+    from lattice_fea.meshing import quality_counts
+
+    # well shaped and tangled: the case that got through
+    got = quality_counts([0.6, 0.7, 0.9], [5.0, -0.2, 4.0])
+    assert got["inverted"] == 1, got
+    assert got["sliver"] == 0, "it is not a sliver; its shape is fine"
+
+    # a sliver that is still valid is a warning, not a refusal
+    got = quality_counts([0.02, 0.7, 0.9], [5.0, 6.0, 4.0])
+    assert got["inverted"] == 0 and got["sliver"] == 1, got
+
+    # a clean mesh is clean
+    assert quality_counts([0.8, 0.7, 0.9], [5.0, 6.0, 4.0])["inverted"] == 0
+
+    # and where gmsh cannot supply the validity metric, shape alone still
+    # catches an inverted element rather than the check disappearing
+    assert quality_counts([0.6, -0.1, 0.9])["inverted"] == 1
+
+
+def test_an_empty_group_record_is_not_the_same_as_no_record(tmp_path):
+    """check_mesh_current read `face_groups or []`, which collapsed "this mesh
+    predates group recording" into "this mesh recorded nothing". A mesh in
+    which no boundary-condition group could be written therefore skipped the
+    guard as though it were an old mesh, and the run reached code_aster to
+    abort on the first GROUP_MA — the exact case the guard exists for.
+    """
+    from lattice_fea import comm_writer as CW
+
+    a = {"id": "a1", "type": "modal", "loads": [],
+         "supports": [{"id": "s", "name": "Support 1", "faces": [1, 2, 3, 4]}]}
+
+    # no record at all: an old mesh, nothing can be said
+    CW.check_mesh_current(a, 1, {"mesh_format": meshing.MESH_FORMAT})
+    # recorded and correct
+    CW.check_mesh_current(a, 1, {"mesh_format": meshing.MESH_FORMAT,
+                                 "face_groups": ["SUP1_1"]})
+    # recorded and empty: refused, and says why rather than "re-mesh"
+    with pytest.raises(ValueError) as e:
+        CW.check_mesh_current(a, 1, {"mesh_format": meshing.MESH_FORMAT,
+                                     "face_groups": []})
+    assert "no boundary-condition face groups" in str(e.value)
+    assert "SUP1_1" in str(e.value)
+    # recorded and stale
+    with pytest.raises(ValueError) as e:
+        CW.check_mesh_current(a, 1, {"mesh_format": meshing.MESH_FORMAT,
+                                     "face_groups": ["SUP2_1"]})
+    assert "older than" in str(e.value)

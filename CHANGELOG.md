@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.0.3
+
+From a full code_aster log of the failed run in 1.0.2. The mesh reported
+`NOMBRE DE GROUPES DE MAILLES 1` and `TETRA10 15397` — one group, no surface
+elements — so `SUP1_1` had never been written, and two separate guards should
+have stopped it before the solver ever started.
+
+**The stale-mesh guard disabled itself in exactly the case it exists for.**
+It read `face_groups or []`, which collapses "this mesh predates group
+recording" into "this mesh recorded nothing". A mesh where no
+boundary-condition group could be written therefore skipped the check as
+though it were an old mesh. An empty record and an absent one are now
+different things, and the refusal says the faces are not in the geometry that
+was meshed rather than advising a re-mesh that would change nothing.
+
+**The mesh step knew and only whispered.** A group that cannot be written is
+recorded by name in `missing_groups` and shown on the mesh panel. A support
+whose faces are not in the meshed geometry produces a mesh that looks
+perfectly normal — right node count, right element type — and fails at the
+solver.
+
+**Element validity was never checked, only shape.** The same log carried four
+`MAILLAGE1_1` alarms: *le jacobien n'a pas le même signe sur tous les points
+de Gauss* — tangled TET10 — on a mesh that passed the quality gate added in
+1.0.0. That gate reads minSICN, which is a shape score; a quadratic
+tetrahedron whose mid-side nodes were pulled onto a curved face can score a
+perfectly reasonable shape and still be turned inside out between its Gauss
+points. minDetJac is the validity metric and nothing was looking at it.
+
 ## 1.0.2
 
 Three faults from one failed run on Windows.
