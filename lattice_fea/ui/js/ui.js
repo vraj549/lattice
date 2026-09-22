@@ -2161,6 +2161,25 @@ function secModes(S, A, a) {
     const rows = modes.rows.map((r, i) => ({ n: i + 1, f: r[fi] })).filter((r) => r.f != null);
     const fmax = Math.max(...rows.map((r) => r.f), 1);
     const part = meta.tables?.participation?.[0];
+    // A mode at essentially zero frequency is a direction the structure is
+    // free to move in. It is the most diagnostic number in a modal run and
+    // the table showed it as "0.00 Hz" with a short bar and no comment.
+    //
+    // It is not automatically a fault: a free-free check is run precisely to
+    // produce them, and six is the complete set for an unheld body. So this
+    // says what it means and lets the engineer decide, rather than calling a
+    // deliberate check an error.
+    const rigid = rows.filter((r) => r.f <= 1e-3);
+    if (rigid.length) {
+      secs.push(sec(null, el("div", { class: "hint warn" },
+        `\u26a0 ${plural(rigid.length, "mode")} at essentially zero frequency `
+        + `(${rigid.map((r) => "#" + r.n).join(", ")}). The model is free to `
+        + `move in ${rigid.length === 1 ? "that direction" : "those directions"}`
+        + `${rigid.length === 6 ? " — six is a completely unrestrained body" : ""}. `
+        + "Expected for a free-free check; otherwise the supports are not "
+        + "holding it, and every frequency below is for a structure that is "
+        + "not held.")));
+    }
     secs.push(sec("Modes",
       el("div", { class: "modes" }, rows.map((r) =>
         el("button", {
