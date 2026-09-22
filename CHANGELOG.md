@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.29.0
+
+### A failed code_aster run keeps what it computed
+
+The deck's try/except blocks could never run. code_aster defaults to
+`ERREUR_F='ABORT'`, which terminates the process from Fortran — the Python
+handler never executes, `FIN()` is never called, and `FIN()` is what flushes the
+MED and the table files to disk. So a run that computed its modes and then hit
+one bad post-processing table lost the modes too, which is exactly the incident
+the writer's docstring describes those try/excepts as the fix for. They were
+not the fix.
+
+`DEBUT` now sets `ERREUR_F='EXCEPTION'` and the whole deck body is wrapped so
+`FIN()` is reached either way. A run that dies after `IMPR_RESU` hands back the
+fields it wrote. The failure is re-raised, never swallowed: a partial result is
+offered for inspection, not presented as an answer.
+
+**Recovery on the server side was worse than nothing.** `meta.json` was written
+whether or not anything came back, and `results-status` answered `has_results`
+from the file's existence — so a run that produced nothing badged the analysis
+done with a green tick. Reopen the project the next day and it claimed a
+finished analysis, an empty panel, and no reason anywhere. A run now records
+whether anything was recovered and why it failed, stored beside the run because
+the job log is pruned after sixty jobs. The ✕ badge existed and was
+unreachable: it was tested *after* the presence of results, so a run that died
+partway through writing its output got the ✓ that means "you can trust this".
+
+And the log was searched for the wrong thing. Only `as_run`'s status codes
+(`<F>_ERROR`) were matched; code_aster's own messages are `<F> <FACTOR_10>` —
+space, not underscore — so the line naming a singular matrix or a missing group
+was never picked out and you got an exit code. `<A>` is a warning and stays
+excluded.
+
+### Removing a body
+
+A body can be taken out of the analysis and put back. It stops being meshed,
+carries no mass, and has no faces to pick — the mesher drops the volume, rather
+than the UI hiding it. The geometry file is deliberately untouched: re-importing
+the STEP would renumber every tag in the project, which is the identity mismatch
+this codebase keeps producing, so removal is reversible instead of destructive.
+
+Anything attached to the body is named before it goes — contacts, bolts, ties,
+supports, loads — because finding out at solve time that a contact pointed at a
+body you removed an hour ago is a bad way to learn it. Removing a body makes
+existing results stale immediately, and the mesh says it needs rebuilding.
+
+### A selected body looks selected
+
+The highlight was `0x5fb3d4`, one step from the first entry of the body palette
+(`0x7fa8bd`), so selecting the first solid in an assembly changed almost
+nothing. Every base colour is a mid-tone, and a mid-tone highlight among
+mid-tones is a difference you have to look for. The highlight is now far from
+every base colour, and the rest of the model dims while a body is selected —
+which turns "find the changed colour" into "see the lit part".
+
+### Also
+
+- **The material dropdown could show the wrong material.** Two different tests
+  for "is this the project's own material": the option list asked one question
+  and the selected value asked another, so a material that was neither — one
+  written by a script, or by an older build — was listed and then not selected.
+  The control showed "— none —" while the properties printed directly beneath
+  it came from the real material. One definition now.
+- **The version banner cried wolf.** `UI_BUILD` is a third copy of the version
+  and was not bumped at 0.28.0, so a correct, freshly-loaded UI told every user
+  their browser was stale and to restart the server. A test keeps it in step.
+- A requested element size at or above the model's own diagonal says so instead
+  of quietly meshing at whatever the geometry forces.
+
 ## 0.28.0
 
 Ten reviewers went through the codebase as if the prototype were being turned

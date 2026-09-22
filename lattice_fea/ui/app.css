@@ -380,6 +380,9 @@ select.vbtn { padding-right: 4px; }
 .hint { color: var(--faint); font-size: 11px; margin-top: 5px; line-height: 1.4; }
 .hint.warn { color: var(--run); }
 .hint.bad  { color: var(--crit); }
+/* a tree row for something excluded from the analysis */
+.nm.gone { text-decoration: line-through; color: var(--faint); }
+
 /* a dropdown holding a value that is not one of its options */
 select.bad { border-color: var(--crit); color: var(--crit); }
 .hint.good { color: var(--ok); }

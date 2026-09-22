@@ -1,7 +1,8 @@
 import { api } from "./api.js";
 import { Viewer } from "./viewer.js";
 import { renderPanel, defaultAnalysis, solutionItems, el, solidName,
-         compOptions, panelIsFrozen, setPanelThaw } from "./ui.js";
+         compOptions, panelIsFrozen, setPanelThaw,
+         dependentsOfSolid } from "./ui.js";
 import { renderTree, installTreeKeys } from "./tree.js";
 import { History } from "./history.js";
 import { mapBoltToTarget, defaultReferenceFace, describeFace,
@@ -347,7 +348,7 @@ const A = {
   toggleSolid(tag) {
     if (S.hiddenSolids.has(tag)) S.hiddenSolids.delete(tag);
     else S.hiddenSolids.add(tag);
-    viewer.setHiddenSolids(S.hiddenSolids);
+    applyHidden();
     refresh();
   },
 
@@ -355,14 +356,57 @@ const A = {
   isolateSolid(tag) {
     const all = (S.project.geometry.solids || []).map((s) => s.tag);
     S.hiddenSolids = new Set(all.filter((t) => t !== tag));
-    viewer.setHiddenSolids(S.hiddenSolids);
+    applyHidden();
     refresh();
   },
 
   showAllSolids() {
     S.hiddenSolids = new Set();
-    viewer.setHiddenSolids(S.hiddenSolids);
+    applyHidden();
     refresh();
+  },
+
+  /**
+   * Remove a body from the analysis, or put it back.
+   *
+   * Not an edit to the geometry. A STEP re-import renumbers every tag in the
+   * project — which is the identity mismatch this codebase keeps producing —
+   * so the BREP is left alone and the mesher drops the volume instead. The
+   * body stops existing for every purpose that matters: no elements, no mass,
+   * no faces to pick, nothing in the deck. It can come back.
+   *
+   * Anything attached to it is named before it goes, because finding out at
+   * solve time that a contact pointed at a body you removed an hour ago is a
+   * bad way to learn it.
+   */
+  async removeSolid(tag) {
+    const t = Number(tag);
+    const setup = S.project.setup;
+    const list = (setup.suppressed_solids ||= []);
+    if (list.includes(t)) {
+      setup.suppressed_solids = list.filter((x) => x !== t);
+      A.recordEdit();
+      logLine(`${solidName(S, t)}: restored to the analysis. Re-mesh before running.`);
+      return;
+    }
+    const deps = dependentsOfSolid(S, t);
+    if (deps.length) {
+      const ok = await confirmDialog(
+        `Remove ${solidName(S, t)} from the analysis?`,
+        ["These are attached to it and will not survive the next mesh:",
+         ...deps.map((d) => `  \u2022 ${d}`),
+         "",
+         "The geometry is kept, so this can be undone."]);
+      if (!ok) return;
+    }
+    list.push(t);
+    S.hiddenSolids.add(t);
+    applyHidden();
+    if (S.selection.kind === "solid" && Number(S.selection.id) === t) {
+      S.selection = { kind: "model", id: "root" };
+    }
+    A.recordEdit();
+    logLine(`${solidName(S, t)}: removed from the analysis. Re-mesh before running.`);
   },
 
   /**
@@ -1013,6 +1057,19 @@ document.getElementById("logToggle").addEventListener("click", (e) => {
 });
 
 // ---------------- save ----------------
+/**
+ * What the viewport hides: bodies the user has hidden, plus every body
+ * removed from the analysis.
+ *
+ * Removal is not a display setting, so "Show all" must not bring one back —
+ * a body you can see but that is not meshed, has no mass and cannot be picked
+ * is worse than one that is simply absent.
+ */
+function applyHidden() {
+  const gone = (S.project?.setup?.suppressed_solids || []).map(Number);
+  viewer.setHiddenSolids(new Set([...S.hiddenSolids, ...gone]));
+}
+
 function stashDerived(name, aid, data) {
   (S[name] ||= {})[aid] = { sig: S.results?.[aid]?.signature, data };
 }
@@ -1099,7 +1156,12 @@ function updateStat() {
                   `${m.dof.toLocaleString()} DOF · est ${m.mem_gb_est} GB`;
   } else if (S.project?.geometry) {
     const g = S.project.geometry;
-    s.innerHTML = `${g.solids.length} solid(s) · ${g.faces.length} faces`;
+    // The count that matters is what will be meshed, not what the STEP
+    // happened to contain — otherwise removing a body changes nothing anybody
+    // can see in a number.
+    const gone = (S.project.setup.suppressed_solids || []).length;
+    s.innerHTML = `${g.solids.length - gone} solid(s) · ${g.faces.length} faces`
+      + (gone ? ` · ${gone} removed` : "");
   } else s.innerHTML = "";
 }
 
@@ -1172,6 +1234,10 @@ function refresh() {
   // destroy the element being typed into. See liveInput() in ui.js.
   if (!panelIsFrozen()) renderPanel(S, A);
   viewer.setFaceStates(faceStates());
+  // Undo can restore a body, and redo can take it away again; neither goes
+  // through removeSolid, so the viewport is reconciled here rather than at
+  // each call site.
+  applyHidden();
   viewer.setHighlightSolid(S.selection.kind === "solid" ? S.selection.id : null);
   updateGlyphs();
   // driven from here, not from setView: on project open setView runs before
@@ -1470,6 +1536,35 @@ function openDialog(node) {
   document.body.append(ov);
   document.addEventListener("keydown", escClose);
 }
+/**
+ * Ask before something the user cannot see the consequences of.
+ *
+ * Resolves true only on the confirm button; dismissing any other way — Esc,
+ * the backdrop, the Cancel button — resolves false, because every one of
+ * those means "no" and a dialog that leaks a pending promise on Esc is a
+ * dialog that eventually acts without an answer.
+ */
+function confirmDialog(title, lines, confirmLabel = "Remove") {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; closeDialog(); resolve(v); } };
+    const prev = closeDialog;
+    openDialog(el("div", {},
+      el("h3", {}, title),
+      ...lines.map((t) => el("div", { class: "hint" }, t)),
+      el("div", { class: "btnrow", style: "margin-top:10px" },
+        el("button", { class: "btn btn-accent", onclick: () => finish(true) },
+          confirmLabel),
+        el("button", { class: "btn", onclick: () => finish(false) }, "Cancel"))));
+    // Esc and the backdrop both remove the node without going through finish
+    const ov = document.getElementById("dialog");
+    new MutationObserver((_m, obs) => {
+      if (!document.getElementById("dialog")) { obs.disconnect(); finish(false); }
+    }).observe(document.body, { childList: true });
+    void prev; void ov;
+  });
+}
+
 function closeDialog() {
   document.getElementById("dialog")?.remove();
   document.removeEventListener("keydown", escClose);
@@ -2019,7 +2114,7 @@ function renderStatus() {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "0.27.0";
+const UI_BUILD = "0.29.0";   // kept in step with __version__ by tests/test_docs.py
 
 function checkVersionSkew() {
   const server = S.config?.version;

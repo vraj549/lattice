@@ -84,6 +84,11 @@ def solve_signature(analysis: dict, setup: dict, mesh_stats: dict) -> str:
         "contacts": setup.get("contacts"),
         "ties": setup.get("ties"),
         "probes": setup.get("probes"),
+        # Removing a body changes the structure being solved, and does so
+        # before the re-mesh that would otherwise show up in the mesh stats
+        # below. Results computed with it in place are not current.
+        "suppressed_solids": sorted(int(t) for t in
+                                    (setup.get("suppressed_solids") or [])),
         "mesh": {"nodes": mesh_stats.get("nodes"),
                  "elements": mesh_stats.get("elements"),
                  "groups": mesh_stats.get("face_groups"),

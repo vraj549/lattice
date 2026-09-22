@@ -194,6 +194,15 @@ export function meshIssues(S) {
   if (!stats) return [];
   const out = [];
 
+  const goneNow = JSON.stringify(
+    [...(S.project.setup.suppressed_solids || [])].map(Number).sort((a, b) => a - b));
+  const goneThen = JSON.stringify((stats.suppressed_solids || []).map(Number));
+  if (stats.suppressed_solids !== undefined && goneNow !== goneThen) {
+    out.push({ scope: "all",
+      text: "a body has been removed from or restored to the analysis since "
+          + "this mesh was built — re-mesh before running" });
+  }
+
   // A mesh from an older build may be unusable rather than merely stale.
   if ((stats.mesh_format || 0) < meshFormat(S)) {
     out.push({ scope: "all",
@@ -491,7 +500,11 @@ function panelModel(S, A, put) {
   const geo = S.project.geometry;
   put("Model", S.project.name,
     sec("Geometry", dl([
-      ["Solids", geo.solids.length],
+      ["Solids", (() => {
+        const gone = (S.project.setup.suppressed_solids || []).length;
+        return gone ? `${geo.solids.length - gone} (${gone} removed)`
+                    : geo.solids.length;
+      })()],
       ["Faces", geo.faces.length],
       ["Bonded interfaces", geo.interfaces.length],
       ["Bounding box", `${fmtVal(geo.bbox[3] - geo.bbox[0])} × ${fmtVal(geo.bbox[4] - geo.bbox[1])} × ${fmtVal(geo.bbox[5] - geo.bbox[2])} mm`],
@@ -527,15 +540,18 @@ function panelSolid(S, A, put, tag) {
   const mid = setup.assignments[String(tag)] || "";
   const opts = [["", "— none —"],
     ...S.library.map((m) => [`lib:${m.id}`, m.name]),
-    ...setup.materials.filter((m) => !m.id.startsWith("lib-")).map((m) => [m.id, `${m.name} (custom)`])];
+    ...setup.materials.filter(isProjectMaterial)
+        .map((m) => [m.id, `${m.name} (custom)`])];
 
   const hidden = S.hiddenSolids.has(s.tag);
-  const custom = setup.materials.filter((m) => !m.id.startsWith("lib-"));
-  put(solidName(S, tag), `${s.faces.length} faces`,
+  const removed = (setup.suppressed_solids || []).map(Number).includes(Number(tag));
+  const custom = setup.materials.filter(isProjectMaterial);
+  put(solidName(S, tag), removed ? "removed from the analysis"
+                                 : `${s.faces.length} faces`,
     sec("Definition",
       textInput("Name", solidName(S, tag), (v) => A.renameSolid(s.tag, v))),
     sec("Material",
-      selInput("Assign material", mid.startsWith("custom") ? mid : (mid ? `lib:${findLib(S, mid)}` : ""), opts,
+      selInput("Assign material", matValue(S, mid), opts,
         (v) => A.assignMaterial(tag, v)),
       matProps(S, mid),
       el("div", { class: "btnrow" },
@@ -549,6 +565,17 @@ function panelSolid(S, A, put, tag) {
       ["Mass", massOf(S, s)],
       ["Tag", String(s.tag)],
     ])),
+    sec("In the analysis",
+      el("div", { class: "hint" }, removed
+        ? "This body is not meshed, carries no mass, and has no faces to pick. "
+          + "The geometry is kept, so it can come back."
+        : "Removing a body takes it out of the mesh and every analysis. The "
+          + "geometry is kept — re-importing the STEP would renumber "
+          + "everything, so removal is reversible instead."),
+      el("div", { class: "btnrow" },
+        el("button", { class: removed ? "btn btn-accent" : "btn btn-danger",
+          onclick: () => A.removeSolid(s.tag) },
+          removed ? "Restore to the analysis" : "Remove from the analysis"))),
     sec("Display",
       el("div", { class: "btnrow" },
         el("button", { class: "btn", onclick: () => A.toggleSolid(s.tag) },
@@ -565,9 +592,72 @@ function panelSolid(S, A, put, tag) {
         + "is the point when the face you want is inside a stack.")));
 }
 
-function findLib(S, mid) {
+/**
+ * Is this the project's own material rather than a copy of a library entry?
+ *
+ * One definition, because there used to be two and they disagreed. The option
+ * list asked `!id.startsWith("lib-")` while the selected value asked
+ * `id.startsWith("custom")`, so a material that was neither — anything
+ * written by a script or an older build, e.g. an id of "st" — was listed as
+ * an option and then not selected, and the dropdown quietly showed "— none —"
+ * over a solid that had a material assigned. The properties printed directly
+ * underneath it came from the real one, so the panel disagreed with itself on
+ * the single control that decides what the part is made of.
+ */
+/**
+ * Everything in the model that would stop meaning anything if this body went.
+ *
+ * Face-based items are matched through the geometry, not by remembering which
+ * body they were picked on: a face knows which solids it bounds, which is the
+ * only record that cannot drift.
+ */
+export function dependentsOfSolid(S, tag) {
+  const t = Number(tag);
+  const setup = S.project.setup;
+  const faceSolids = new Map(
+    (S.project.geometry.faces || []).map((f) => [f.tag, f.solids || []]));
+  const touches = (faces) => (faces || []).some(
+    (ft) => (faceSolids.get(ft) || []).map(Number).includes(t));
+
+  const out = [];
+  for (const c of setup.contacts || []) {
+    if ((c.solids || []).map(Number).includes(t)
+        || touches(c.faces_a) || touches(c.faces_b)) {
+      out.push(`Contact "${c.name || "unnamed"}"`);
+    }
+  }
+  for (const b of setup.bolts || []) {
+    if (touches(b.side_a_faces) || touches(b.side_b_faces)) {
+      out.push(`Bolt "${b.name || "unnamed"}"`);
+    }
+  }
+  for (const ti of setup.ties || []) {
+    if (Number(ti.master_solid) === t || touches(ti.slave_faces)) {
+      out.push(`Tie "${ti.name || "unnamed"}"`);
+    }
+  }
+  for (const a of setup.analyses || []) {
+    const an = a.name || a.type;
+    for (const sup of a.supports || []) {
+      if (touches(sup.faces)) out.push(`${an}: support "${sup.name || "unnamed"}"`);
+    }
+    for (const l of a.loads || []) {
+      if (touches(l.faces)) out.push(`${an}: load "${l.name || "unnamed"}"`);
+    }
+  }
+  return out;
+}
+
+function isProjectMaterial(m) {
+  return !m.lib && !String(m.id).startsWith("lib-");
+}
+
+/** The dropdown value that stands for a material id. */
+function matValue(S, mid) {
+  if (!mid) return "";
   const m = S.project.setup.materials.find((x) => x.id === mid);
-  return m?.lib || mid;
+  if (!m) return mid;              // assigned something that no longer exists
+  return m.lib ? `lib:${m.lib}` : m.id;
 }
 
 function matProps(S, mid) {

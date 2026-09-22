@@ -32,7 +32,21 @@ function disposeGroup(group) {
   group.clear();
 }
 const HOVER = 0xe8b06a, SELECTED = 0xe89344, SUPPORT = 0x8d7dec, LOAD = 0xd97a28,
-      BOLT = 0x4f88b0, SOLID_HL = 0x5fb3d4;
+      BOLT = 0x4f88b0,
+      // The selected-body colour used to be 0x5fb3d4, one step from the first
+      // entry of SOLID_COLORS below (0x7fa8bd) — so selecting the first solid
+      // in an assembly changed almost nothing. A selection has to read at a
+      // glance whatever colour the body happens to have been assigned, so it
+      // is far from every base AND the rest of the model steps back.
+      SOLID_HL = 0x18c8f0;
+
+/** Scale a colour towards black, for pushing unselected bodies back. */
+function dim(hex, k) {
+  const r = Math.round(((hex >> 16) & 255) * k);
+  const g = Math.round(((hex >> 8) & 255) * k);
+  const b = Math.round((hex & 255) * k);
+  return (r << 16) | (g << 8) | b;
+}
 
 export class Viewer {
   constructor(canvas, callbacks = {}) {
@@ -337,9 +351,15 @@ export class Viewer {
   }
 
   _applyFaceColors() {
+    // Recolouring the selected body alone is not enough: every base colour is
+    // a mid-tone, so a mid-tone highlight next to five other mid-tones is a
+    // difference you have to look for. With a body selected the rest of the
+    // model dims, which turns "find the changed colour" into "see the lit
+    // part" — the same read as isolating, without hiding anything.
+    const hasSel = this._hlSolid != null;
     for (const [tag, mesh] of this.faceMeshes) {
       let c = mesh.userData.base;
-      const inSel = this._hlSolid != null
+      const inSel = hasSel
         && (mesh.userData.solids || []).includes(this._hlSolid);
       const st = this.faceStates.get(tag);
       if (st === "support") c = SUPPORT;
@@ -348,13 +368,19 @@ export class Viewer {
       if (inSel) c = SOLID_HL;
       if (this.pickSet.has(tag)) c = SELECTED;
       if (tag === this.hoverTag && (this.mode !== "view")) c = HOVER;
+      // Everything outside the selected body steps back. Boundary-condition
+      // colours dim with it — they still read, and they stop competing with
+      // the thing you just clicked.
+      if (hasSel && !inSel && !this.pickSet.has(tag) && tag !== this.hoverTag) {
+        c = dim(c, 0.62);
+      }
       mesh.material.color.setHex(c);
       // a lit rim as well as a tint, so the part reads as selected even
       // where a BC colour already owns the face
       if (mesh.material.emissive) {
         mesh.material.emissive.setHex(
           tag === this.hoverTag && this.mode !== "view" ? 0x332211
-          : inSel ? 0x1d2a33 : 0x000000);
+          : inSel ? 0x10586b : 0x000000);
       }
     }
     this.requestRender();

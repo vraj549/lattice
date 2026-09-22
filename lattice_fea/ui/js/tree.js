@@ -26,13 +26,20 @@ function buildModel(S, A) {
   const setup = S.project.setup;
   const geo = S.project.geometry;
 
+  const removed = new Set((setup.suppressed_solids || []).map(Number));
   const solids = geo.solids.map((sd) => {
     const mat = setup.materials.find((m) => m.id === setup.assignments[String(sd.tag)]);
     const hidden = S.hiddenSolids.has(sd.tag);
+    const gone = removed.has(Number(sd.tag));
     return {
       key: `so:${sd.tag}`, kind: "solid", id: sd.tag, icon: "solid",
       label: solidName(S, sd.tag),
-      meta: mat ? mat.name : "no material", warn: !mat,
+      // A removed body is not missing a material — it is not in the analysis,
+      // so the "no material" warning would be noise pointing at the wrong
+      // thing.
+      meta: gone ? "removed" : (mat ? mat.name : "no material"),
+      warn: !gone && !mat,
+      muted: gone,
       hidden,
       // an eye on the row itself: hunting for a solid's panel to un-hide it
       // is the wrong way round when you are working through a stack
@@ -283,7 +290,10 @@ function emit(frag, node, depth, S, A) {
     : el("span", { class: "tw" }));
 
   row.append(icon(node.icon, node.iconClass));
-  row.append(el("span", { class: "nm" }, node.label));
+  // A body removed from the analysis is struck through: it is still listed,
+  // because you have to be able to find it to put it back, but it should not
+  // read as part of the model.
+  row.append(el("span", { class: `nm${node.muted ? " gone" : ""}` }, node.label));
   if (node.badge) {
     row.append(el("span", { class: `badge ${node.badge.cls}`, title: node.badge.title },
                   node.badge.text));

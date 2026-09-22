@@ -630,3 +630,53 @@ def test_a_run_that_died_after_writing_its_fields_keeps_them(client, monkeypatch
     # and the job did not pretend to succeed
     assert st["status"] in ("done", "failed")
     assert any("recover" in ln.lower() for ln in st.get("log") or []), st.get("log")
+
+
+# ------------------------------------------- removing a body from the analysis
+
+def test_a_removed_body_is_not_in_the_mesh(client):
+    """Removal has to be real, not a display setting: no elements, no mass, no
+    faces to pick. The geometry file is deliberately untouched — re-importing
+    the STEP renumbers every tag in the project — so the mesher drops the
+    volume instead, and the body can come back.
+    """
+    c = client
+    pid = _plates_static(c)
+    before = c.get(f"/api/projects/{pid}/mesh").json()
+    p = c.get(f"/api/projects/{pid}").json()
+    solids = p["geometry"]["solids"]
+    assert len(solids) == 2, "this fixture needs two bodies"
+    victim = solids[0]["tag"]
+
+    setup = p["setup"]
+    setup["suppressed_solids"] = [victim]
+    # its own material assignment can stay; it simply stops being meshed
+    assert c.put(f"/api/projects/{pid}/setup", json=setup).status_code == 200
+    job = wait(c, c.post(f"/api/projects/{pid}/mesh").json()["job"])
+    assert job["status"] == "done", json.dumps(job)[:2000]
+
+    after = c.get(f"/api/projects/{pid}/mesh").json()
+    st_before, st_after = before["stats"], after["stats"]
+    assert st_after["nodes"] < st_before["nodes"], "the body is still meshed"
+    assert f"V{victim}" not in json.dumps(st_after), "its volume group survived"
+    # gmsh reports the geometry it actually meshed; the removed body is not in it
+    assert st_after["geo_volume"] < st_before["geo_volume"] * 0.99
+
+    # and it comes back
+    setup["suppressed_solids"] = []
+    assert c.put(f"/api/projects/{pid}/setup", json=setup).status_code == 200
+    assert wait(c, c.post(f"/api/projects/{pid}/mesh").json()["job"])["status"] == "done"
+    restored = c.get(f"/api/projects/{pid}/mesh").json()["stats"]
+    assert restored["nodes"] == pytest.approx(st_before["nodes"], rel=0.02)
+
+
+def test_removing_every_body_is_refused_rather_than_meshing_nothing(client):
+    c = client
+    pid = _plates_static(c)
+    p = c.get(f"/api/projects/{pid}").json()
+    setup = p["setup"]
+    setup["suppressed_solids"] = [s["tag"] for s in p["geometry"]["solids"]]
+    assert c.put(f"/api/projects/{pid}/setup", json=setup).status_code == 200
+    job = wait(c, c.post(f"/api/projects/{pid}/mesh").json()["job"])
+    assert job["status"] == "failed"
+    assert "nothing left to mesh" in json.dumps(job), json.dumps(job)[:1500]

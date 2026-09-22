@@ -27,6 +27,37 @@ from .geometry import GMSH_LOCK, _gmsh, _fresh_model, _b64
 MESH_FORMAT = 3
 
 
+def suppressed_tags(setup: dict) -> set:
+    """Solid tags the user has removed from the analysis."""
+    return {int(t) for t in (setup.get("suppressed_solids") or [])}
+
+
+def _drop_suppressed(gmsh, setup: dict, meta: dict, progress) -> None:
+    """Take removed bodies out of the model before anything else happens.
+
+    Removing the volume here rather than filtering it out of the groups later
+    is what makes the removal real: its faces go with it, so nothing can pick
+    them, no element is generated for it, and its mass is not in the model.
+    The geometry file is untouched — this is reversible, and it has to be,
+    because a STEP re-import would renumber every tag in the project.
+    """
+    drop = suppressed_tags(setup)
+    if not drop:
+        return
+    present = {t for _, t in gmsh.model.getEntities(3)}
+    gone = sorted(drop & present)
+    if not gone:
+        return
+    gmsh.model.occ.remove([(3, t) for t in gone], recursive=True)
+    gmsh.model.occ.synchronize()
+    names = {int(s["tag"]): s.get("name") for s in meta.get("solids", [])}
+    progress("removed from the analysis: " + ", ".join(
+        str(names.get(t) or f"solid {t}") for t in gone))
+    if not gmsh.model.getEntities(3):
+        raise ValueError("Every body has been removed from the analysis — "
+                         "there is nothing left to mesh.")
+
+
 def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
                  progress=lambda s: None) -> dict:
     diag = meta["diag"]
@@ -54,6 +85,7 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
         _fresh_model(gmsh, "mesh")
         gmsh.model.occ.importShapes(brep_path)
         gmsh.model.occ.synchronize()
+        _drop_suppressed(gmsh, setup, meta, progress)
 
         gmsh.option.setNumber("Mesh.MeshSizeMax", size)
         gmsh.option.setNumber("Mesh.MeshSizeMin", minsize)
@@ -202,6 +234,9 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
         stats["size_mm"] = size
 
         # expected volume — used later to self-validate MED connectivity parsing
+        # What this mesh was built from, so the UI can say when the model has
+        # moved on without guessing.
+        stats["suppressed_solids"] = sorted(suppressed_tags(setup))
         stats["geo_volume"] = float(sum(
             gmsh.model.occ.getMass(3, t) for _, t in gmsh.model.getEntities(3)))
 

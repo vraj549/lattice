@@ -517,6 +517,15 @@ def active_contacts(setup: dict, mesh_stats: dict) -> list:
             continue
         ga, gb = f"CTA{i + 1}", f"CTB{i + 1}"
         if have and not (ga in have and gb in have):
+            # Say why, not just what. A removed body takes its faces with it,
+            # and "re-mesh before solving" is the wrong advice for that — the
+            # re-mesh would produce exactly the same result.
+            dropped = {int(t) for t in (setup.get("suppressed_solids") or [])}
+            if dropped & {int(x) for x in (c.get("solids") or [])}:
+                raise ValueError(
+                    f"Contact '{c.get('name', ga)}' is attached to a body that "
+                    f"has been removed from the analysis. Delete the contact, "
+                    f"or restore the body.")
             raise ValueError(
                 f"The mesh does not contain the faces of contact "
                 f"'{c.get('name', ga)}' — re-mesh before solving.")

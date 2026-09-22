@@ -191,3 +191,22 @@ def test_a_warning_is_not_reported_as_the_failure():
     log = ["<A> <CALCULEL_11> a warning nobody needs as a headline",
            "<F> <FACTOR_10> the actual failure"]
     assert "FACTOR_10" in headline(extract_errors(log))
+
+
+def test_the_ui_build_string_matches_the_package_version():
+    """main.js carries the version it was built as, so a browser running a
+    cached bundle against a newer server can say so. That only works if the
+    constant is bumped with the release — and it was not at 0.28.0, so a
+    correct, freshly-loaded UI told every user their browser was stale and to
+    restart the server. A banner that cries wolf is worse than no banner.
+    """
+    import re
+
+    from lattice_fea import __version__
+
+    js = open(os.path.join(ROOT, "lattice_fea", "ui", "js", "main.js"),
+              encoding="utf-8").read()
+    m = re.search(r'const UI_BUILD = "([^"]+)"', js)
+    assert m, "the UI build constant went missing"
+    assert m.group(1) == __version__, (
+        f"main.js says {m.group(1)}, the package says {__version__}")
