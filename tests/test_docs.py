@@ -210,3 +210,26 @@ def test_the_ui_build_string_matches_the_package_version():
     assert m, "the UI build constant went missing"
     assert m.group(1) == __version__, (
         f"main.js says {m.group(1)}, the package says {__version__}")
+
+
+def test_a_bare_traceback_reports_the_exception_not_the_header():
+    """The useful line in a Python traceback is the last one. Falling back to
+    the first flagged line reported "Traceback (most recent call last):" as
+    the reason a job failed, which is every failure's first line and no
+    failure's cause. Deleting a project mid-mesh produced exactly that.
+    """
+    from lattice_fea.solver import extract_errors, headline
+
+    log = ["Info    : meshing",
+           "Traceback (most recent call last):",
+           '  File "/x/gmsh_worker.py", line 40, in <module>',
+           "    meta = json.load(open(argfile))",
+           "FileNotFoundError: [Errno 2] No such file: /ws/p/geometry.brep"]
+    h = headline(extract_errors(log))
+    assert h.startswith("FileNotFoundError"), h
+
+    # a solver message still outranks the traceback wrapped around it
+    both = ["Traceback (most recent call last):",
+            " <F> <FACTOR_10> matrice singuliere ou presque singuliere",
+            "RuntimeError: aborted"]
+    assert "FACTOR_10" in headline(extract_errors(both))

@@ -383,3 +383,50 @@ def test_a_mode_on_the_plateau_is_rigid_despite_rounding():
     assert got["srs"][0] != got["zpa"]              # the rounding is real
     assert got["srs"][0] == pytest.approx(got["zpa"], rel=1e-12)
     assert shock.rigid_fraction(got["srs"][0], got["zpa"]) == pytest.approx(1.0)
+
+
+# ------------------------------------------------------- rigid-body modes
+
+def _modal_meta(freqs, eff=0.5):
+    rows = [[i + 1, f, 1.0, eff, eff, eff] for i, f in enumerate(freqs)]
+    return {"tables": {"participation": [{
+        "columns": ["NUME_ORDRE", "FREQ", "MASS_GENE",
+                    "MASS_EFFE_UN_DX", "MASS_EFFE_UN_DY", "MASS_EFFE_UN_DZ"],
+        "rows": rows}]}}
+
+
+SPEC_CFG = {"input": "spectrum", "spec": [[10.0, 5.0], [2000.0, 20.0]],
+            "axis": 2, "rule": "srss", "damping": 0.05}
+
+
+def test_a_rigid_body_mode_is_reported_not_quietly_dropped():
+    """A mode at essentially zero frequency means the structure is free to
+    move — the supports do not hold it. Those modes cannot enter a spectrum
+    combination, because a spectrum is a response to base motion and a free
+    body has no base, so dropping them is right.
+
+    Dropping them in silence was not. The only symptom was a missing-mass
+    warning blaming modal truncation and advising more modes, which does not
+    fix a model that is not held.
+    """
+    out = shock.response(_modal_meta([0.0, 1e-9, 380.0]), SPEC_CFG)
+    assert out["rigid_body_modes"] == [1, 2]
+    assert any("rigid body" in w for w in out["warnings"])
+    # and they are genuinely out of the combination
+    assert [r["mode"] for r in out["rows"]] == [3]
+
+
+def test_a_healthy_model_is_not_accused_of_being_unconstrained():
+    """A warning that fires when nothing is wrong is noise, and this one
+    tells the engineer to go and re-check supports that are fine."""
+    out = shock.response(_modal_meta([120.0, 380.0]), SPEC_CFG)
+    assert out["rigid_body_modes"] == []
+    assert not any("rigid body" in w for w in out["warnings"])
+
+
+def test_a_low_but_real_mode_is_not_mistaken_for_a_rigid_body_mode():
+    """0.5 Hz is a real mode of a large flexible structure. The threshold has
+    to separate "unconstrained" from "soft", not just "small"."""
+    out = shock.response(_modal_meta([0.5, 380.0]), SPEC_CFG)
+    assert out["rigid_body_modes"] == []
+    assert [r["mode"] for r in out["rows"]] == [1, 2]

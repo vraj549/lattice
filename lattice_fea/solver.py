@@ -332,7 +332,19 @@ def headline(lines) -> "str|None":
     specific = [ln for ln in flagged
                 if not any(g in ln for g in _GENERIC_HEADLINES)
                 and not ln.lstrip().startswith(("File \"", "Traceback"))]
-    return (specific or flagged or picked)[0]
+    if specific:
+        return specific[0]
+    # Nothing but traceback scaffolding. The useful line in a Python traceback
+    # is the LAST one — "FileNotFoundError: ..." — not the header, which says
+    # only that something raised. Falling back to flagged[0] reported
+    # "Traceback (most recent call last):" as the reason a job failed.
+    if any(ln.lstrip().startswith("Traceback") for ln in picked):
+        tail = [ln for ln in picked
+                if not ln.lstrip().startswith(("File \"", "Traceback"))
+                and not ln.startswith(("    ", "\t"))]
+        if tail:
+            return tail[-1]
+    return (flagged or picked)[0]
 
 
 def extract_errors(lines, limit: int = 24) -> list:

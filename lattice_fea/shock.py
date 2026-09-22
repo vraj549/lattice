@@ -35,6 +35,11 @@ from .random_vib import sorted_breakpoints
 
 G_MM = 9810.0     # 1 g in mm/s^2
 
+# Below this a mode is rigid-body rather than structural. No real supported
+# structure has a mode here, and code_aster reports an unconstrained one as a
+# tiny positive or a tiny negative number rather than an exact zero.
+RIGID_BODY_HZ = 1e-3
+
 TRAPEZOID_RISE = 0.1        # fraction of the pulse spent rising, and falling
 
 # How close to the ZPA counts as being on it. Interpolation noise is ~1e-15
@@ -305,7 +310,15 @@ def modal_table(modes, cfg: dict, total_mass: float, axis: int) -> dict:
     mass the basis captured, and the missing-mass term for what it did not.
     """
     rows = []
-    fs = [m["f"] for m in modes if m.get("f", 0) > 0]
+    # Modes at essentially zero are rigid-body modes: the structure is free to
+    # move in that direction. They cannot be combined — a spectrum is a
+    # response to base motion and a free body has no base — so they are
+    # dropped, and `rigid_body` carries the fact out so the caller can say so.
+    # Dropping them silently left the user with a missing-mass warning that
+    # blamed modal truncation and advised extracting more modes, which does
+    # not fix a model that is not held.
+    rigid_body = [m for m in modes if float(m.get("f") or 0.0) <= RIGID_BODY_HZ]
+    fs = [m["f"] for m in modes if m.get("f", 0) > RIGID_BODY_HZ]
     spec = spectrum_for(cfg, fs)
     rule = cfg.get("rule", "srss")
     zpa = float(spec["zpa"])
@@ -313,7 +326,7 @@ def modal_table(modes, cfg: dict, total_mass: float, axis: int) -> dict:
     k = 0
     for m in modes:
         f = float(m.get("f") or 0.0)
-        if f <= 0:
+        if f <= RIGID_BODY_HZ:
             continue
         S_a = float(spec["srs"][k]); k += 1
         frac = float((m.get("eff") or [0, 0, 0])[axis])
@@ -364,6 +377,7 @@ def modal_table(modes, cfg: dict, total_mass: float, axis: int) -> dict:
         "rigid_share": (rigid / total) if total > 0 else 0.0,
         "mass_captured": captured,
         "missing_mass": missing,
+        "rigid_body_modes": [m.get("n") for m in rigid_body],
         "missing_force_N": missing_force,
         "total_mass_t": total_mass,
     }
@@ -528,6 +542,15 @@ def response(meta: dict, cfg: dict, bolt_geom: dict = None) -> dict:
     out = modal_table(modes, {**cfg, "damping": cfg.get("damping", 0.05)},
                       mass, axis)
     out["warnings"] = warnings
+    n_rigid = len(out.get("rigid_body_modes") or [])
+    if n_rigid:
+        warnings.append(
+            f"{n_rigid} mode{'s' if n_rigid > 1 else ''} came back at "
+            f"essentially zero frequency, which means the model is free to "
+            f"move as a rigid body. A shock spectrum is a response to base "
+            f"motion, so those modes cannot be combined and were dropped — "
+            f"but the answer below is for a structure that is not fully held. "
+            f"Check the supports before reading it.")
     if out["mass_captured"] > 1.05:
         warnings.append(
             f"Effective masses sum to {out['mass_captured']:.2f}, which a "
