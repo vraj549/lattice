@@ -713,3 +713,30 @@ def test_a_clean_mesh_still_solves(client):
     r = c.post(f"/api/projects/{pid}/solve/a1")
     assert r.status_code == 200, r.text
     assert wait(c, r.json()["job"])["status"] == "done"
+
+
+# --------------------------------------------- the setup document is a shape
+
+@pytest.mark.parametrize("patch,fragment", [
+    ({"analyses": "nope"}, "must be a list"),
+    ({"analyses": ["nope"]}, "must be an object"),
+    ({"contacts": [{"id": "c", "kind": "bonded", "faces_a": 5, "faces_b": [6]}]},
+     "list of face numbers"),
+    ({"contacts": [{"id": "c", "kind": "bonded", "faces_a": ["x"], "faces_b": [6]}]},
+     "whole numbers"),
+    ({"bolts": [{"id": "b", "name": "B", "side_a_faces": 3}]}, "list of face numbers"),
+])
+def test_a_malformed_setup_is_refused_not_a_500(client, patch, fragment):
+    """validate_setup walks these lists and calls .get on every entry, so a
+    string where a list belongs iterated its characters and raised
+    AttributeError — which escaped as a 500. A bare number in a face field was
+    accepted outright and only failed at mesh time, where the message is about
+    mesh groups rather than about the field that was wrong.
+    """
+    c = client
+    pid = make_project(c)["id"]
+    setup = c.get(f"/api/projects/{pid}").json()["setup"]
+    setup.update(patch)
+    r = c.put(f"/api/projects/{pid}/setup", json=setup)
+    assert r.status_code == 422, f"{r.status_code}: {r.text[:300]}"
+    assert fragment in r.text, r.text

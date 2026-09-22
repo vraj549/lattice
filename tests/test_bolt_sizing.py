@@ -494,3 +494,48 @@ def test_bolt_loads_keeps_both_ends_and_reduces_with_the_geometry():
     # With it: the end that actually governs.
     got = results.bolt_loads(meta, {1: {"d_mm": 6.0}})[1]
     assert got["end"] == "B" and got["M"] == pytest.approx(900.0)
+
+
+def test_a_frictionless_interface_gets_an_answer_not_an_arithmetic_error():
+    """mu = 0 is a legitimate entry — a PTFE-faced or lubricated interface is
+    close to it — and the required clamp is F_Q/mu, which divided by zero and
+    reached the user as "Bolt 1: float division by zero".
+
+    It has a real answer: friction force is mu times clamp, so no preload
+    whatever carries a transverse load when mu is zero. The joint needs a
+    dowel or a fitted bolt, and preload cannot substitute.
+    """
+    r = base(F_Q=2000.0, mu_joint=0.0)
+    assert not r["passes"]
+    assert any("no friction" in c for c in r["checks"])
+    # and it is not reported as a preload-window problem, because it is not one
+    assert r["feasible"], "the bolt can still be tightened; that is not the issue"
+    assert not any("No feasible preload" in c for c in r["checks"])
+    assert r["F_K_slip"] == 0.0
+
+
+def test_zero_friction_without_a_transverse_load_is_fine():
+    """Nothing is being asked of the friction, so its absence is not a fault.
+    A check that fires when nothing is wrong is noise."""
+    r = base(F_Q=0.0, F_A=3000.0, mu_joint=0.0)
+    assert r["passes"], r["checks"]
+    assert not any("no friction" in c for c in r["checks"])
+
+
+@pytest.mark.parametrize("kw,names", [
+    ({"d": 0.0}, "diameter"),
+    ({"pitch": 0.0}, "pitch"),
+    ({"l_K": 0.0}, "clamped length"),
+    ({"R_p02": 0.0}, "yield strength"),
+])
+def test_a_meaningless_input_names_itself(kw, names):
+    """These divided by zero somewhere in the middle of the calculation and
+    reached the user as "Bolt 1: float division by zero" — true, and no help
+    at all in finding which field to fix. A grip length of zero happens for
+    real: two coincident faces give a bolt beam with no length.
+    """
+    args = dict(d=8.0, pitch=1.25, l_K=20.0, F_A=100.0)
+    args.update(kw)
+    with pytest.raises(BS.JointInputError) as e:
+        BS.size_bolt(**args)
+    assert names in str(e.value)

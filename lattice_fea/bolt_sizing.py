@@ -42,6 +42,10 @@ import math
 # ---------------------------------------------------------------- threads
 
 
+class JointInputError(ValueError):
+    """An input to the joint calculation has no physical meaning."""
+
+
 def thread_geometry(d: float, pitch: float) -> dict:
     """ISO metric thread diameters and areas, from d and pitch.
 
@@ -229,7 +233,20 @@ def size_bolt(*, d: float, pitch: float, l_K: float, A_s: float = None,
     Inputs are the bolt, the joint it clamps, and the working loads the FE
     model reports for it. Everything the calculation uses on the way is
     returned alongside the answer.
+
+    Raises JointInputError when an input has no physical meaning. Several of
+    these used to divide by zero somewhere in the middle of the calculation
+    and reach the user as "Bolt 1: float division by zero", which is true and
+    tells them nothing about which field to go and fix.
     """
+    for name, value, what in (("diameter", d, "the bolt's nominal diameter"),
+                              ("pitch", pitch, "the thread pitch"),
+                              ("grip length", l_K, "the clamped length"),
+                              ("yield strength", R_p02, "the bolt's yield strength")):
+        if not (value and value > 0):
+            raise JointInputError(
+                f"{what} is {value!r}. It has to be greater than zero — "
+                f"nothing about the joint can be worked out without it.")
     g = thread_geometry(d, pitch)
     if A_s:
         g["A_s"] = A_s                          # trust the table over the formula
@@ -251,8 +268,15 @@ def size_bolt(*, d: float, pitch: float, l_K: float, A_s: float = None,
 
     # --- clamp force the joint must retain ---------------------------------
     # friction has to carry the transverse load, or the joint slips
-    F_K_slip = (S_slip * abs(F_Q) / (mu_joint * max(n_friction, 1))
-                if F_Q else 0.0)
+    #
+    # mu = 0 is a legitimate thing to enter — a PTFE-faced or lubricated
+    # interface is close to it — and it has a real answer rather than an
+    # arithmetic one: no preload whatever will carry a transverse load by
+    # friction, so the joint needs a dowel, a shear pin or a fitted bolt. This
+    # used to divide by zero and surface as "Bolt 1: float division by zero".
+    slip_impossible = bool(F_Q) and mu_joint <= 0.0
+    F_K_slip = (0.0 if slip_impossible or not F_Q
+                else S_slip * abs(F_Q) / (mu_joint * max(n_friction, 1)))
     # and the interface must not open under the tensile part of the load
     F_K_gap = S_gap * (1.0 - phi) * max(F_A, 0.0) if F_A > 0 else 0.0
     F_KR = max(F_K_slip, F_K_gap)
@@ -318,8 +342,18 @@ def size_bolt(*, d: float, pitch: float, l_K: float, A_s: float = None,
     sigma_ASV = 0.85 * (150.0 / d + 45.0)
     fatigue_margin = sigma_ASV / sigma_a if sigma_a > 0 else None
 
+    # `feasible` stays narrow — a preload window exists — because that is what
+    # the F_Mmax/F_Mzul cell means. A frictionless interface has a perfectly
+    # good preload window and still cannot hold the joint, so it belongs in
+    # `checks`, and `passes` below picks it up from there.
     feasible = F_Mmax <= F_Mzul
     checks = []
+    if slip_impossible:
+        checks.append(
+            f"The interface has no friction (mu = {mu_joint:g}), so no preload "
+            f"can carry the {abs(F_Q):.0f} N transverse load — friction force "
+            f"is mu times clamp, and mu is zero. The load needs a dowel, a "
+            f"shear pin or a fitted bolt; preload cannot substitute.")
     if not feasible:
         checks.append(
             f"No feasible preload: the joint needs {F_Mmax:.0f} N at assembly "

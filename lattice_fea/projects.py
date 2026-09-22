@@ -215,6 +215,45 @@ class SetupInvalid(ValueError):
     """The setup names something the solvers do not implement."""
 
 
+def _items(parent: dict, key: str, where: str = "the model") -> list:
+    """A list of dicts under `key`, or a refusal naming what arrived instead.
+
+    validate_setup walks these and calls .get on each entry, so a string where
+    a list belongs used to iterate its characters and raise AttributeError —
+    which escaped as a 500 rather than the 422 it is. Anything that reaches
+    here has come off the wire.
+    """
+    v = parent.get(key)
+    if v is None:
+        return []
+    if not isinstance(v, list):
+        raise SetupInvalid(
+            f"{where}: '{key}' must be a list, not {type(v).__name__}.")
+    for i, item in enumerate(v, 1):
+        if not isinstance(item, dict):
+            raise SetupInvalid(
+                f"{where}: '{key}' entry {i} must be an object, not "
+                f"{type(item).__name__}.")
+    return v
+
+
+def _face_list(v, where: str) -> None:
+    """Face references are a list of integers or nothing.
+
+    A bare number here was accepted and only failed at mesh time, where the
+    message is about groups rather than about the field that was wrong.
+    """
+    if v is None:
+        return
+    if not isinstance(v, list):
+        raise SetupInvalid(
+            f"{where} must be a list of face numbers, not {type(v).__name__}.")
+    for x in v:
+        if isinstance(x, bool) or not isinstance(x, int):
+            raise SetupInvalid(
+                f"{where} contains {x!r}; face references are whole numbers.")
+
+
 def _one_of(value, allowed, what: str, where: str) -> None:
     if value in allowed:
         return
@@ -232,21 +271,29 @@ def validate_setup(setup: dict) -> None:
     the setup document is written by the UI and by scripts and a schema that
     rejects unknown keys would break both on every addition.
     """
-    for i, c in enumerate(setup.get("contacts") or [], 1):
-        where = f"contact {i} ('{c.get('name', '')}')"
+    for c in _items(setup, "contacts"):
+        where = f"contact '{c.get('name', '')}'"
         _one_of(c.get("kind", "bonded"), CONTACT_KINDS, "behaviour", where)
         if c.get("solve") is not None:
             _one_of(c["solve"], CONTACT_SOLVE, "solve mode", where)
+        for side in ("faces_a", "faces_b"):
+            _face_list(c.get(side), f"{where}: {side}")
 
-    for ai, a in enumerate(setup.get("analyses") or [], 1):
+    for ai, a in enumerate(_items(setup, "analyses"), 1):
         aname = a.get("name") or f"analysis {ai}"
         _one_of(a.get("type"), ANALYSIS_TYPES, "analysis type", aname)
-        for i, s in enumerate(a.get("supports") or [], 1):
-            _one_of(s.get("type", "fixed"), SUPPORT_TYPES, "support type",
-                    f"{aname} / support {i} ('{s.get('name', '')}')")
-        for i, l in enumerate(a.get("loads") or [], 1):
-            _one_of(l.get("type"), LOAD_TYPES, "load type",
-                    f"{aname} / load {i} ('{l.get('name', '')}')")
+        for s in _items(a, "supports", aname):
+            w = f"{aname} / support '{s.get('name', '')}'"
+            _one_of(s.get("type", "fixed"), SUPPORT_TYPES, "support type", w)
+            _face_list(s.get("faces"), w)
+        for l in _items(a, "loads", aname):
+            w = f"{aname} / load '{l.get('name', '')}'"
+            _one_of(l.get("type"), LOAD_TYPES, "load type", w)
+            _face_list(l.get("faces"), w)
+
+    for b in _items(setup, "bolts"):
+        for side in ("side_a_faces", "side_b_faces"):
+            _face_list(b.get(side), f"bolt '{b.get('name', '')}': {side}")
 
     size = (setup.get("mesh") or {}).get("size_mm")
     if size is not None and size != "":
