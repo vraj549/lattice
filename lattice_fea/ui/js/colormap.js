@@ -68,9 +68,10 @@ export function renderLegend(min, max, caption) {
       stops.push(`${rgb(bandColor(i, n))} ${lo}% ${hi}%`);
     }
     strip.style.background = `linear-gradient(to bottom,${stops.join(",")})`;
+    const fmt = tickFormat(min, max, n);
     let html = "";
     for (let i = n; i >= 0; i--) {
-      html += `<span>${fmtVal(min + (max - min) * (i / n))}</span>`;
+      html += `<span>${fmt(min + (max - min) * (i / n))}</span>`;
     }
     ticks.innerHTML = html;
     ticks.style.fontSize = n > 12 ? "8.5px" : "10px";
@@ -81,20 +82,38 @@ export function renderLegend(min, max, caption) {
       stops.push(`rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`);
     }
     strip.style.background = `linear-gradient(to bottom,${stops.join(",")})`;
+    const fmt = tickFormat(min, max, 4);
     let html = "";
     for (let i = 0; i <= 4; i++) {
-      html += `<span>${fmtVal(max - (max - min) * (i / 4))}</span>`;
+      html += `<span>${fmt(max - (max - min) * (i / 4))}</span>`;
     }
     ticks.innerHTML = html;
     ticks.style.fontSize = "10px";
   }
 }
 
+/**
+ * A value for reading: four significant figures, no trailing zeros, and an
+ * exponent only outside 0.001–10⁶. Fixed decimals by magnitude printed
+ * "6000.0 N" beside "1.33e+5 N" and "0.0200" for a damping ratio of 0.02.
+ */
 export function fmtVal(v) {
+  if (v == null || !Number.isFinite(v)) return "\u2014";
   if (v === 0) return "0";
   const a = Math.abs(v);
-  if (a >= 1e5 || a < 1e-3) return v.toExponential(2);
-  if (a >= 100) return v.toFixed(1);
-  if (a >= 1) return v.toFixed(2);
-  return v.toFixed(4);
+  if (a >= 1e6 || a < 1e-3) return v.toExponential(2).replace("e+", "e");
+  if (a >= 1000) return String(Math.round(v));
+  return String(Number(v.toPrecision(4)));
+}
+
+/** Legend ticks share one number of decimals, set by the band step, so the
+ *  column lines up and every boundary shows the digits that separate it. */
+function tickFormat(min, max, n) {
+  const big = Math.max(Math.abs(min), Math.abs(max));
+  const step = Math.abs(max - min) / Math.max(n, 1);
+  if (!(step > 0) || big >= 1e6 || big < 1e-3) {
+    return (v) => (v === 0 ? "0" : v.toExponential(2).replace("e+", "e"));
+  }
+  const d = Math.max(0, Math.min(6, Math.ceil(-Math.log10(step)) + 1));
+  return (v) => v.toFixed(d);
 }

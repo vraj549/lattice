@@ -200,240 +200,255 @@ def mesh_project(brep_path: str, unv_path: str, meta: dict, setup: dict,
     order = int(mcfg.get("order") or 2)
 
     face_sets = _collect_face_sets(setup)
-    setup_orig = setup
 
-    t0 = time.time()
-    with GMSH_LOCK:
-        gmsh = _gmsh()
+    def load(gmsh, quiet=False):
+        """The model from the file, bodies removed, every option set.
+
+        Used for the first attempt and for each fallback after a failed hex
+        sweep, which has to start over from the file. Those fallbacks used to
+        repeat this by hand and each forgot something: neither removed the
+        suppressed bodies, so a failed sweep meshed them back in, and one did
+        not restore the curvature sizing.
+        """
         _fresh_model(gmsh, "mesh")
         gmsh.model.occ.importShapes(brep_path)
         gmsh.model.occ.synchronize()
-        _drop_suppressed(gmsh, setup, meta, progress)
-
+        _drop_suppressed(gmsh, setup, meta, (lambda _m: None) if quiet else progress)
         gmsh.option.setNumber("Mesh.MeshSizeMax", size)
         gmsh.option.setNumber("Mesh.MeshSizeMin", minsize)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
         gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", curvdiv)
         gmsh.option.setNumber("Mesh.Optimize", 1)
-
-        # Recombination is a session-wide option on a shared gmsh session, so
-        # it is set from scratch every time rather than left wherever the last
-        # mesh put it — the same discipline the UNV/Abaqus writes need.
+        # Session-wide options on a shared gmsh session are set from scratch
+        # every time, never left wherever the last mesh put them.
         gmsh.option.setNumber("Mesh.RecombineAll", 0)
-        # A complete quadratic hexahedron has 27 nodes; the serendipity one has
-        # 20. HEXA20 / C3D20 is what code_aster and CalculiX both read, and the
-        # interior nodes of a HEX27 buy nothing here, so ask for the incomplete
-        # form. Set every time, never inherited — this session is shared.
+        # A complete quadratic hexahedron has 27 nodes; the serendipity one
+        # has 20. HEXA20 / C3D20 is what code_aster and CalculiX both read,
+        # and the interior nodes of a HEX27 buy nothing here.
         gmsh.option.setNumber("Mesh.SecondOrderIncomplete", 1)
-        want_hex = str(mcfg.get("elements") or "tet") == "hex"
-        remap = None
 
-        if want_hex:
-            progress("looking for a sweep…")
-            try:
-                plan = _sweep_plan(gmsh)
-                remap = _rebuild_as_sweep(gmsh, plan, size, progress) if plan else None
-                if plan is None:
-                    progress("no sweep: at least one solid is not a prism, or "
-                             "they do not share one axis. Meshing with "
-                             "tetrahedra instead.")
-            except Exception as e:      # noqa: BLE001
-                progress(f"sweep failed ({str(e).splitlines()[0][:120]}); "
-                         "meshing with tetrahedra instead")
-                remap = None
-            if remap is None:
-                # the model may be half-rebuilt; start over from the file
-                _fresh_model(gmsh, "mesh")
-                gmsh.model.occ.importShapes(brep_path)
-                gmsh.model.occ.synchronize()
-                gmsh.option.setNumber("Mesh.MeshSizeMax", size)
-                gmsh.option.setNumber("Mesh.MeshSizeMin", minsize)
-                gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
-                gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", curvdiv)
-                gmsh.option.setNumber("Mesh.Optimize", 1)
-                gmsh.option.setNumber("Mesh.RecombineAll", 0)
-                want_hex = False
-            else:
-                # every tag the rest of this function uses came from the
-                # geometry that has just been replaced
-                face_sets = {k: [remap["faces"][t] for t in v
-                                 if t in remap["faces"]]
-                             for k, v in face_sets.items()}
-                _size_fields(gmsh, mcfg, size, remap)
-                gmsh.model.mesh.generate(3)
-                ok, note = _hex_is_usable(gmsh)
-                if not ok:
-                    progress(f"the swept mesh is not usable ({note}); "
-                             "meshing with tetrahedra instead")
-                    _fresh_model(gmsh, "mesh")
-                    gmsh.model.occ.importShapes(brep_path)
-                    gmsh.model.occ.synchronize()
-                    gmsh.option.setNumber("Mesh.MeshSizeMax", size)
-                    gmsh.option.setNumber("Mesh.MeshSizeMin", minsize)
-                    gmsh.option.setNumber("Mesh.RecombineAll", 0)
-                    face_sets = _collect_face_sets(setup_orig)
-                    remap, want_hex = None, False
-                else:
-                    progress(f"hexahedra: {note}")
-
-        if not want_hex:
-            _size_fields(gmsh, mcfg, size, None)
-            progress("meshing surfaces…")
-            gmsh.model.mesh.generate(2)
-            progress("meshing volume (HXT)…")
-            try:
-                gmsh.option.setNumber("Mesh.Algorithm3D", 10)  # HXT, multithreaded
-                gmsh.model.mesh.generate(3)
-            except Exception:  # noqa: BLE001 — HXT can fail on dirty geometry
-                progress("HXT failed, retrying with Delaunay…")
-                gmsh.option.setNumber("Mesh.Algorithm3D", 1)
-                gmsh.model.mesh.generate(3)
-        gmsh.option.setNumber("Mesh.RecombineAll", 0)
-
-        if order == 2:
-            progress("raising to 2nd order…")
-            gmsh.option.setNumber("Mesh.SecondOrderLinear", 0)
-            gmsh.model.mesh.setOrder(2)
-            _untangle_curved(gmsh, progress)
-
-        # bolt beams AFTER setOrder so they stay SEG2 for POU_D_T
-        bolt_records = _add_bolt_beams(gmsh, meta, setup, progress, remap)
-        remote_records = _add_remote_stubs(gmsh, setup, meta, progress)
-
-        # ---- physical groups ----
-        # A swept model was rebuilt, so its volume tags are new. The group
-        # NAME has to stay the original one — material assignment, contacts
-        # and every result field are keyed to it.
-        vname = {v: k for k, v in (remap or {}).get("volumes", {}).items()}
-        for dim, tag in gmsh.model.getEntities(3):
-            gmsh.model.addPhysicalGroup(3, [tag], name=f"V{vname.get(tag, tag)}")
-        # One query, not one per face tag: this set was being rebuilt from a
-        # fresh gmsh call inside the comprehension for every tag in every
-        # group, which on an assembly with thousands of faces and a few dozen
-        # boundary conditions dominated the whole meshing step.
-        surfaces = {t for _, t in gmsh.model.getEntities(2)}
-        written = []
-        for gname, ftags in face_sets.items():
-            valid = [t for t in ftags if t in surfaces]
-            if valid:
-                gmsh.model.addPhysicalGroup(2, valid, name=gname)
-                written.append(gname)
-            else:
-                progress(f"warning: group {gname} references no surface in this "
-                         "geometry and was not written")
-
-        gmsh.option.setNumber("Mesh.SaveAll", 0)
-
-        # Write options are set explicitly before EVERY write, never left to
-        # whatever the last write wanted.
-        #
-        # The gmsh session is shared and long-lived, so an option set for one
-        # format silently applies to the next. Turning on SaveGroupsOfNodes
-        # for the Abaqus deck leaked into the following mesh's UNV, which then
-        # carried node entities inside the element groups. code_aster read
-        # those as GROUP_NO, and the deck's own
-        # DEFI_GROUP(CREA_GROUP_NO=TOUT_GROUP_MA) then collided with a group
-        # that already existed — so the first mesh after a restart solved and
-        # every one after it failed.
-        gmsh.option.setNumber("Mesh.SaveGroupsOfNodes", 0)
-        gmsh.write(unv_path)
-
-        # An Abaqus deck as well, for CalculiX. Same mesh, same groups —
-        # written here so both solvers are always looking at the identical
-        # discretisation and a result cannot depend on which one ran.
+    t0 = time.time()
+    with GMSH_LOCK:
+        gmsh = _gmsh()
         try:
-            gmsh.option.setNumber("Mesh.SaveGroupsOfNodes", 1)
-            inp_path = unv_path.rsplit(".", 1)[0] + ".inp"
-            gmsh.write(inp_path)
-            _strip_surface_elements(inp_path)
-        except Exception as e:                      # noqa: BLE001
-            progress(f"warning: could not write the CalculiX mesh ({e}); "
-                     "code_aster is unaffected")
+            return _mesh_locked(gmsh, load, unv_path, meta, setup,
+                                mcfg, size, order, face_sets, progress, t0)
         finally:
-            gmsh.option.setNumber("Mesh.SaveGroupsOfNodes", 0)
+            # a failed mesh must not leave its model loaded in the shared
+            # session: the next caller would start from it
+            gmsh.clear()
 
-        stats = _stats(gmsh, order)
-        stats["wall_s"] = round(time.time() - t0, 1)
-        stats["mesh_format"] = MESH_FORMAT
-        stats["size_mm"] = size
 
-        # expected volume — used later to self-validate MED connectivity parsing
-        # What this mesh was built from, so the UI can say when the model has
-        # moved on without guessing.
-        stats["suppressed_solids"] = sorted(suppressed_tags(setup))
-        stats["geo_volume"] = float(sum(
-            gmsh.model.occ.getMass(3, t) for _, t in gmsh.model.getEntities(3)))
+def _mesh_locked(gmsh, load, unv_path, meta, setup, mcfg, size,
+                 order, face_sets, progress, t0) -> dict:
+    """mesh_project's body, run holding GMSH_LOCK."""
+    load(gmsh)
+    want_hex = str(mcfg.get("elements") or "tet") == "hex"
+    remap = None
 
-        # probe -> nearest mesh node coordinates (exact coords survive into aster)
-        probes_out = []
-        probes = setup.get("probes", [])
-        if probes:
-            _, coords, _ = gmsh.model.mesh.getNodes()
-            xyz = np.asarray(coords).reshape(-1, 3)
-            for p in probes:
-                q = np.array([p["x"], p["y"], p["z"]])
-                d = np.linalg.norm(xyz - q, axis=1)
-                i = int(np.argmin(d))
-                probes_out.append({**p, "node_xyz": xyz[i].tolist(),
-                                   "snap_dist": float(d[i])})
-        stats["probes"] = probes_out
-        stats["element_kinds"] = _element_kinds(gmsh)
-        stats["bolts"] = bolt_records
-        stats["remotes"] = remote_records
-        # Only what was actually written. Recording every REQUESTED group
-        # let the stale-mesh guard pass for a group that does not exist,
-        # and the solver then aborted on GROUP_MA not found.
-        # Check the artifact, not the intent. `written` records that gmsh was
-        # ASKED to create a physical group, which is not the same as the group
-        # reaching the file the solver opens — and when they differed the only
-        # symptom was an abort minutes into the run, in French, about a
-        # GROUP_MA that was not in the mesh.
-        in_file = unv_group_names(unv_path)
-        confirmed = [g for g in written if g in in_file] if in_file else list(written)
-        for g in written:
-            if in_file and g not in in_file:
-                progress(f"warning: group {g} was created but is not in the "
-                         f"written mesh file — anything using it will not run")
-        stats["face_groups"] = sorted(confirmed)
-        stats["requested_groups"] = sorted(face_sets.keys())
-        stats["unv_groups"] = sorted(in_file)
-        # Named, not just counted. A support whose faces are not in the meshed
-        # geometry produces a mesh that looks perfectly normal — right node
-        # count, right element type — and fails at the solver on the first
-        # GROUP_MA. The mesh step knows at the moment it happens.
-        stats["missing_groups"] = sorted(
-            g for g in face_sets if g not in set(confirmed))
+    if want_hex:
+        progress("looking for a sweep…")
+        try:
+            plan = _sweep_plan(gmsh)
+            remap = _rebuild_as_sweep(gmsh, plan, size, progress) if plan else None
+            if plan is None:
+                progress("no sweep: at least one solid is not a prism, or "
+                         "they do not share one axis. Meshing with "
+                         "tetrahedra instead.")
+        except Exception as e:      # noqa: BLE001
+            progress(f"sweep failed ({str(e).splitlines()[0][:120]}); "
+                     "meshing with tetrahedra instead")
+            remap = None
+        if remap is None:
+            # the model may be half-rebuilt; start over from the file
+            load(gmsh, quiet=True)
+            want_hex = False
+        else:
+            # every tag the rest of this function uses came from the
+            # geometry that has just been replaced
+            face_sets = {k: [remap["faces"][t] for t in v
+                             if t in remap["faces"]]
+                         for k, v in face_sets.items()}
+            _size_fields(gmsh, mcfg, size, remap)
+            gmsh.model.mesh.generate(3)
+            ok, note = _hex_is_usable(gmsh)
+            if not ok:
+                progress(f"the swept mesh is not usable ({note}); "
+                         "meshing with tetrahedra instead")
+                load(gmsh, quiet=True)
+                face_sets = _collect_face_sets(setup)
+                remap, want_hex = None, False
+            else:
+                progress(f"hexahedra: {note}")
 
-        # Consistent nodal loads for every face group.
-        #
-        # CalculiX applies a distributed face load through element-face
-        # numbers, which a mesh written from physical groups does not carry.
-        # Integrating the shape functions here instead gives the exact
-        # equivalent nodal forces for a uniform unit traction, and works for
-        # any solver that takes point loads. Corner nodes of a quadratic
-        # triangle legitimately get zero — that is what the shape functions
-        # integrate to, not a bug.
-        # These serve CalculiX and the slip check. None is needed to SOLVE
-        # with code_aster, and the mesh itself is already written by now —
-        # so a failure in any of them must not throw away a completed mesh.
-        # It costs the user minutes and tells them nothing about their model.
-        for key, fn in (("face_nodes", _face_group_weights),
-                        ("face_elems", _face_group_element_faces),
-                        ("face_normals", _face_group_normals),
-                        ("face_areas", _face_group_areas)):
+    if not want_hex:
+        _size_fields(gmsh, mcfg, size, None)
+        progress("meshing surfaces…")
+        gmsh.model.mesh.generate(2)
+        progress("meshing volume (HXT)…")
+        try:
+            gmsh.option.setNumber("Mesh.Algorithm3D", 10)  # HXT, multithreaded
+            gmsh.model.mesh.generate(3)
+        except Exception:  # noqa: BLE001 — HXT can fail on dirty geometry
+            progress("HXT failed, retrying with Delaunay…")
+            gmsh.option.setNumber("Mesh.Algorithm3D", 1)
             try:
-                stats[key] = fn(gmsh, written)
-            except Exception as e:              # noqa: BLE001
-                stats[key] = {}
-                progress(f"warning: could not build {key} ({e}). "
-                         "code_aster is unaffected; CalculiX will ask you to "
-                         "re-mesh if it needs this.")
+                gmsh.model.mesh.generate(3)
+            except Exception as e:  # noqa: BLE001
+                # gmsh's own message names entities and facets, not a cause
+                raise ValueError(
+                    "The volume could not be meshed "
+                    f"({str(e).splitlines()[0][:160]}). This is usually "
+                    "geometry that overlaps or does not close: parts that "
+                    "intersect rather than touch, or slivers and tiny gaps "
+                    "from the CAD export. A smaller element size near the "
+                    "small features can also get it through.") from None
+    gmsh.option.setNumber("Mesh.RecombineAll", 0)
 
-        skin = _skin(gmsh)
-        conn_islands = _count_islands(gmsh)
-        stats["islands"] = conn_islands
+    if order == 2:
+        progress("raising to 2nd order…")
+        gmsh.option.setNumber("Mesh.SecondOrderLinear", 0)
+        gmsh.model.mesh.setOrder(2)
+        _untangle_curved(gmsh, progress)
 
-        gmsh.clear()
+    # bolt beams AFTER setOrder so they stay SEG2 for POU_D_T
+    bolt_records = _add_bolt_beams(gmsh, meta, setup, progress, remap)
+    remote_records = _add_remote_stubs(gmsh, setup, meta, progress)
+
+    # ---- physical groups ----
+    # A swept model was rebuilt, so its volume tags are new. The group
+    # NAME has to stay the original one — material assignment, contacts
+    # and every result field are keyed to it.
+    vname = {v: k for k, v in (remap or {}).get("volumes", {}).items()}
+    for dim, tag in gmsh.model.getEntities(3):
+        gmsh.model.addPhysicalGroup(3, [tag], name=f"V{vname.get(tag, tag)}")
+    # One query, not one per face tag: this set was being rebuilt from a
+    # fresh gmsh call inside the comprehension for every tag in every
+    # group, which on an assembly with thousands of faces and a few dozen
+    # boundary conditions dominated the whole meshing step.
+    surfaces = {t for _, t in gmsh.model.getEntities(2)}
+    written = []
+    for gname, ftags in face_sets.items():
+        valid = [t for t in ftags if t in surfaces]
+        if valid:
+            gmsh.model.addPhysicalGroup(2, valid, name=gname)
+            written.append(gname)
+        else:
+            progress(f"warning: group {gname} references no surface in this "
+                     "geometry and was not written")
+
+    gmsh.option.setNumber("Mesh.SaveAll", 0)
+
+    # Write options are set explicitly before EVERY write, never left to
+    # whatever the last write wanted.
+    #
+    # The gmsh session is shared and long-lived, so an option set for one
+    # format silently applies to the next. Turning on SaveGroupsOfNodes
+    # for the Abaqus deck leaked into the following mesh's UNV, which then
+    # carried node entities inside the element groups. code_aster read
+    # those as GROUP_NO, and the deck's own
+    # DEFI_GROUP(CREA_GROUP_NO=TOUT_GROUP_MA) then collided with a group
+    # that already existed — so the first mesh after a restart solved and
+    # every one after it failed.
+    gmsh.option.setNumber("Mesh.SaveGroupsOfNodes", 0)
+    gmsh.write(unv_path)
+
+    # An Abaqus deck as well, for CalculiX. Same mesh, same groups —
+    # written here so both solvers are always looking at the identical
+    # discretisation and a result cannot depend on which one ran.
+    try:
+        gmsh.option.setNumber("Mesh.SaveGroupsOfNodes", 1)
+        inp_path = unv_path.rsplit(".", 1)[0] + ".inp"
+        gmsh.write(inp_path)
+        _strip_surface_elements(inp_path)
+    except Exception as e:                      # noqa: BLE001
+        progress(f"warning: could not write the CalculiX mesh ({e}); "
+                 "code_aster is unaffected")
+    finally:
+        gmsh.option.setNumber("Mesh.SaveGroupsOfNodes", 0)
+
+    stats = _stats(gmsh, order)
+    stats["wall_s"] = round(time.time() - t0, 1)
+    stats["mesh_format"] = MESH_FORMAT
+    stats["size_mm"] = size
+
+    # expected volume — used later to self-validate MED connectivity parsing
+    # What this mesh was built from, so the UI can say when the model has
+    # moved on without guessing.
+    stats["suppressed_solids"] = sorted(suppressed_tags(setup))
+    stats["geo_volume"] = float(sum(
+        gmsh.model.occ.getMass(3, t) for _, t in gmsh.model.getEntities(3)))
+
+    # probe -> nearest mesh node coordinates (exact coords survive into aster)
+    probes_out = []
+    probes = setup.get("probes", [])
+    if probes:
+        # nodes of the solid mesh only: bolt-beam and remote-point nodes sit
+        # in the air at a hole or load centre, and a probe must not land there
+        _, coords, _ = gmsh.model.mesh.getNodes(3, -1, True, False)
+        xyz = np.asarray(coords).reshape(-1, 3)
+        for p in probes:
+            q = np.array([p["x"], p["y"], p["z"]])
+            d = np.linalg.norm(xyz - q, axis=1)
+            i = int(np.argmin(d))
+            probes_out.append({**p, "node_xyz": xyz[i].tolist(),
+                               "snap_dist": float(d[i])})
+    stats["probes"] = probes_out
+    stats["element_kinds"] = _element_kinds(gmsh)
+    stats["bolts"] = bolt_records
+    stats["remotes"] = remote_records
+    # Only what was actually written. Recording every REQUESTED group
+    # let the stale-mesh guard pass for a group that does not exist,
+    # and the solver then aborted on GROUP_MA not found.
+    # Check the artifact, not the intent. `written` records that gmsh was
+    # ASKED to create a physical group, which is not the same as the group
+    # reaching the file the solver opens — and when they differed the only
+    # symptom was an abort minutes into the run, in French, about a
+    # GROUP_MA that was not in the mesh.
+    in_file = unv_group_names(unv_path)
+    confirmed = [g for g in written if g in in_file] if in_file else list(written)
+    for g in written:
+        if in_file and g not in in_file:
+            progress(f"warning: group {g} was created but is not in the "
+                     f"written mesh file — anything using it will not run")
+    stats["face_groups"] = sorted(confirmed)
+    stats["requested_groups"] = sorted(face_sets.keys())
+    stats["unv_groups"] = sorted(in_file)
+    # Named, not just counted. A support whose faces are not in the meshed
+    # geometry produces a mesh that looks perfectly normal — right node
+    # count, right element type — and fails at the solver on the first
+    # GROUP_MA. The mesh step knows at the moment it happens.
+    stats["missing_groups"] = sorted(
+        g for g in face_sets if g not in set(confirmed))
+
+    # Consistent nodal loads for every face group.
+    #
+    # CalculiX applies a distributed face load through element-face
+    # numbers, which a mesh written from physical groups does not carry.
+    # Integrating the shape functions here instead gives the exact
+    # equivalent nodal forces for a uniform unit traction, and works for
+    # any solver that takes point loads. Corner nodes of a quadratic
+    # triangle legitimately get zero — that is what the shape functions
+    # integrate to, not a bug.
+    # These serve CalculiX and the slip check. None is needed to SOLVE
+    # with code_aster, and the mesh itself is already written by now —
+    # so a failure in any of them must not throw away a completed mesh.
+    # It costs the user minutes and tells them nothing about their model.
+    for key, fn in (("face_nodes", _face_group_weights),
+                    ("face_elems", _face_group_element_faces),
+                    ("face_normals", _face_group_normals),
+                    ("face_areas", _face_group_areas)):
+        try:
+            stats[key] = fn(gmsh, written)
+        except Exception as e:              # noqa: BLE001
+            stats[key] = {}
+            progress(f"warning: could not build {key} ({e}). "
+                     "code_aster is unaffected; CalculiX will ask you to "
+                     "re-mesh if it needs this.")
+
+    skin = _skin(gmsh)
+    stats["islands"] = _count_islands(gmsh)
+    stats["volumes"] = len(gmsh.model.getEntities(3))
 
     return {"stats": stats, "skin": skin}
 
@@ -1013,24 +1028,25 @@ def _skin(gmsh) -> dict:
 
 
 def _count_islands(gmsh) -> int:
-    """Connected components of the volume mesh — >1 means parts of the
-    assembly are not joined and will fly away in modal/static.
+    """Connected components of the volume mesh, counted through shared nodes.
 
-    Vectorised label propagation. The previous version was a pure-Python
-    union-find over every tet's corner nodes: on a million-element mesh that
-    is several million dict lookups and pointer walks, and it ran on every
-    single mesh. This does the same work in numpy, converging in O(log n)
-    fully-vectorised passes.
+    More than one is normal for an assembly: contacts, ties and bolts join the
+    pieces at solve time, not through the mesh. The UI compares this against
+    those connections; only a body that is itself in pieces shows up here
+    alone.
+
+    Vectorised min-label propagation with pointer jumping, in numpy, because a
+    Python union-find over a million-element mesh took seconds on every mesh.
     """
     etypes, etags, enodes = gmsh.model.mesh.getElements(3)
     pairs = []
     for et, en in zip(etypes, enodes):
-        npery = {4: 4, 11: 10}.get(et)
-        if not npery:
-            continue
-        # corner nodes only — enough for connectivity, and 2.5x less data
-        conn = np.asarray(en, dtype=np.int64).reshape(-1, npery)[:, :4]
-        for k in (1, 2, 3):
+        # every volume type, not just tetrahedra: a swept hex or prism mesh
+        # used to be skipped entirely and so always reported one island
+        _, _, _, npery, _, corners = gmsh.model.mesh.getElementProperties(et)
+        # corner nodes only (gmsh lists them first) — enough for connectivity
+        conn = np.asarray(en, dtype=np.int64).reshape(-1, npery)[:, :corners]
+        for k in range(1, corners):
             pairs.append(np.stack([conn[:, 0], conn[:, k]], 1))
     if not pairs:
         return 1
@@ -1052,7 +1068,10 @@ def _count_islands(gmsh) -> int:
     targets = key_s[starts]
 
     label = np.arange(n, dtype=np.int64)
-    for _ in range(64):                      # far more than log2(n) in practice
+    # Labels only ever decrease (each is <= its own index, so pointer jumping
+    # keeps that true), so this terminates. No iteration cap: the old cap of
+    # 64 silently returned too many islands on a mesh that had not converged.
+    while True:
         mins = np.minimum.reduceat(label[src_s], starts)
         nxt = label.copy()
         # fancy indexing yields a copy, so this must be an assignment —

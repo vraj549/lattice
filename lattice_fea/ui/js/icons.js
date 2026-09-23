@@ -30,6 +30,8 @@ const PATHS = {
   random: "M2 13.4h12 M2.4 10.4 4 7.6l1.2 3.6L7 5.6l1.8 4.4 1.6-2.8 1.6 3.2 1.6-1.6",
   reactions: "M8 2.6v10.8 M5.2 5.4 8 2.6l2.8 2.8 M5.2 10.6 8 13.4l2.8-2.8",
   warning: "M8 2.6 14.2 13.4H1.8z M8 6.4v3.4 M8 11.4h.01",
+  // a half-sine pulse on a baseline
+  shock: "M1.8 13.4h12.4 M3 13.4C4.6 13.4 5.4 3.4 8 3.4s3.4 10 5 10",
 };
 
 /** Icon element for a tree row. `cls` carries the colour role. */
@@ -48,4 +50,5 @@ export function icon(name, cls) {
 export const RESULT_ICONS = {
   contours: "contours", modes: "modes", frf: "frf", random: "random",
   bolts: "bolt", reactions: "reactions", warnings: "warning",
+  shock: "shock", slip: "interface", sizing: "bolt",
 };

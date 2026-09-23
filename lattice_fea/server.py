@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.gzip import GZipMiddleware
@@ -22,8 +23,8 @@ from . import (__version__, bolt_sizing, ccx_writer, comm_writer, config, meshin
                slip)
 from .materials import LIBRARY
 from .projects import ProjectStore, SetupInvalid, validate_setup
-from .solver import (JobManager, extract_errors, headline, popen_isolated, reap,
-                     run_ccx, run_solver, summarise_failure)
+from .solver import (JobManager, check_cancelled, extract_errors, headline,
+                     popen_isolated, reap, run_ccx, run_solver, summarise_failure)
 
 UI_DIR = os.path.join(os.path.dirname(__file__), "ui")
 
@@ -31,6 +32,7 @@ UI_DIR = os.path.join(os.path.dirname(__file__), "ui")
 def run_gmsh_worker(job, args: dict) -> None:
     """Run a gmsh operation in an isolated subprocess, streaming its output
     into the job log. Raises on failure."""
+    check_cancelled(job)
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump(args, f)
         argfile = f.name
@@ -47,6 +49,7 @@ def run_gmsh_worker(job, args: dict) -> None:
             rc = proc.wait()
         finally:
             reap(proc)
+        check_cancelled(job)
         if rc != 0:
             tail = extract_errors(job.log[-400:])
             for ln in tail:
@@ -58,6 +61,36 @@ def run_gmsh_worker(job, args: dict) -> None:
             os.unlink(argfile)
         except OSError:
             pass
+
+
+MESH_FILES = ("mesh.unv", "mesh.inp", "skin.json.gz")
+
+
+def publish_mesh(stage: str, mdir: str) -> None:
+    """Move a finished mesh from `stage` into `mdir` as one unit.
+
+    stats.json is what says a mesh exists, so it goes first on the way out and
+    last on the way in: interrupted part-way, the project reads as not meshed
+    rather than as a mesh file paired with another mesh's description. A file
+    the new mesh did not produce (the CalculiX deck, when its write failed) is
+    removed, not left over from the previous mesh.
+    """
+    if not os.path.isfile(os.path.join(stage, "stats.json")):
+        raise RuntimeError("the mesher finished without writing its statistics")
+    try:
+        os.remove(os.path.join(mdir, "stats.json"))
+    except FileNotFoundError:
+        pass
+    for name in MESH_FILES:
+        src, dst = os.path.join(stage, name), os.path.join(mdir, name)
+        if os.path.exists(src):
+            os.replace(src, dst)
+        else:
+            try:
+                os.remove(dst)
+            except FileNotFoundError:
+                pass
+    os.replace(os.path.join(stage, "stats.json"), os.path.join(mdir, "stats.json"))
 
 
 def solve_signature(analysis: dict, setup: dict, mesh_stats: dict) -> str:
@@ -103,6 +136,16 @@ def solve_signature(analysis: dict, setup: dict, mesh_stats: dict) -> str:
 def create_app(workspace: str = "workspace") -> FastAPI:
     os.makedirs(workspace, exist_ok=True)
     app = FastAPI(title="Lattice", version=__version__)
+
+    @app.exception_handler(Exception)
+    async def _unexpected(request, exc):
+        # A bug, not a user error. It used to reach the UI as a bare "500";
+        # the exception's own words are what a bug report needs, and the
+        # traceback goes to the console for whoever runs the server.
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
+        return JSONResponse(status_code=500, content={
+            "detail": f"Internal error ({type(exc).__name__}: {exc}). "
+                      "The server console has the details."})
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     store = ProjectStore(workspace)
@@ -251,14 +294,26 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                 "and reported against another — wait for it, or cancel it."))
 
         def work(job):
-            run_gmsh_worker(job, {
-                "op": "mesh",
-                "brep": store.path(pid, "geometry.brep"),
-                "unv": store.path(pid, "mesh", "mesh.unv"),
-                "meta": proj["geometry"], "setup": proj["setup"],
-                "stats_out": store.path(pid, "mesh", "stats.json"),
-                "skin_out": store.path(pid, "mesh", "skin.json.gz"),
-            })
+            # Built aside and published whole. Written in place, a mesh that
+            # failed after the UNV was out left the NEW mesh file under the
+            # OLD stats — groups, probe nodes and CalculiX node weights that
+            # describe a different mesh — and the next solve ran on the pair.
+            mdir = store.path(pid, "mesh")
+            stage = os.path.join(mdir, "building")
+            shutil.rmtree(stage, ignore_errors=True)
+            os.makedirs(stage)
+            try:
+                run_gmsh_worker(job, {
+                    "op": "mesh",
+                    "brep": store.path(pid, "geometry.brep"),
+                    "unv": os.path.join(stage, "mesh.unv"),
+                    "meta": proj["geometry"], "setup": proj["setup"],
+                    "stats_out": os.path.join(stage, "stats.json"),
+                    "skin_out": os.path.join(stage, "skin.json.gz"),
+                })
+                publish_mesh(stage, mdir)
+            finally:
+                shutil.rmtree(stage, ignore_errors=True)
             return {"stats": store.read_json(pid, "mesh/stats.json")}
 
         job = jobs.submit("mesh", f"mesh {pid}", work, key=pid)
@@ -470,9 +525,9 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                     elif not converged:
                         meta.setdefault("warnings", []).append(
                             f"Preload calibration stopped after {cal['passes']} "
-                            f"passes still {cal['max_error'] * 100:.1f}% from the "
+                            f"passes still {cal['max_error'] * 100:.1f} % from the "
                             f"requested force, against a tolerance of "
-                            f"{float(cal.get('tol') or 0.01) * 100:.1f}%. The "
+                            f"{float(cal.get('tol') or 0.01) * 100:.1f} %. The "
                             "correction is applied and the achieved forces are "
                             "reported — treat the preload as approximate, and "
                             "check the bolt forces before relying on the margin.")
@@ -496,10 +551,13 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             # genuine solve. Only the aster path is mocked; CalculiX really runs.
             meta["demo"] = bool(solver_cfg.is_demo() and engine == "aster")
             if meta["demo"]:
-                meta.setdefault("warnings", []).append(
-                    "DEMO SOLVER: these numbers were fabricated by a stand-in, "
-                    "not computed. They are for exercising the interface only "
-                    "and must not be used for any engineering decision.")
+                # The flag is the record; every surface that shows a run reads
+                # it — the result banner, the tree, the CSV header. A second
+                # copy in `warnings` was worded differently from all of them,
+                # printed under the banner that already said it, and gave every
+                # demo run a "Solver messages (1)" node with nothing else in it.
+                job.append("warning: DEMO SOLVER — these numbers are fabricated, "
+                           "not computed from the model.")
             meta["exit_code"] = rc
             meta["signature"] = solve_signature(analysis, proj["setup"], mesh_stats)
             # What is actually here, as opposed to whether a file was written.
@@ -758,13 +816,11 @@ def create_app(workspace: str = "workspace") -> FastAPI:
             # from the wrong input is worse than no table.
             return {"rows": [], "blocked": True,
                     "warnings": [
-                        "Sizing needs the EXTERNAL load on each bolt, and this "
-                        "run has preload applied — so the beam force is the "
-                        "bolt force, not the load the joint is preloaded "
-                        f"against ({', '.join(preloaded)}). Set preload to 0, "
-                        "re-run, and size from that. Then enter the preload "
-                        "this gives you and run again to verify the joint "
-                        "neither slips nor opens."],
+                        "Sizing needs the external load on each bolt, and "
+                        f"{', '.join(preloaded)} carry preload, so the beam "
+                        "force includes it. Set preload to 0 and run to size "
+                        "the joint; then enter that preload and run again to "
+                        "verify it."],
                     "assumptions": cfg,
                     "tightening_options": [
                         {"id": k, "alpha_A": v[0], "label": v[1]}
@@ -911,7 +967,7 @@ def create_app(workspace: str = "workspace") -> FastAPI:
                                        [node for node, _ in items])
                 weighted = areas is not None
                 out = slip.check([v for _, v in items], n,
-                                 float(c.get("mu") or 0.15), areas,
+                                 slip.mu_of(c), areas,
                                  float(nrm.get("flatness") or 1.0))
                 ok, why = slip.verdict(out)
                 rows.append({"index": k, "name": c.get("name") or f"Contact {k}",

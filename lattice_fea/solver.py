@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -12,62 +13,120 @@ import uuid
 
 from .config import SolverConfig, win_to_wsl_path
 
-# Every live child (gmsh worker, solver). Tracked so shutdown can reap them:
-# on Windows a wsl.exe child sharing the console process group receives the
-# same Ctrl+C and can leave the server unkillable.
 # Keep the tail of a job's output, not all of it.
 MAX_LOG = 4000
 # Finished jobs stay queryable for a while, then go — the UI only polls the
 # one it just started, and an unbounded dict is a slow leak in a long session.
 MAX_JOBS = 60
 
-LIVE_PROCS: "set[subprocess.Popen]" = set()
+# Every live child (gmsh worker, solver), with the commands that stop what it
+# started somewhere this process cannot signal. Tracked so cancel and shutdown
+# can reap them: on Windows a wsl.exe child sharing the console process group
+# receives the same Ctrl+C and can leave the server unkillable.
+LIVE_PROCS: "dict[subprocess.Popen, list]" = {}
 _PROC_LOCK = threading.Lock()
 
+# Stops a process and everything below it, children first so nothing is
+# orphaned part-way. Run inside WSL against the pid the launch recorded.
+_KILL_TREE = ('k() {{ for c in $(pgrep -P "$1"); do k "$c"; done; '
+              'kill -TERM "$1" 2>/dev/null; }}; '
+              'p=$(cat {pidfile} 2>/dev/null) && [ -n "$p" ] && k "$p"')
 
-def popen_isolated(argv, **kw) -> subprocess.Popen:
+
+def popen_isolated(argv, cleanup=None, **kw) -> subprocess.Popen:
     """Spawn a child that does NOT share the parent's Ctrl+C.
 
     Windows: CREATE_NEW_PROCESS_GROUP keeps the console Ctrl+C from reaching
-    it. POSIX: start_new_session does the same for SIGINT.
+    it. POSIX: start_new_session does the same for SIGINT, and makes the child
+    the leader of its own process group, so the whole tree can be signalled.
+
+    `cleanup` is a list of argv to run when the child is stopped early, for
+    work it started that no local signal reaches (a WSL process, a container).
     """
     if sys.platform == "win32":
         kw["creationflags"] = kw.get("creationflags", 0) | subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kw["start_new_session"] = True
-    proc = subprocess.Popen(argv, **kw)
+    try:
+        proc = subprocess.Popen(argv, **kw)
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"Could not start `{argv[0]}`: it is not installed or not on PATH. "
+            "Check the solver settings (LATTICE_ASTER_CMD, LATTICE_CCX_CMD or "
+            "lattice.toml).") from None
     with _PROC_LOCK:
-        LIVE_PROCS.add(proc)
+        LIVE_PROCS[proc] = list(cleanup or [])
     return proc
 
 
 def reap(proc: subprocess.Popen) -> None:
     with _PROC_LOCK:
-        LIVE_PROCS.discard(proc)
+        LIVE_PROCS.pop(proc, None)
+
+
+def terminate_tree(proc: subprocess.Popen, grace: float = 3.0) -> None:
+    """Stop a child and everything it started.
+
+    terminate() alone signals only the direct child. That is the solver for
+    CalculiX, but for code_aster it is run_aster, whose solver process kept
+    running after a cancel — still writing into the run directory the next
+    run would use. Under WSL or docker the solver is not even a local process.
+    """
+    if proc.poll() is not None:
+        return          # finished: nothing to stop, and its pid may be reused
+    with _PROC_LOCK:
+        cleanup = LIVE_PROCS.get(proc, [])
+    for argv in cleanup:
+        try:
+            subprocess.run(argv, capture_output=True, timeout=20)
+        except Exception:  # noqa: BLE001 — best effort; the local kill follows
+            pass
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=10)
+        else:
+            os.killpg(proc.pid, signal.SIGTERM)
+    except Exception:  # noqa: BLE001
+        try:
+            proc.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        proc.wait(timeout=grace)
+    except Exception:  # noqa: BLE001
+        try:
+            if sys.platform == "win32":
+                proc.kill()
+            else:
+                os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def kill_all_children(timeout: float = 3.0) -> int:
-    """Terminate every tracked child. Returns how many were still running."""
+    """Stop every tracked child and its tree. Returns how many were running."""
     with _PROC_LOCK:
         procs = list(LIVE_PROCS)
-    n = 0
+    n = sum(1 for p in procs if p.poll() is None)
     for p in procs:
-        if p.poll() is None:
-            n += 1
-            try:
-                p.terminate()
-            except Exception:  # noqa: BLE001
-                pass
-    deadline = time.time() + timeout
-    for p in procs:
-        try:
-            p.wait(timeout=max(0.0, deadline - time.time()))
-        except Exception:  # noqa: BLE001
-            try:
-                p.kill()
-            except Exception:  # noqa: BLE001
-                pass
+        terminate_tree(p, grace=timeout)
     return n
+
+
+class Cancelled(BaseException):
+    """The job was cancelled: stop here, and do not report it as a failure.
+
+    A BaseException, like KeyboardInterrupt, so the many broad `except
+    Exception` fallbacks in the solve path cannot swallow it. When one did,
+    a cancel during preload calibration read as "calibration failed" and the
+    job went on to launch the main solve.
+    """
+
+
+def check_cancelled(job) -> None:
+    if job.cancel_requested:
+        raise Cancelled()
 
 
 class Job:
@@ -84,6 +143,11 @@ class Job:
         self.started = time.time()
         self.finished = None
         self._proc = None
+        # Asked to stop. The status stays "running" until the job's thread
+        # has actually stopped: marked cancelled at once, it released the
+        # run directory and the mesh to the next job while the solver it had
+        # started was still being killed and still writing.
+        self.cancel_requested = False
         self._lock = threading.Lock()
 
     def append(self, line: str):
@@ -108,13 +172,15 @@ class Job:
             return self.log[start:], self.dropped + len(self.log)
 
     def cancel(self):
+        if self.status != "running":
+            return      # a finished job stays what it was
+        self.cancel_requested = True
+        self.append("Cancelling…")
         p = self._proc
-        if p and p.poll() is None:
-            try:
-                p.terminate()
-            except Exception:  # noqa: BLE001
-                pass
-        self.status = "cancelled"
+        if p is not None:
+            # off the request thread: stopping a WSL or docker run means
+            # running a command there, which can take a few seconds
+            threading.Thread(target=terminate_tree, args=(p,), daemon=True).start()
 
 
 class JobManager:
@@ -167,14 +233,22 @@ class JobManager:
         def run():
             try:
                 job.result = fn(job)
-                if job.status == "running":
-                    job.status = "done"
+                # a cancel that arrived after the last check came too late:
+                # the work is complete and saved, so it is done
+                job.status = "done"
+            except Cancelled:
+                job.append("Cancelled.")
+                job.status = "cancelled"
             except Exception as e:  # noqa: BLE001
-                job.error = str(e)
-                job.append(f"ERROR: {e}")
-                for ln in traceback.format_exc().splitlines()[-6:]:
-                    job.append(ln)
-                if job.status == "running":
+                if job.cancel_requested:
+                    # the kill surfaced as an error somewhere; it is not one
+                    job.append("Cancelled.")
+                    job.status = "cancelled"
+                else:
+                    job.error = str(e)
+                    job.append(f"ERROR: {e}")
+                    for ln in traceback.format_exc().splitlines()[-6:]:
+                        job.append(ln)
                     job.status = "failed"
             finally:
                 job.finished = time.time()
@@ -188,29 +262,52 @@ class JobManager:
 
 # --------------------------------------------------------------------------
 
-def solver_command(cfg: SolverConfig, jobdir: str) -> list:
+PID_FILE = ".lattice_pid"
+
+
+def solver_command(cfg: SolverConfig, jobdir: str, name: str = "") -> list:
     """Build the subprocess argv that runs `run_aster run.export` inside jobdir."""
     if cfg.mode == "native":
         return shlex.split(cfg.cmd) + ["run.export"]
     if cfg.mode == "wsl":
         wsl_dir = win_to_wsl_path(jobdir)
-        inner = f"cd {shlex.quote(wsl_dir)} && {cfg.cmd} run.export"
+        # the shell records its pid so a cancel can stop the tree under it:
+        # ending wsl.exe on the Windows side does not end the Linux processes
+        inner = (f"cd {shlex.quote(wsl_dir)} && echo $$ > {PID_FILE} && "
+                 f"{cfg.cmd} run.export")
         return ["wsl.exe", "-d", cfg.wsl_distro, "--", "bash", "-lc", inner]
     if cfg.mode == "docker":
-        return ["docker", "run", "--rm",
+        # named, because stopping the docker client leaves the container running
+        return ["docker", "run", "--rm"] + (["--name", name] if name else []) + [
                 "-v", f"{jobdir}:/job", "-w", "/job",
                 cfg.docker_image] + shlex.split(cfg.cmd) + ["run.export"]
     raise RuntimeError("No code_aster solver configured (demo mode). See README → Solver setup.")
 
 
+def solver_cleanup(cfg: SolverConfig, jobdir: str, name: str = "") -> list:
+    """Commands that stop a code_aster run this process cannot signal."""
+    if cfg.mode == "wsl":
+        pidfile = shlex.quote(win_to_wsl_path(jobdir) + "/" + PID_FILE)
+        # -e, not --: without it the default shell expands $(…) and $1 in
+        # the script before bash ever sees it
+        return [["wsl.exe", "-d", cfg.wsl_distro, "-e", "bash", "-c",
+                 _KILL_TREE.format(pidfile=pidfile)]]
+    if cfg.mode == "docker" and name:
+        return [["docker", "kill", name]]
+    return []
+
+
 def run_solver(cfg: SolverConfig, jobdir: str, job: Job) -> int:
-    argv = solver_command(cfg, jobdir)
+    check_cancelled(job)
+    name = f"lattice-{job.id}-{uuid.uuid4().hex[:4]}"
+    argv = solver_command(cfg, jobdir, name)
     job.append(f"$ {' '.join(argv)}")
     logfile = os.path.join(jobdir, "log.txt")
     cwd = jobdir if cfg.mode == "native" else None
     rc = -1
     with open(logfile, "w", encoding="utf-8", errors="replace") as lf:
-        proc = popen_isolated(argv, cwd=cwd, stdout=subprocess.PIPE,
+        proc = popen_isolated(argv, cleanup=solver_cleanup(cfg, jobdir, name),
+                              cwd=cwd, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True,
                               encoding="utf-8", errors="replace", bufsize=1)
         job._proc = proc
@@ -228,6 +325,7 @@ def run_solver(cfg: SolverConfig, jobdir: str, job: Job) -> int:
         finally:
             reap(proc)
     job.append(f"[exit code {rc}]")
+    check_cancelled(job)
     return rc
 
 
@@ -249,6 +347,7 @@ def ccx_env(cfg: SolverConfig, base: dict = None) -> dict:
 
 def run_ccx(cfg: SolverConfig, jobdir: str, job: Job, jobname: str = "job") -> int:
     """Run CalculiX in `jobdir`. ccx takes the deck name without .inp."""
+    check_cancelled(job)
     argv = shlex.split(cfg.ccx_cmd) + ["-i", jobname]
     job.append(f"$ {' '.join(argv)}  (in {jobdir})")
     env = ccx_env(cfg)
@@ -281,6 +380,7 @@ def run_ccx(cfg: SolverConfig, jobdir: str, job: Job, jobname: str = "job") -> i
         finally:
             reap(proc)
     job.append(f"[exit code {rc}]")
+    check_cancelled(job)
     return rc
 
 

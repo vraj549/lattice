@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lattice — FEA workbench</title>
 <link rel="icon" type="image/svg+xml" href="/ui/favicon.svg">
-<link rel="stylesheet" href="/ui/app.css?v=0.27.0">
+<link rel="stylesheet" href="/ui/app.css">
 <script type="importmap">
 { "imports": { "three": "/ui/vendor/three.module.js" } }
 </script>
@@ -128,10 +128,9 @@
             </select>
           </label>
           <div class="hint" id="npAsmHint">
-            Bonded merges coincident faces into one, so parts share nodes and
-            are welded together. Choose separate parts if a joint has to be
-            able to slip or open — a preloaded bolted joint usually does.
-            This cannot be changed later without re-importing.
+            Bonded welds touching parts together. Choose separate parts if a
+            joint must be able to slip or open, as a preloaded bolted joint
+            usually must. Changing this later means re-importing.
           </div>
           <button class="btn btn-accent" type="submit" id="npGo">Import geometry</button>
           <div class="hint" id="npStatus"></div>
@@ -142,6 +141,6 @@
   </div>
 </div>
 
-<script type="module" src="/ui/js/main.js?v=0.27.0"></script>
+<script type="module" src="/ui/js/main.js"></script>
 </body>
 </html>

@@ -184,3 +184,12 @@ def test_area_lookup_is_all_or_nothing():
 
 def test_area_lookup_survives_an_empty_interface():
     assert slip.areas_for({"1": 1.0}, []) == []
+
+
+def test_one_friction_default_and_zero_is_an_entry():
+    """The solvers fell back to 0.2 and the slip check to 0.15, and `or`
+    turned an entered 0 into either."""
+    assert slip.mu_of({}) == slip.DEFAULT_MU
+    assert slip.mu_of({"mu": None}) == slip.DEFAULT_MU
+    assert slip.mu_of({"mu": 0}) == 0.0
+    assert slip.mu_of({"mu": 0.35}) == 0.35

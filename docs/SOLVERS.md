@@ -17,9 +17,9 @@ loads and contacts are shared; only the deck written at the end differs.
 | Remote force / moment | yes | — |
 | Frictionless supports | any face | planar faces only |
 
-Pick the engine per analysis in **Analysis Settings → Solver**, or on the
-analysis itself. Anything the chosen engine cannot do is listed as a blocker
-*before* you run, with a one-click switch to an engine that can.
+Pick the engine per analysis under **Solver** on the analysis panel.
+Anything the chosen engine cannot do is listed as a blocker *before* you run,
+with a one-click switch to an engine that can.
 
 ## CalculiX runs single-threaded, deliberately
 

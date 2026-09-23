@@ -90,12 +90,6 @@ body {
 button, select, input, textarea { font-family: inherit; font-size: inherit; color: inherit; }
 :focus-visible { outline: 1px solid var(--accent); outline-offset: 0; }
 
-/* Section labels: small and quiet. Letterspaced caps at 10px everywhere was
-   the single biggest contributor to the generic look. */
-.lbl-OLD {
-  font-size: 10.5px; font-weight: 600; color: var(--faint);
-  text-transform: uppercase; letter-spacing: .04em;
-}
 .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
 /* ---------- shell ---------- */
@@ -169,6 +163,7 @@ button, select, input, textarea { font-family: inherit; font-size: inherit; colo
 .dot.ok { background: var(--ok); }
 .dot.run { background: var(--run); animation: pulse 1.4s ease-in-out infinite; }
 .dot.bad { background: var(--crit); }
+.dot.warn { background: var(--run); }
 .dot.idle { background: var(--line-2); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
@@ -442,9 +437,13 @@ dl { margin: 0; }
 
 .rtable { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 10.5px; }
 .rtable th, .rtable td { padding: 2px 5px; text-align: right; border-bottom: 1px solid var(--panel-3); }
+/* No text-transform. These headers carry units and symbols, and uppercasing
+   rewrote them: g²/Hz became "G²/HZ" (G is giga), the damping column's ζ
+   became Ζ — capital zeta, indistinguishable from a Latin Z — and α became
+   Α, which reads as A. Engineering notation is case-sensitive. */
 .rtable th {
-  color: var(--faint); font-weight: 600; text-transform: uppercase;
-  font-size: 9.5px; letter-spacing: .03em; border-bottom-color: var(--line);
+  color: var(--faint); font-weight: 600;
+  font-size: 10.5px; border-bottom-color: var(--line);
 }
 .rtable td:first-child, .rtable th:first-child { text-align: left; }
 .rtable tr:hover td { background: var(--panel-2); }
@@ -717,9 +716,13 @@ body.show-help .helpq { background: var(--panel-4); color: var(--text); }
 
 
 /* --------------------------------------------------------------- hierarchy */
+/* Section headings are set in sentence case for the same reason as the table
+   headers: several carry units ("Response PSD (g²/Hz)", "Frequency response
+   (mm)"), and uppercasing turned them into G²/HZ and MM. Hierarchy comes from
+   weight and colour instead. */
 .lbl {
-  font: 600 var(--t-micro)/1.2 var(--ui); letter-spacing: .06em;
-  text-transform: uppercase; color: var(--faint);
+  font: 600 var(--t-body)/1.2 var(--ui);
+  color: var(--dim);
 }
 .tnode { font-size: var(--t-body); }
 .tnode .icon, .tnode svg { width: var(--ico); height: var(--ico); }

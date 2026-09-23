@@ -118,9 +118,9 @@ export function findPeaks(freq, mag, { minRatio = 0.08, maxPeaks = 12 } = {}) {
   return peaks.slice(0, maxPeaks).sort((p, r) => p.f - r.f);
 }
 
-/** Large FRF plot: log-log, peak markers, per-curve legend. */
 /**
- * Draw an FRF, and keep it drawn correctly when the pane is resized.
+ * Large FRF plot — log-log, peak markers, one legend entry per curve — kept
+ * drawn correctly when the pane is resized.
  *
  * A canvas has two sizes: the CSS box and the pixel backing store. Drawing
  * once at load fixes the backing store, so dragging the splitter afterwards

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import math
 
-from . import random_vib
+from . import random_vib, slip
 
 from .materials import to_solver_units
 from .meshing import group_name
@@ -604,7 +604,7 @@ def _contact_defi(b: CommBuild, contacts: list) -> "str|None":
         kind = c.get("kind")
         b.w(f"    _F(GROUP_MA_MAIT='{c['ga']}', GROUP_MA_ESCL='{c['gb']}',")
         if kind == "friction":
-            mu = float(c.get("mu") or 0.2)
+            mu = slip.mu_of(c)
             b.w("       ALGO_CONT='STANDARD', COEF_CONT=100.0,")
             b.w(f"       FROTTEMENT='COULOMB', COULOMB={_fmt(mu)},")
             b.w("       ALGO_FROT='STANDARD', COEF_FROT=100.0,")
@@ -906,11 +906,16 @@ def write_harmonic(setup: dict, meta: dict, mesh_stats: dict, cfg: dict,
 
     f0 = float(cfg.get("f_min", 20.0))
     f1 = float(cfg.get("f_max", 2000.0))
-    nstep = int(cfg.get("n_steps", 200))
+    # 600 log steps put about five points across a resonance at 2 % damping,
+    # which is what it takes to catch the peak; 200 put fewer than two
+    nstep = int(cfg.get("n_steps", 600))
     spacing = cfg.get("spacing", "log")
     zeta = float(cfg.get("damping", 0.02))
     if f1 <= f0 or f0 <= 0:
-        raise ValueError("Harmonic range must satisfy 0 < f_min < f_max")
+        raise ValueError(f"The sweep runs from {f0:g} to {f1:g} Hz. It needs "
+                         "0 < start < end.")
+    if nstep < 2:
+        raise ValueError(f"The sweep has {nstep} step(s); it needs at least 2.")
 
     if spacing == "log":
         freqs = [f0 * (f1 / f0) ** (i / (nstep - 1)) for i in range(nstep)]

@@ -248,6 +248,21 @@ def detect(workspace: str = ".") -> SolverConfig:
     if explicitly_set:
         cfg.detail = ("configured: none — code_aster is switched off here"
                       if cfg.mode == "none" else f"configured: {cfg.mode}")
+        # Trusted, but not blindly: the cheap checks, so a typo is reported
+        # at startup rather than as "[Errno 2]" at the end of the first run.
+        # (Whether run_aster exists inside WSL or an image takes seconds to
+        # ask, and a solve reports it clearly enough.)
+        exe = {"native": (cfg.cmd.split() or [""])[0], "wsl": "wsl.exe",
+               "docker": "docker"}.get(cfg.mode)
+        if cfg.mode not in ("native", "wsl", "docker", "none"):
+            cfg.notes.append(f"Unknown solver mode {cfg.mode!r}; use native, "
+                             "wsl, docker or none.")
+        elif exe and not shutil.which(exe):
+            cfg.notes.append(f"Solver mode {cfg.mode} is configured, but "
+                             f"`{exe}` is not on PATH, so runs will not start.")
+        if cfg.mode == "wsl" and not cfg.wsl_distro:
+            cfg.notes.append("Solver mode wsl needs a distribution: set "
+                             "LATTICE_WSL_DISTRO or wsl_distro in lattice.toml.")
         return _probe_resources(cfg)
 
     # --- auto-detect ---

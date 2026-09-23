@@ -62,9 +62,13 @@ def op_mesh(a: dict) -> None:
     if s.get("quality_min") is not None:
         log(f"Quality (minSICN): min {s['quality_min']:.3f}, avg {s['quality_avg']:.3f}")
     log(f"Estimated factorization memory ~ {s['mem_gb_est']} GB")
-    if s.get("islands", 1) > 1:
-        log(f"WARNING: mesh has {s['islands']} disconnected groups — "
-            "parts are not joined; check that solids actually touch.")
+    # Separate pieces are normal for an assembly — contacts, ties and bolts
+    # join them at solve time, and the UI checks those. More pieces than
+    # bodies is not: a body is itself in pieces, which nothing can join.
+    if s.get("islands", 1) > s.get("volumes", 1):
+        log(f"WARNING: the mesh is in {s['islands']} pieces but has "
+            f"{s['volumes']} bodies, so at least one body is itself split. "
+            "Check the geometry for slivers or gaps.")
 
 
 def main() -> int:

@@ -557,7 +557,7 @@ def response(meta: dict, cfg: dict, bolt_geom: dict = None) -> dict:
             "unitary column cannot do — treat the forces below as suspect.")
     elif out["mass_captured"] < 0.9:
         warnings.append(
-            f"The modal basis carries {100 * out['mass_captured']:.0f}% of the "
+            f"The modal basis carries {100 * out['mass_captured']:.0f} % of the "
             "effective mass along "
             f"{out['axis']}. A shock acts through inertia, so the missing "
             "mass is added at the ZPA — extract more modes to rely on this.")
@@ -569,7 +569,7 @@ def response(meta: dict, cfg: dict, bolt_geom: dict = None) -> dict:
     out["signed"] = bool(sgn)
     if not sgn and out["rigid_share"] > 0.3:
         warnings.append(
-            f"The response is {100 * out['rigid_share']:.0f}% rigid, and this "
+            f"The response is {100 * out['rigid_share']:.0f} % rigid, and this "
             "run has no participation factors, so the rigid part of the probe "
             "and bolt figures below is summed on magnitudes. Those two are "
             "upper bounds; the interface load is exact either way.")

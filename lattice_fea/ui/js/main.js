@@ -2,7 +2,7 @@ import { api } from "./api.js";
 import { Viewer } from "./viewer.js";
 import { renderPanel, defaultAnalysis, solutionItems, el, solidName,
          compOptions, panelIsFrozen, setPanelThaw,
-         dependentsOfSolid, plural } from "./ui.js";
+         dependentsOfSolid, plural, needsLoads } from "./ui.js";
 import { renderTree, installTreeKeys } from "./tree.js";
 import { History } from "./history.js";
 import { SpaceMouse, available as smAvail } from "./spacemouse.js";
@@ -35,6 +35,7 @@ let pickCtx = null;          // {item, key} | {probe}
 // different analysis is selected, so "is the right thing on screen" cannot be
 // answered from it. Set only by loadField, which is what draws.
 let shown = null;            // {aid, field, step, comp} | null
+let fieldRequest = null;     // URL of the field fetch allowed to draw
 
 function showingResult(R) {
   return !!shown && !!R && S.view === "results"
@@ -184,6 +185,8 @@ const A = {
   addLoad(aid) {
     const a = (S.project.setup.analyses || []).find((x) => x.id === aid) || A.currentAnalysis();
     if (!a) { logLine("Add an analysis first — loads belong to one.", "warnln"); return; }
+    // the tree does not list loads on these, so one added here was invisible
+    if (!needsLoads(a)) { logLine(noLoadsReason(a), "warnln"); return; }
     a.loads ||= [];
     const l = { id: uid(), name: `Load ${a.loads.length + 1}`,
                 type: "force", faces: [], fx: 0, fy: 0, fz: -100 };
@@ -209,7 +212,7 @@ const A = {
     setup.contacts ||= [];
     if (!pairs.length) {
       if (geo.fragmented) {
-        logLine("This assembly was imported CONJOINED: coincident faces were "
+        logLine("This assembly was imported conjoined: coincident faces were "
               + "merged, so the parts share nodes and are already bonded. "
               + "Re-import with separate parts to define sliding contact.",
                 "warnln");
@@ -448,7 +451,9 @@ const A = {
     await saveNow();
     try {
       const { job } = await api.post(`/api/projects/${S.project.id}/mesh`);
-      watchJob(job, "Meshing", async () => {
+      watchJob(job, "Meshing", async (status) => {
+        // a mesh that did not finish leaves the previous one in place
+        if (status !== "done") return;
         S.meshData = await api.get(`/api/projects/${S.project.id}/mesh`);
         setView("mesh");
         viewer.showMeshPreview(S.meshData.skin);
@@ -466,7 +471,16 @@ const A = {
     refresh();
     try {
       const { job } = await api.post(`/api/projects/${S.project.id}/solve/${aid}`);
-      watchJob(job, "Solving", async (ok) => {
+      watchJob(job, "Solving", async (status) => {
+        if (status === "cancelled") {
+          // not a failure, and nothing to recover: a run clears the previous
+          // run's files when it starts, so there are no results now
+          delete S.runStatus[aid];
+          await refreshResultStatus();
+          refresh();
+          return;
+        }
+        const ok = status === "done";
         S.runStatus[aid] = ok ? "done" : "failed";
         if (ok) await A.openResults(aid);
         else {
@@ -559,11 +573,17 @@ const A = {
     const f = meta.fields.find((x) => x.name === R.field) || meta.fields[0];
     if (!f) return;
     const step = f.steps[Math.min(R.stepIdx || 0, f.steps.length - 1)];
+    const url = `/api/projects/${S.project.id}/results/${aid}/field` +
+      `?name=${encodeURIComponent(f.name)}&step=${encodeURIComponent(step.key)}` +
+      `&comp=${encodeURIComponent(R.comp || "MAG")}`;
+    // Only the newest request may draw. Fields are large and arrive out of
+    // order: a slow response to an earlier click painted the previous
+    // analysis's contour under the panel of the one selected since.
+    if (fieldRequest === url) return;          // already on its way
+    fieldRequest = url;
     try {
-      const payload = await api.get(
-        `/api/projects/${S.project.id}/results/${aid}/field` +
-        `?name=${encodeURIComponent(f.name)}&step=${encodeURIComponent(step.key)}` +
-        `&comp=${encodeURIComponent(R.comp || "MAG")}`);
+      const payload = await api.get(url);
+      if (fieldRequest !== url) return;
       R.payload = payload;
       const diag = S.project.geometry.diag;
       const autoScale = payload.disp_max > 1e-12 ? (diag * 0.05) / payload.disp_max : 0;
@@ -578,7 +598,11 @@ const A = {
       document.getElementById("vpStat").innerHTML =
         `max <b>${fmtVal(payload.max)} ${unit}</b><br>min <b>${fmtVal(payload.min)} ${unit}</b>` +
         (payload.disp_max ? `<br>deform ×${fmtVal(autoScale * (R.defMult || 1))}` : "");
-    } catch (e) { logLine(`field: ${e.message}`, "badln"); }
+    } catch (e) {
+      if (fieldRequest === url) logLine(`field: ${e.message}`, "badln");
+    } finally {
+      if (fieldRequest === url) fieldRequest = null;
+    }
   },
 
   showMode(aid, stepIdx) {
@@ -1019,6 +1043,7 @@ function watchJob(jid, label, onFinish) {
   document.getElementById("logToggle").setAttribute("aria-expanded", "true");
   document.getElementById("logMeta").textContent = label;
   document.getElementById("logCancel").hidden = false;
+  document.getElementById("logCancel").disabled = false;
   let offset = 0;
   const poll = async () => {
     try {
@@ -1034,7 +1059,9 @@ function watchJob(jid, label, onFinish) {
       document.getElementById("logMeta").textContent = `${label} — ${j.status}`;
       document.getElementById("logCancel").hidden = true;
       activeJob = null;
-      onFinish?.(j.status === "done");
+      renderStatus();
+      renderToolbar();
+      onFinish?.(j.status);
     } catch (e) {
       logLine(`job poll failed: ${e.message}`, "badln");
       document.getElementById("logCancel").hidden = true;
@@ -1047,8 +1074,13 @@ function watchJob(jid, label, onFinish) {
   poll();
 }
 
-document.getElementById("logCancel").addEventListener("click", () => {
-  if (activeJob) api.post(`/api/jobs/${activeJob}/cancel`).catch(() => {});
+document.getElementById("logCancel").addEventListener("click", (e) => {
+  if (!activeJob) return;
+  // The job keeps running until its solver has actually stopped, and polling
+  // carries on until then — so the next run cannot start on top of it.
+  e.currentTarget.disabled = true;
+  document.getElementById("logMeta").textContent += " — cancelling\u2026";
+  api.post(`/api/jobs/${activeJob}/cancel`).catch(() => {});
 });
 document.getElementById("logToggle").addEventListener("click", (e) => {
   const d = document.getElementById("logDrawer");
@@ -1118,6 +1150,8 @@ async function refreshResultStatus() {
 // ---------------- views ----------------
 function setView(v) {
   S.view = v;
+  // leaving results: a field still on its way must not pull the view back
+  if (v !== "results") fieldRequest = null;
   for (const b of document.querySelectorAll(".vtab")) {
     b.setAttribute("aria-selected", String(b.dataset.view === v));
   }
@@ -1219,7 +1253,8 @@ function stepHistory(dir, emptyMsg) {
   }
   // A selection can point at something the undo removed.
   const kinds = { contact: "contacts", bolt: "bolts", probe: "probes",
-                  tie: "ties", analysis: "analyses" };
+                  tie: "ties", analysis: "analyses", settings: "analyses",
+                  excitation: "analyses", solution: "analyses" };
   const list = kinds[S.selection?.kind];
   if (list && !(S.project.setup[list] || []).some(
       (x) => String(x.id) === String(S.selection.id))) {
@@ -1282,6 +1317,7 @@ async function openProject(pid) {
   document.getElementById("projName").textContent = S.project.name;
   document.getElementById("overlay").hidden = true;
   S.results = {}; S.runStatus = {}; S.meshData = null; S.activeResult = null; shown = null;
+  fieldRequest = null;
   // Derived results belong to a run, and this is a different project.
   S.sizing = {}; S.slipResults = {}; S.shockResults = {}; S.randomResults = {};
   S.selection = { kind: "model", id: "root" };
@@ -1692,6 +1728,11 @@ const SNAP_LABEL = {
 
 const trunc = (t, n) => (t.length > n ? t.slice(0, n - 1) + "\u2026" : t);
 
+function noLoadsReason(a) {
+  return a.type === "modal" ? "A modal analysis takes no loads."
+    : "This analysis is driven through its base, not by loads.";
+}
+
 const tbtn = (o) => el("button", {
   class: `tbtn${o.primary ? " primary" : ""}${o.label ? "" : " icononly"}`,
   title: o.title || o.label || "",
@@ -1981,7 +2022,9 @@ function contextGroup() {
       return tgroup(
         tbtn({ glyph: "⊥", label: "Support", title: "Add a support",
                onclick: () => A.addSupport(a.id) }),
-        tbtn({ glyph: "↧", label: "Load", title: "Add a load",
+        tbtn({ glyph: "↧", label: "Load",
+               title: needsLoads(a) ? "Add a load" : noLoadsReason(a),
+               disabled: !needsLoads(a),
                onclick: () => A.addLoad(a.id) }),
         del("analyses", "analysis"));
     }
@@ -2231,7 +2274,7 @@ function renderStatus() {
 // started before a `git pull`, it is still running the old code in memory —
 // restarting it is the fix, and this makes that state visible instead of
 // looking like a mysteriously dead button.
-const UI_BUILD = "1.0.4";   // kept in step with __version__ by tests/test_docs.py
+const UI_BUILD = "1.0.5";   // kept in step with __version__ by tests/test_docs.py
 
 function checkVersionSkew() {
   const server = S.config?.version;
@@ -2279,7 +2322,9 @@ function updateSolverChip() {
   } else if (engines.length) {
     // Whatever can actually run goes in the chip. Reporting only code_aster
     // told a Mac with a working CalculiX that it had no solver at all.
-    chip.querySelector(".dot").className = "dot ok";
+    // a configuration note (a solver set up but not on PATH) is worth a
+    // glance before the first run, not a surprise at the end of it
+    chip.querySelector(".dot").className = sv.notes?.length ? "dot warn" : "dot ok";
     chipText.textContent = engines.map((e) => e.label).join(" + ")
       + (sv.mode === "wsl" && sv.wsl_distro ? ` · ${sv.wsl_distro}` : "");
   } else {
@@ -2291,9 +2336,10 @@ function updateSolverChip() {
     : sv.detail) + (sv.notes?.length ? "\n" + sv.notes.join("\n") : "");
   const ov = document.getElementById("ovSolver");
   if (ov) {
-    ov.textContent = engines.length
+    ov.textContent = (engines.length
       ? `Solvers: ${engines.map((e) => `${e.label} (${e.types.join(", ")})`).join(" · ")}`
-      : `⚠ ${sv.detail} — meshing and setup still work; see README to enable solving.`;
+      : `⚠ ${sv.detail} — meshing and setup still work; see README to enable solving.`)
+      + (sv.notes?.length ? `\n⚠ ${sv.notes.join("\n⚠ ")}` : "");
   }
 }
 

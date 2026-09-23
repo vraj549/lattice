@@ -346,7 +346,7 @@ def test_unv_groups_hold_elements_only(imported, tmp_path):
 
 # ---------------------------------------------------------------- hexahedra
 
-def _mesh_shape(tmp, build, elements="tet", size=4.0):
+def _mesh_shape(tmp, build, elements="tet", size=4.0, suppressed=()):
     """Mesh a shape built in gmsh, through the real mesh_project path."""
     import gmsh as _g
     from lattice_fea.geometry import GMSH_LOCK, _gmsh, _fresh_model
@@ -362,6 +362,7 @@ def _mesh_shape(tmp, build, elements="tet", size=4.0):
         if brep.endswith(".step") else geometry._analyze_brep(brep)
     setup = default_setup()
     setup["mesh"] = {"size_mm": size, "order": 2, "elements": elements}
+    setup["suppressed_solids"] = list(suppressed)
     notes = []
     out = meshing.mesh_project(brep, os.path.join(tmp, "m.unv"), meta, setup,
                                progress=notes.append)
@@ -441,6 +442,42 @@ def test_a_shape_that_does_not_sweep_falls_back(tmp_path):
     kinds = out["stats"]["element_kinds"]
     assert all(k.startswith("TET") for k in kinds), kinds
     assert any("no sweep" in n for n in notes), notes
+
+
+def _two_plates(g):
+    """Two plates that do not touch — two islands, whatever the elements."""
+    g.model.occ.addBox(0, 0, 0, 100, 40, 2)
+    g.model.occ.addBox(0, 0, 10, 100, 40, 2)
+
+
+def test_islands_are_counted_in_hex_meshes(tmp_path):
+    """The counter used to know only tetrahedra, so a swept mesh reported one
+    island however many pieces it was in — the check was blind exactly where
+    hexes are used."""
+    hexed, _ = _mesh_shape(str(tmp_path), _two_plates, elements="hex")
+    assert all(k.startswith("HEX") for k in hexed["stats"]["element_kinds"])
+    assert hexed["stats"]["islands"] == 2
+    tets, _ = _mesh_shape(str(tmp_path), _two_plates, elements="tet")
+    assert tets["stats"]["islands"] == 2
+
+
+def _two_pockets(g):
+    """Two blocks that do not sweep, so a hex request falls back."""
+    for x in (0, 150):
+        b = g.model.occ.addBox(x, 0, 0, 100, 40, 10)
+        c = g.model.occ.addCylinder(x + 50, 20, 5, 0, 0, 6, 8)
+        g.model.occ.cut([(3, b)], [(3, c)])
+
+
+def test_a_failed_sweep_does_not_bring_removed_bodies_back(tmp_path):
+    """The tet fallback reloads the geometry from the file, and used to skip
+    the step that removes suppressed bodies — so asking for hexes meshed a
+    removed body back into the model."""
+    out, notes = _mesh_shape(str(tmp_path), _two_pockets, elements="hex",
+                             suppressed=[1])
+    assert any("no sweep" in n for n in notes), notes
+    assert out["stats"]["volumes"] == 1
+    assert "V1" not in out["stats"].get("unv_groups", [])
 
 
 def test_the_default_is_still_tetrahedra(tmp_path):

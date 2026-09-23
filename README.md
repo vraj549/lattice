@@ -134,11 +134,15 @@ boundary conditions and a **Solution** node holding its results:
 bracket assembly                 3 solids
   Geometry / Connections / Probes / Mesh
   Static structural              ✓
-    Analysis Settings
     Fixed base                   2 faces
     Bearing load                 1 face
     Solution                     ✓
       Contours · Bolt forces · Reactions
+  Random vibration               ✓
+    Analysis settings            ζ 0.02
+    Fixed base                   2 faces
+    Base excitation              6.06 g RMS · Z
+    Solution                     ✓
 ```
 
 Every branch collapses (state is remembered per project), rows carry a type
@@ -167,7 +171,7 @@ connections and Nastran spider models:
 
 1. **Bolts → + add**, then pick the hole cylinder (or bearing face) on each
    side. Cylindrical faces are auto-detected — the panel shows the hole ⌀ and
-   suggests a nominal size. Sizes run **M1.6–M8** (ISO coarse) and
+   suggests a nominal size. Sizes run **M1.6–M12** (ISO coarse) and
    **#0-80, #2-56, #4-40, #6-32** (unified inch).
 2. Pick a **grade** — ISO class 8.8 / 10.9 / 12.9, ASTM A574 alloy socket head,
    A2-70 / 18-8 stainless, titanium Grade 5, PEEK or PEEK GF30 — or type a
@@ -304,8 +308,9 @@ with any solver: mode 1 of a healthy constrained model is not ~0 Hz, and
 reaction sums should match what you applied.
 
 **Assemblies bond by shared geometry.** Parts that merely touch without
-coincident faces are not connected — the mesh step warns about disconnected
-groups. Interference fits are out of scope.
+coincident faces are not connected unless a contact, tie or bolt joins them —
+the mesh panel names any bodies that nothing joins. Interference fits are out
+of scope.
 
 **Everything is readable.** The generated `run.comm` / `job.inp` for every
 analysis is kept in `workspace/projects/<id>/runs/<analysis>/`, next to the

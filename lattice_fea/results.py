@@ -360,7 +360,7 @@ def build_results_ccx(run_dir: str, jobname: str = "job",
             if rel > 0.02:
                 meta["warnings"].append(
                     f"EQUILIBRIUM CHECK FAILED: support reactions do not balance "
-                    f"the applied load ({rel * 100:.1f}% residual). Applied "
+                    f"the applied load ({rel * 100:.1f} % residual). Applied "
                     f"{_vec(applied)} N, reactions {_vec(react)} N. Do not use "
                     f"these results. The usual cause is a multithreaded "
                     f"factorization returning a corrupted solution — set "

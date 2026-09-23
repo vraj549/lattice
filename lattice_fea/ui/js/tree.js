@@ -11,12 +11,11 @@
 // label rather than a thing you could open.
 
 import { el, needsLoads, analysisStatus, solutionItems, meshIssues, solidName,
-         loadMeta, excitationMeta, boltSizeOf, engineOf,
-         engineBlockers, ENGINE_LABEL } from "./ui.js";
+         loadMeta, excitationMeta, boltSizeOf, engineOf, effectiveSweep,
+         hasSettings, engineBlockers, ENGINE_LABEL, TYPE_NAMES, plural } from "./ui.js";
 import { icon, RESULT_ICONS } from "./icons.js";
 import { fmtVal } from "./colormap.js";
 
-const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 // ---------------------------------------------------------------- model
 
@@ -135,10 +134,10 @@ function buildModel(S, A) {
 function analysisNode(S, A, a) {
   a.supports ||= []; a.loads ||= [];
   const st = analysisStatus(S, a);
-  const kids = [{
+  const kids = hasSettings(a) ? [{
     key: `set:${a.id}`, kind: "settings", id: a.id, icon: "settings",
     label: "Analysis settings", meta: settingsMeta(a),
-  }];
+  }] : [];
 
   for (const sup of a.supports) {
     kids.push({
@@ -161,9 +160,9 @@ function analysisNode(S, A, a) {
     }
   } else if (a.type !== "modal") {
     // Base-driven studies take no applied loads. Show what IS driving them,
-    // pointing at the settings where its direction and level live.
+    // with its own panel for direction, level and spectrum.
     kids.push({
-      key: `bx:${a.id}`, kind: "settings", id: a.id,
+      key: `bx:${a.id}`, kind: "excitation", id: a.id,
       icon: "load", iconClass: "c-load",
       label: "Base excitation", meta: excitationMeta(a),
     });
@@ -190,7 +189,7 @@ function analysisNode(S, A, a) {
   } else {
     insert.push({ label: "Load", disabled: true,
       hint: a.type === "modal" ? "modal takes no loads"
-                               : "this study is driven through its supports" });
+                               : "driven through its base" });
   }
 
   return {
@@ -222,15 +221,17 @@ const CONTACT_CLASS = { bonded: "c-ok", noseparation: "c-load",
                         frictionless: "c-load", friction: "c-load" };
 
 const ANALYSIS_ICONS = { static: "analysis", modal: "modes",
-                         harmonic: "frf", random: "random" };
-const TYPE_NAMES = { static: "Static structural", modal: "Modal",
-                     harmonic: "Harmonic response", random: "Random vibration" };
+                         harmonic: "frf", random: "random", shock: "shock" };
 
 function settingsMeta(a) {
   const c = a.config || {};
-  if (a.type === "modal") return `${c.n_modes || 10} modes`;
-  if (a.type === "harmonic") return `${fmtVal(c.f_min || 0)}–${fmtVal(c.f_max || 0)} Hz`;
-  if (a.type === "random") return `${(c.spec || []).length} breakpoints`;
+  if (a.type === "modal") return plural(c.n_modes ?? 10, "mode");
+  if (a.type === "harmonic") {
+    const sw = effectiveSweep(a);
+    return `${fmtVal(sw.f_min)}\u2013${fmtVal(sw.f_max)} Hz`;
+  }
+  if (a.type === "random") return `\u03b6 ${c.damping ?? 0.02}`;
+  if (a.type === "shock") return (c.rule || "srss").toUpperCase();
   return "";
 }
 

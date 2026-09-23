@@ -76,7 +76,7 @@ def test_bolt_sizes_in_the_readme_match_the_table(docs):
     ui = _read("lattice_fea/ui/js/ui.js")
     sizes = re.findall(r'id:\s*"([^"]+)",\s*label:\s*"[^"]*",\s*d:', ui)
     metric = [x for x in sizes if x.startswith("M")]
-    assert metric[0] == "M1.6" and metric[-1] == "M8"
+    assert metric[0] == "M1.6" and metric[-1] == "M12"
     assert f"{metric[0]}–{metric[-1]}" in docs["README.md"], (
         "the README states a bolt size range that the table does not match")
     for s in ("0-80", "2-56", "4-40", "6-32"):

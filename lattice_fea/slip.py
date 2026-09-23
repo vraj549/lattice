@@ -38,6 +38,18 @@ import math
 
 import numpy as np
 
+# Friction coefficient when a contact does not set one: dry machined steel on
+# steel is 0.15-0.25. The solve and the slip check must use the same number,
+# and they did not — the check fell back to 0.15, the solvers to 0.2.
+DEFAULT_MU = 0.2
+
+
+def mu_of(contact: dict) -> float:
+    """The contact's friction coefficient. Zero is a real entry (a lubricated
+    or PTFE-faced interface), so only a missing value takes the default."""
+    v = contact.get("mu")
+    return DEFAULT_MU if v is None or v == "" else float(v)
+
 # code_aster's SIGM_NOEU component order
 COMPONENTS = ("SIXX", "SIYY", "SIZZ", "SIXY", "SIXZ", "SIYZ")
 
@@ -141,24 +153,20 @@ def verdict(c: dict) -> "tuple[bool, str]":
     engineer which of the two failures happened."""
     if not c.get("nodes"):
         return True, "No interface stress was recovered."
+    need = f"needs \u03bc = {c['mu_required']:.2f}, has {c['mu']:.2f}"
     if c["area_open"] > 0 and c["area_slipping"] > 0:
         return False, (
-            f"{100 * c['area_open']:.1f}% of the interface is in tension and "
-            f"{100 * c['area_slipping']:.1f}% exceeds friction — the bonded "
-            "solve is holding it both closed and stuck. Run it nonlinear.")
+            f"{100 * c['area_open']:.1f} % of the interface is in tension and "
+            f"{100 * c['area_slipping']:.1f} % slips. The bonded solve holds "
+            "it closed and stuck; run it nonlinear.")
     if c["area_open"] > 0:
         return False, (
-            f"{100 * c['area_open']:.1f}% of the interface is in tension. The "
-            "joint is opening; a bonded solve pulls where a real one lets go. "
-            "Run it nonlinear, or raise the preload.")
+            f"{100 * c['area_open']:.1f} % of the interface is in tension, so "
+            "the joint is opening. Run it nonlinear, or raise the preload.")
     if c["area_slipping"] > 0:
         return False, (
-            f"{100 * c['area_slipping']:.1f}% of the interface exceeds "
-            f"friction (needs mu = {c['mu_required']:.2f}, has "
-            f"{c['mu']:.2f}). The joint slips. Run it nonlinear, or raise the "
-            "preload until it does not.")
+            f"{100 * c['area_slipping']:.1f} % of the interface slips ({need}). "
+            "Run it nonlinear, or raise the preload.")
     return True, (
-        f"Stuck and closed everywhere — worst margin {c['min_margin']:.2f}, "
-        f"needs mu = {c['mu_required']:.2f} against {c['mu']:.2f}. A stuck "
-        "frictional interface and a bonded one are the same constraint, so "
-        "this linear result is the nonlinear one.")
+        f"Stuck and closed everywhere (worst margin {c['min_margin']:.2f}, "
+        f"{need}), so the linear result is the nonlinear one.")

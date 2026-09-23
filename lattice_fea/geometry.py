@@ -65,8 +65,8 @@ def import_step(step_path: str, brep_path: str, fragment: bool = True) -> dict:
 
         vols = gmsh.model.getEntities(3)
         if not vols:
-            raise ValueError("No solid bodies found in STEP file. "
-                             "Lattice v0.1 needs solids (surface/wire-only files are not supported).")
+            raise ValueError("The STEP file has no solid bodies. Lattice meshes "
+                             "solids; export the parts as solids, not surfaces.")
 
         # names before fragmenting (drop OCC translator boilerplate)
         pre_names = {}

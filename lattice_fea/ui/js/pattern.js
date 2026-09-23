@@ -57,7 +57,7 @@ export function describeFace(geo, tag) {
     ? ` on ${f.solids.map((s) => geo.solids.find((x) => x.tag === s)?.name || `solid ${s}`).join(" / ")}`
     : "";
   if (f.fit?.kind === "cylinder") {
-    return `⌀${(f.fit.radius * 2).toFixed(2)} hole${where}`;
+    return `⌀${Number((f.fit.radius * 2).toPrecision(4))} mm hole${where}`;
   }
   return `${f.fit?.kind === "plane" ? "planar" : "curved"} face, ${f.area.toFixed(0)} mm²${where}`;
 }

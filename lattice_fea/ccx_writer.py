@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 
+from . import slip
 from .materials import to_solver_units
 from .meshing import group_name
 
@@ -441,7 +442,7 @@ def _contacts(d: Deck, setup: dict, mesh_stats: dict) -> None:
         d.w("1e5, 3.0")
         if kind == "friction":
             d.w("*FRICTION")
-            d.w(f"{_f(c.get('mu') or 0.2)}, 1e4")
+            d.w(f"{_f(slip.mu_of(c))}, 1e4")
         typ = "TIE" if kind == "bonded" else "NODE TO SURFACE"
         d.w(f"*CONTACT PAIR, INTERACTION=I{idx}, TYPE={typ}")
         d.w(f"SL{idx}, M{idx}")

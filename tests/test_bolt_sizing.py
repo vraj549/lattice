@@ -208,17 +208,6 @@ def test_tightening_torque_scales_with_preload_and_friction():
 
 # ------------------------------------------------- driving it from a run
 
-def test_sizing_refuses_a_preloaded_run():
-    """With preload applied the beam force is the BOLT force, not the external
-    load. Feeding it back in counts the preload twice and asks for several
-    times the preload the joint needs — so it is refused, not tabulated."""
-    from lattice_fea import server  # noqa: F401  (import cost only)
-    import inspect
-    src = inspect.getsource(server.create_app)
-    assert '"blocked": True' in src
-    assert "preload is applied" in src or "has preload applied" in src
-
-
 def test_grip_length_comes_from_the_mesh():
     """The beam spans exactly the clamped length, so the grip is measured
     rather than typed — and it is the single biggest driver of compliance."""

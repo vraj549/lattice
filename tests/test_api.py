@@ -217,8 +217,9 @@ def test_sizing_uses_the_measured_clamped_length(client):
 
 
 def test_sizing_is_refused_once_preload_is_applied(client):
-    """The beam force in a preloaded run is the bolt force; feeding it back
-    would count the preload twice."""
+    """The beam force in a preloaded run is the bolt force, not the external
+    load; feeding it back would count the preload twice and ask for several
+    times the preload the joint needs — so it is refused, not tabulated."""
     c = client
     pid, _ = _bolted_project(c, preload_N=8000)
     out = c.get(f"/api/projects/{pid}/results/a1/bolt-sizing").json()
@@ -340,7 +341,9 @@ def test_a_demo_run_still_says_so_after_a_real_solver_is_installed(client, tmp_p
     pid = _shock_project(c)
     meta = c.get(f"/api/projects/{pid}/results/a1").json()
     assert meta["demo"] is True
-    assert any("DEMO SOLVER" in w for w in meta.get("warnings", []))
+    # recorded once, as the flag every surface reads — not duplicated into
+    # the warnings list, where it printed under a banner that already said it
+    assert not any("DEMO SOLVER" in w for w in meta.get("warnings", []))
 
     # Same workspace, a server that knows nothing about the mock: this is what
     # reopening the project tomorrow, or after installing code_aster, looks like.
@@ -677,9 +680,58 @@ def test_removing_every_body_is_refused_rather_than_meshing_nothing(client):
     setup = p["setup"]
     setup["suppressed_solids"] = [s["tag"] for s in p["geometry"]["solids"]]
     assert c.put(f"/api/projects/{pid}/setup", json=setup).status_code == 200
+    mdir = os.path.join(c.workspace, "projects", pid, "mesh")
+    before = {n: open(os.path.join(mdir, n), "rb").read()
+              for n in ("stats.json", "mesh.unv")}
     job = wait(c, c.post(f"/api/projects/{pid}/mesh").json()["job"])
     assert job["status"] == "failed"
     assert "nothing left to mesh" in json.dumps(job), json.dumps(job)[:1500]
+    # A failed mesh leaves the previous one whole. It used to be written in
+    # place, so a failure after the UNV was out paired the new mesh file with
+    # the old mesh's groups and node numbers.
+    for n, blob in before.items():
+        assert open(os.path.join(mdir, n), "rb").read() == blob, n
+    assert not os.path.exists(os.path.join(mdir, "building"))
+
+
+def test_a_mesh_that_fails_after_writing_leaves_the_old_one_whole(client, monkeypatch):
+    """The mesher writes the UNV well before it finishes. Written in place, a
+    failure after that point left the new mesh file under the old stats, and
+    the next solve ran on a mesh described by another mesh's groups, probe
+    nodes and node numbers."""
+    from lattice_fea import server
+    c = client
+    pid = _plates_static(c)
+    mdir = os.path.join(c.workspace, "projects", pid, "mesh")
+    before = {n: open(os.path.join(mdir, n), "rb").read()
+              for n in ("stats.json", "mesh.unv", "mesh.inp")}
+
+    def dies_late(job, args):
+        with open(args["unv"], "w") as fh:
+            fh.write("half a mesh")
+        raise RuntimeError("the mesher fell over after writing the UNV")
+
+    monkeypatch.setattr(server, "run_gmsh_worker", dies_late)
+    job = wait(c, c.post(f"/api/projects/{pid}/mesh").json()["job"])
+    assert job["status"] == "failed"
+    for n, blob in before.items():
+        assert open(os.path.join(mdir, n), "rb").read() == blob, n
+    assert not os.path.exists(os.path.join(mdir, "building"))
+
+
+def test_publishing_a_mesh_drops_files_the_new_mesh_did_not_make(tmp_path):
+    """A CalculiX deck that failed to write must not be replaced by the
+    previous mesh's deck, which numbers different nodes."""
+    from lattice_fea.server import publish_mesh
+    stage, mdir = tmp_path / "stage", tmp_path / "mesh"
+    stage.mkdir(); mdir.mkdir()
+    for n in ("stats.json", "mesh.unv", "mesh.inp", "skin.json.gz"):
+        (mdir / n).write_text("old")
+    for n in ("stats.json", "mesh.unv", "skin.json.gz"):
+        (stage / n).write_text("new")
+    publish_mesh(str(stage), str(mdir))
+    assert sorted(x.name for x in mdir.iterdir()) == ["mesh.unv", "skin.json.gz", "stats.json"]
+    assert all((mdir / n).read_text() == "new" for n in ("stats.json", "mesh.unv"))
 
 
 # ------------------------------------------------------- mesh quality gating

@@ -1,6 +1,11 @@
 """Random-vibration maths, checked against closed-form results."""
+import base64
+import json
 import math
 import os
+import pathlib
+import shutil
+import subprocess
 import sys
 
 import pytest
@@ -172,3 +177,22 @@ def test_a_valid_spectrum_is_sorted_and_kept_whole():
     assert pts == [(20.0, 0.01), (2000.0, 0.02)]
     flat = [(20.0, 0.01), (2000.0, 0.01)]
     assert rv.grms_input(flat) == pytest.approx(math.sqrt(0.01 * 1980.0))
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_browser_transmissibility_matches_the_server():
+    """The FRF panel draws transmissibility in the browser; the random
+    analysis computes it here. One formula, checked against the other."""
+    freq = [10.0, 80.0, 99.0, 100.0, 101.0, 400.0]
+    module = [2.5e-3, 0.21, 1.9, 2.4, 1.8, 1.1e-3]
+    phase = [0.0, -0.3, -1.2, -1.57, -1.9, -3.1]
+    want = rv.transmissibility(freq, module, phase, 1.0)
+    src = pathlib.Path(__file__).parent.parent / "lattice_fea/ui/js/dynamics.js"
+    script = (
+        "const m = await import('data:text/javascript;base64,"
+        + base64.b64encode(src.read_bytes()).decode() + "');"
+        + f"console.log(JSON.stringify(m.transmissibility({freq}, {module}, {phase}, 1)));")
+    out = subprocess.run([shutil.which("node"), "--input-type=module", "-e", script],
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout) == pytest.approx(want, rel=1e-12)

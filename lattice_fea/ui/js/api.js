@@ -1,7 +1,12 @@
 async function jr(resp) {
   if (!resp.ok) {
-    let msg = `${resp.status}`;
-    try { msg = (await resp.json()).detail || msg; } catch { /* text fallback */ }
+    let msg = `${resp.status} ${resp.statusText}`.trim();
+    try {
+      const d = (await resp.json()).detail;
+      // request validation errors arrive as a list of {loc, msg}
+      if (Array.isArray(d)) msg = d.map((e) => `${(e.loc || []).join(".")}: ${e.msg}`).join("; ");
+      else if (d) msg = String(d);
+    } catch { /* not JSON: keep the status line */ }
     throw new Error(msg);
   }
   return resp.json();

@@ -377,7 +377,7 @@ def size_bolt(*, d: float, pitch: float, l_K: float, A_s: float = None,
                  if sigma_b > 0 else "")
         checks.append(
             f"Working stress in service is {sigma_red_B:.0f} MPa against a "
-            f"yield strength of {R_p02:.0f} MPa ({sigma_red_B / R_p02 * 100:.0f}% "
+            f"yield strength of {R_p02:.0f} MPa ({sigma_red_B / R_p02 * 100:.0f} % "
             f"of yield) — the bolt yields under load even though it can be "
             f"assembled.{extra} Use a larger or stronger bolt, or reduce the "
             f"load reaching it.")

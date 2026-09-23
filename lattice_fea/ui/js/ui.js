@@ -2,6 +2,7 @@
 import { fmtVal, contourStyle } from "./colormap.js";
 import { frfChart, frfPlot, findPeaks, seriesColor } from "./charts.js";
 import { defaultReferenceFace, describeFace, candidateTargets } from "./pattern.js";
+import { transmissibility } from "./dynamics.js";
 
 export function el(tag, attrs = {}, ...children) {
   const n = document.createElement(tag);
@@ -49,7 +50,7 @@ export function excitationMeta(a) {
   const c = a.config || {};
   const d = c.base_dir || [0, 0, 1];
   const ax = ["X", "Y", "Z"][d.map(Math.abs).indexOf(Math.max(...d.map(Math.abs)))] || "Z";
-  if (a.type === "random") return `PSD ${gramsOf(c.spec || [])} g · ${ax}`;
+  if (a.type === "random") return `${gramsOf(c.spec || [])} g RMS · ${ax}`;
   if (a.type === "shock") {
     const axis = ["X", "Y", "Z"][c.axis ?? 2];
     return (c.input || "spectrum") === "pulse"
@@ -75,17 +76,16 @@ export function analysisStatus(S, a) {
   // about a fragment of a run that had aborted.
   if (st === "failed" || res?.failed) {
     const why = res?.recovered
-      ? "The last run FAILED. What it left behind is a fragment, not a result."
+      ? "The last run failed. What it left behind is a fragment, not a result."
       : "The last run failed and produced nothing.";
     return { dot: "bad", title: why,
       badge: { text: "\u2715", cls: "bad", title: why } };
   }
   if (res && res.stale) {
-    return { dot: "warn", title: "Results are OUT OF DATE",
+    return { dot: "warn", title: "Results are out of date",
       badge: { text: "!", cls: "stale",
-        title: "OUT OF DATE — the mesh, materials, connections or boundary "
-             + "conditions changed after this ran. Re-run before using these "
-             + "numbers." } };
+        title: "Out of date: the mesh, materials, connections or boundary "
+             + "conditions changed after this ran." } };
   }
   if (res) {
     return { dot: "ok", title: "Results are current for this model",
@@ -101,30 +101,32 @@ export function solutionItems(S, a) {
   const out = [];
   const fields = (meta.fields || []).filter((f) => f.part !== "I");
   if (fields.length) {
-    out.push({ what: "contours", label: "Contours", meta: `${fields.length} field${fields.length > 1 ? "s" : ""}` });
+    out.push({ what: "contours", label: "Contours", meta: plural(fields.length, "field") });
   }
   const modes = meta.tables?.modes?.[0];
   if (modes && a.type !== "static") {
-    out.push({ what: "modes", label: "Modes", meta: `${modes.rows.length}` });
+    out.push({ what: "modes", label: "Modes", meta: String(modes.rows.length) });
   }
   if (meta.frf?.length) {
-    out.push({ what: "frf", label: "Frequency response", meta: `${meta.frf.length} curve${meta.frf.length > 1 ? "s" : ""}` });
+    out.push({ what: "frf", label: "Frequency response", meta: plural(meta.frf.length, "curve") });
   }
   if (a.type === "random") {
-    out.push({ what: "random", label: "Random response", meta: "g RMS" });
+    out.push({ what: "random", label: "Random response" });
   }
   if (a.type === "shock") {
-    out.push({ what: "shock", label: "Shock response", meta: "peak" });
+    out.push({ what: "shock", label: "Shock response" });
   }
   if (a.type === "static" && meta.tables?.contact_check?.length) {
-    out.push({ what: "slip", label: "Slip check", meta: "friction" });
+    out.push({ what: "slip", label: "Slip check" });
   }
   if (meta.tables?.bolt_forces?.length) {
-    out.push({ what: "bolts", label: "Bolt forces", meta: "N" });
-    out.push({ what: "sizing", label: "Bolt sizing", meta: "preload" });
+    // the meta column is for a count worth scanning; a unit ("N") or a
+    // restated label ("preload") is noise in it
+    out.push({ what: "bolts", label: "Bolt forces" });
+    out.push({ what: "sizing", label: "Bolt sizing" });
   }
   if (a.type === "static" && reactionRow(meta)) {
-    out.push({ what: "reactions", label: "Reactions", meta: "N" });
+    out.push({ what: "reactions", label: "Reactions" });
   }
   // A failed run often has no warnings at all — the failure IS the message —
   // so the node has to exist for the error too, or there is nowhere to read it.
@@ -150,15 +152,6 @@ export function staleForAnalyses(S) {
   return out;
 }
 
-/**
- * Everything about the current mesh that no longer matches the model.
- *
- * Boundary conditions become mesh groups, and bolts and probes become actual
- * elements and nodes, so all three are baked in at mesh time. Patterning a
- * bolt across a flange is the fastest way to get five joints that exist in
- * the tree and in none of the matrices — the load path would silently not be
- * there, which is worse than a failed run.
- */
 // The server owns this number; it is sent in /api/config. The UI used to
 // keep its own copy and it drifted — the writer moved to 3 while the browser
 // still compared against 2, so a mesh that genuinely needed rewriting was
@@ -185,6 +178,15 @@ export function derived(S, name, aid) {
   return hit.sig === sig ? hit.data : null;
 }
 
+/**
+ * Everything about the current mesh that no longer matches the model.
+ *
+ * Boundary conditions become mesh groups, and bolts and probes become actual
+ * elements and nodes, so all three are baked in at mesh time. Patterning a
+ * bolt across a flange is the fastest way to get five joints that exist in
+ * the tree and in none of the matrices — the load path would silently not be
+ * there, which is worse than a failed run.
+ */
 export function meshIssues(S) {
   const stats = S.meshData?.stats;
   if (!stats) return [];
@@ -315,10 +317,75 @@ function renderPanelBody(S, A, put, kind, id) {
     case "mesh": return panelMesh(S, A, put);
     case "analysis": return panelAnalysis(S, A, put, id);
     case "settings": return panelSettings(S, A, put, id);
+    case "excitation": return panelExcitation(S, A, put, id);
     case "solution": return panelSolution(S, A, put, id);
     case "result": return panelResult(S, A, put, id);
     default: return panelModel(S, A, put);
   }
+}
+
+/** Contact area of an interface: the smaller of its two sides. */
+export function interfaceArea(S, c) {
+  const byTag = new Map((S.project?.geometry?.faces || []).map((f) => [f.tag, f.area || 0]));
+  const side = (list) => (list || []).reduce((t, x) => t + (byTag.get(x) || 0), 0);
+  const a = side(c.faces_a), b = side(c.faces_b);
+  return a && b ? Math.min(a, b) : (a || b);
+}
+
+/** "1 face", "2 faces" — never "1 face(s)", which is how a tool announces
+ *  that nobody read its own output. */
+export function plural(n, one, many = null) {
+  return `${n.toLocaleString()} ${n === 1 ? one : (many || one + "s")}`;
+}
+
+/**
+ * Groups of bodies that nothing joins at solve time.
+ *
+ * The mesh reports how many pieces it is in, and a model built from separate
+ * parts is MEANT to be in pieces: the contacts, ties and bolts that join them
+ * are applied by the solver, not by shared nodes. Warning on the raw island
+ * count told every correctly built contact assembly that it would "produce
+ * singular static solves". Joined here through every connection the solver
+ * will apply, so what remains is a real gap.
+ */
+export function unjoinedGroups(S) {
+  const setup = S.project.setup;
+  const gone = new Set((setup.suppressed_solids || []).map(Number));
+  const solids = (S.project.geometry.solids || [])
+    .map((x) => Number(x.tag)).filter((t) => !gone.has(t));
+  const parent = new Map(solids.map((t) => [t, t]));
+  const find = (t) => { while (parent.get(t) !== t) t = parent.get(t); return t; };
+  const join = (a, b) => parent.set(find(a), find(b));
+  const faceSolids = new Map((S.project.geometry.faces || [])
+    .map((f) => [f.tag, (f.solids || []).map(Number)]));
+  const solidsOf = (faces) => (faces || []).flatMap((f) => faceSolids.get(f) || []);
+  const joinAll = (list) => {
+    const live = list.filter((t) => parent.has(t));   // a removed body joins nothing
+    live.forEach((t) => join(live[0], t));
+  };
+
+  // faces shared by two solids: a bonded import already merged these
+  for (const ss of faceSolids.values()) joinAll(ss);
+  for (const c of setup.contacts || []) {
+    if (c.suppressed || !(c.faces_a?.length && c.faces_b?.length)) continue;
+    joinAll([...solidsOf(c.faces_a), ...solidsOf(c.faces_b)]);
+  }
+  for (const t of setup.ties || []) {
+    if (t.slave_faces?.length && t.master_solid != null) {
+      joinAll([Number(t.master_solid), ...solidsOf(t.slave_faces)]);
+    }
+  }
+  for (const b of setup.bolts || []) {
+    if (b.side_a_faces?.length && b.side_b_faces?.length) {
+      joinAll([...solidsOf(b.side_a_faces), ...solidsOf(b.side_b_faces)]);
+    }
+  }
+  const groups = new Map();
+  for (const t of solids) {
+    const r = find(t);
+    groups.set(r, [...(groups.get(r) || []), t]);
+  }
+  return [...groups.values()];
 }
 
 /**
@@ -330,19 +397,6 @@ function renderPanelBody(S, A, put, kind, id) {
  * A name set here survives a reload, and a re-import keeps it as long as the
  * tag does.
  */
-/** "1 face", "2 faces" — never "1 face(s)", which is how a tool announces
- *  that nobody read its own output. */
-export function interfaceArea(S, c) {
-  const byTag = new Map((S.project?.geometry?.faces || []).map((f) => [f.tag, f.area || 0]));
-  const side = (list) => (list || []).reduce((t, x) => t + (byTag.get(x) || 0), 0);
-  const a = side(c.faces_a), b = side(c.faces_b);
-  return a && b ? Math.min(a, b) : (a || b);
-}
-
-export function plural(n, one, many = null) {
-  return `${n.toLocaleString()} ${n === 1 ? one : (many || one + "s")}`;
-}
-
 export function solidName(S, tag) {
   const t = String(tag);
   const named = S.project?.setup?.solid_names?.[t];
@@ -451,12 +505,21 @@ function specCell(row, k, onedit) {
 }
 
 function selInput(label, value, options, onchange) {
-  // A value that matches no option would otherwise select the first one, so
-  // the panel would show "Bonded" for a contact the tree lists as something
-  // else and the solver treats as a third thing. A select cannot display what
-  // is not in it, so the unrecognised value is added and marked — the panel
-  // says what the model holds, and choosing anything replaces it.
-  const known = options.some(([v]) => String(v) === String(value));
+  // Two different situations, and they must not look alike.
+  //
+  // UNSET — the field is simply absent, which every optional setting is until
+  // someone touches it. The solver then uses its default, and every caller
+  // lists that default FIRST, so the first option is the honest display.
+  // Treating absent as unrecognised printed "undefined — not recognised" on
+  // the sweep spacing of any analysis that had never had it set.
+  //
+  // UNRECOGNISED — a value is present and matches nothing, e.g. a contact of
+  // kind "frictional". A select cannot show what is not in it and would fall
+  // back to the first option, so the panel would say "Bonded" over a contact
+  // the solver treats as something else. That one is added and marked.
+  const unset = value === undefined || value === null || value === ""
+             || value === "undefined" || value === "null";
+  const known = unset || options.some(([v]) => String(v) === String(value));
   const opts = known ? options
     : [[value, `${value} — not recognised, pick one below`], ...options];
   const s = el("select",
@@ -642,18 +705,6 @@ function panelSolid(S, A, put, tag) {
 }
 
 /**
- * Is this the project's own material rather than a copy of a library entry?
- *
- * One definition, because there used to be two and they disagreed. The option
- * list asked `!id.startsWith("lib-")` while the selected value asked
- * `id.startsWith("custom")`, so a material that was neither — anything
- * written by a script or an older build, e.g. an id of "st" — was listed as
- * an option and then not selected, and the dropdown quietly showed "— none —"
- * over a solid that had a material assigned. The properties printed directly
- * underneath it came from the real one, so the panel disagreed with itself on
- * the single control that decides what the part is made of.
- */
-/**
  * Everything in the model that would stop meaning anything if this body went.
  *
  * Face-based items are matched through the geometry, not by remembering which
@@ -697,6 +748,18 @@ export function dependentsOfSolid(S, tag) {
   return out;
 }
 
+/**
+ * Is this the project's own material rather than a copy of a library entry?
+ *
+ * One definition, because there used to be two and they disagreed. The option
+ * list asked `!id.startsWith("lib-")` while the selected value asked
+ * `id.startsWith("custom")`, so a material that was neither — anything
+ * written by a script or an older build, e.g. an id of "st" — was listed as
+ * an option and then not selected, and the dropdown quietly showed "— none —"
+ * over a solid that had a material assigned. The properties printed directly
+ * underneath it came from the real one, so the panel disagreed with itself on
+ * the single control that decides what the part is made of.
+ */
 function isProjectMaterial(m) {
   return !m.lib && !String(m.id).startsWith("lib-");
 }
@@ -941,6 +1004,8 @@ export const BOLT_SIZES = [
   { id: "M5", label: "M5 × 0.8", d: 5.0, As: 14.2, series: "metric" },
   { id: "M6", label: "M6 × 1.0", d: 6.0, As: 20.1, series: "metric" },
   { id: "M8", label: "M8 × 1.25", d: 8.0, As: 36.6, series: "metric" },
+  { id: "M10", label: "M10 × 1.5", d: 10.0, As: 58.0, series: "metric" },
+  { id: "M12", label: "M12 × 1.75", d: 12.0, As: 84.3, series: "metric" },
   { id: "0-80", label: "#0-80 UNF", d: 1.524, As: 1.161, series: "unified" },
   { id: "2-56", label: "#2-56 UNC", d: 2.184, As: 2.387, series: "unified" },
   { id: "4-40", label: "#4-40 UNC", d: 2.845, As: 3.897, series: "unified" },
@@ -1049,7 +1114,7 @@ function panelBolt(S, A, put, id) {
       el("div", { class: "hint" },
         "Pick the hole cylinder(s) or the bearing face under head/nut on each side."),
       holeD ? el("div", { class: "hint good" },
-        `Cylinder detected: ⌀${fmtVal(holeD)} mm hole`) : null),
+        `Cylinder detected: ⌀${fmtVal(holeD)} mm hole.`) : null),
     sec("Bolt",
       selGroups("Nominal size", bl.size ?? size?.id ?? "",
         [["", [["", "— choose —"]]],
@@ -1058,8 +1123,17 @@ function panelBolt(S, A, put, id) {
          ["Unified (inch)", BOLT_SIZES.filter((s) => s.series === "unified")
            .map((s) => [s.id, s.label])]],
         (v) => A.mutate(() => { applyBoltSize(bl, v); })),
-      holeD && !size ? el("div", { class: "hint" },
-        `Hole ⌀${fmtVal(holeD)} suggests ${nearestBolt(holeD)?.label || "—"}`) : null,
+      // the suggestion is a button, not a hidden hint: it is the one thing
+      // on this panel that saves looking something up
+      holeD && !size
+        ? (nearestBolt(holeD)
+            ? el("div", { class: "btnrow" },
+                el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
+                  applyBoltSize(bl, nearestBolt(holeD).id);
+                }) }, `Use ${nearestBolt(holeD).label} for this \u2300${fmtVal(holeD)} mm hole`))
+            : el("div", { class: "hint warn" },
+                `No listed size fits a \u2300${fmtVal(holeD)} mm hole.`))
+        : null,
       size ? dl([
         ["Major ⌀", `${size.d.toFixed(size.series === "unified" ? 3 : 2)} mm`],
         ["Stress area Aₛ", `${area.toFixed(2)} mm²`],
@@ -1147,13 +1221,15 @@ function applyBoltSize(bl, id) {
   }
 }
 
-/** Largest size that still clears the hole, across both series. */
+/** Largest size that still clears the hole, across both series — or none,
+ *  when even that would rattle in it. ISO 273's coarse clearance is about
+ *  1.25 d; without the upper limit a 13.5 mm hole was offered an M8. */
 function nearestBolt(holeD) {
   let best = null;
   for (const s of BOLT_SIZES) {
     if (s.d <= holeD - 0.15 && (!best || s.d > best.d)) best = s;
   }
-  return best;
+  return best && holeD <= 1.3 * best.d + 0.2 ? best : null;
 }
 
 function panelTie(S, A, put, id) {
@@ -1221,12 +1297,10 @@ function panelContact(S, A, put, id) {
         : null,
       c.kind === "friction"
         ? el("div", { class: "hint" }, linearFriction
-            ? "A friction joint is designed to stay STUCK, and a stuck "
-              + "frictional interface is the same constraint as a bonded one — "
-              + "so this glues it, solves linearly, and then reads the "
-              + "interface tractions back to check that friction was actually "
-              + "enough. If it was, this IS the nonlinear answer. If it was "
-              + "not, the result says where it slipped and by how much."
+            ? "Glues the interface, solves linearly, then checks from the "
+              + "interface tractions that friction held. A stuck frictional "
+              + "interface is the same constraint as a bonded one, so if it "
+              + "held this is the nonlinear answer."
             : "Solves the sliding itself: the load is stepped up and the "
               + "contact status iterated. Use this once the check says the "
               + "joint slips and you need to know how far.")
@@ -1240,7 +1314,7 @@ function panelContact(S, A, put, id) {
       // detector records and what actually bears.
       ["Interface area", (() => {
         const a = c.area ?? interfaceArea(S, c);
-        return a ? `${fmtVal(a)} mm²` : "not meshed yet";
+        return a ? `${fmtVal(a)} mm²` : "\u2014";
       })()],
     ]),
       el("div", { class: "btnrow" },
@@ -1256,10 +1330,8 @@ function panelContact(S, A, put, id) {
         + "contact leaves the parts free of each other entirely.")),
     sliding
       ? sec(null, el("div", { class: "hint warn" },
-          "⚠ This makes the solve NONLINEAR: whether the surfaces touch is "
-          + "part of the answer, so the run steps the load up and iterates. "
-          + "Expect it to take considerably longer, and it applies to static "
-          + "only — modal and harmonic are linear by definition and use the "
+          "\u26a0 Nonlinear: the run steps the load up and iterates, and takes "
+          + "much longer. Static only; modal and vibration studies use the "
           + "bonded state."))
       : linearFriction
         ? sec(null, el("div", { class: "hint good" },
@@ -1320,7 +1392,21 @@ function probeReadout(S, A, p) {
       const r = R.probes?.find((x) => x.probe === `PROBE${idx}`);
       rows.push([a.name || a.type,
                  r ? `${fmtVal(r.mag)} mm peak` : "not extracted in this run"]);
-    } else if (["harmonic", "random"].includes(a.type)) {
+    } else if (a.type === "random") {
+      // A random study's sweep is a 1 g transfer function, not a response;
+      // its peak displacement is not something the part ever sees. The
+      // answer is the RMS.
+      if (!(meta.frf || []).some((f) => f.probe === idx)) continue;
+      const R = derived(S, "randomResults", a.id);
+      if (!R) {
+        A.loadRandom(a.id);
+        rows.push([a.name || a.type, "computing\u2026"]);
+        continue;
+      }
+      for (const c of (R.curves || []).filter((x) => x.probe === idx)) {
+        rows.push([`${a.name || a.type} \u00b7 ${c.comp}`, `${fmtVal(c.grms)} g RMS`]);
+      }
+    } else if (a.type === "harmonic") {
       const mine = (meta.frf || []).filter((f) => f.probe === idx);
       if (!mine.length) continue;
       for (const f of mine) {
@@ -1351,8 +1437,9 @@ function panelMesh(S, A, put) {
 
   const secs = [
     sec("Sizing",
-      numInput(`Target element size (mm) — auto ≈ ${fmtVal(diag / 25)}`, m.size_mm,
-        (v) => A.mutate(() => { m.size_mm = v; })),
+      numInput("Target element size (mm)", m.size_mm,
+        (v) => A.mutate(() => { m.size_mm = v; }),
+        { placeholder: `auto (${fmtVal(diag / 25)})`, min: 0 }),
       numInput("Elements around a full circle", m.curvature,
         (v) => A.mutate(() => { m.curvature = v || 10; }), { min: 4, max: 40 }),
       // This is the setting that quietly decides the size of the whole model
@@ -1360,19 +1447,15 @@ function panelMesh(S, A, put) {
       // for linear elements rather than these.
       (m.curvature || 10) > 12 && Number(m.order || 2) === 2
         ? el("div", { class: "hint warn" },
-            `\u26a0 ${m.curvature} around a circle is a linear-element figure. `
-            + "A quadratic element carries a mid-side node and follows an arc "
-            + "with about half as many — measured against the known stress "
-            + "concentration at a hole, peak stress stops improving past "
-            + "roughly 8. On a part with many holes this is what sets the "
-            + "size of the whole mesh: 16 built 61% more of it than 10, for "
-            + "the same answer.")
+            `\u26a0 Quadratic elements need about half of ${m.curvature}. Past `
+            + "about 8 the peak stress at a hole stops improving and only the "
+            + "element count grows.")
         : el("div", { class: "hint" },
             "How finely a bore or a fillet is followed. Quadratic elements "
             + "carry a mid-side node, so they need about half as many as "
             + "linear ones; past roughly 8 the peak stress at a hole stops "
             + "improving and only the element count grows."),
-      selInput("Element order", String(m.order),
+      selInput("Element order", m.order == null ? null : String(m.order),
         [["2", "Quadratic — recommended"], ["1", "Linear"]],
         (v) => A.mutate(() => { m.order = Number(v); })),
       selInput("Element shape", m.elements || "tet",
@@ -1461,13 +1544,25 @@ function panelMesh(S, A, put) {
     } else if (q.poor > stats.elements * 0.02) {
       secs.push(sec(null, el("div", { class: "hint warn" },
         `\u26a0 ${q.poor.toLocaleString()} elements `
-        + `(${(100 * q.poor / stats.elements).toFixed(1)}%) are below 0.2 `
+        + `(${(100 * q.poor / stats.elements).toFixed(1)} %) are below 0.2 `
         + "quality. Stress in those regions is not worth reading closely.")));
     }
-    if (stats.islands > 1) {
+    // bodies the mesh was built from; older meshes did not record it
+    const active = stats.volumes ?? ((S.project.geometry.solids || []).length
+                 - (S.project.setup.suppressed_solids || []).length);
+    const groups = unjoinedGroups(S);
+    if (stats.islands > active) {
+      // more pieces than bodies: a body is itself in pieces, which no
+      // connection can fix — a geometry defect, not a missing contact
       secs.push(sec(null, el("div", { class: "hint bad" },
-        `⚠ Mesh has ${stats.islands} disconnected part groups — unconstrained parts ` +
-        "will produce rigid-body modes / singular static solves.")));
+        `\u26a0 The mesh is in ${stats.islands} pieces but the model has `
+        + `${plural(active, "body", "bodies")}, so at least one body is itself `
+        + "split. Check the geometry for slivers or gaps.")));
+    } else if (groups.length > 1) {
+      const names = groups.map((g) => g.map((t) => solidName(S, t)).join(" + "));
+      secs.push(sec(null, el("div", { class: "hint bad" },
+        `\u26a0 Nothing joins ${names.join(" and ")}. Add a contact, tie or `
+        + "bolt between them, or each needs its own support.")));
     }
   }
   put("Mesh", stats ? `${stats.nodes.toLocaleString()} nodes` : "not meshed", ...secs);
@@ -1496,7 +1591,7 @@ export function defaultAnalysis(type) {
                        axis: 2, rule: "srss", damping: 0.05, n_modes: 30 } };
   }
   return { ...base, name: "Harmonic response",
-           config: { f_min: 20, f_max: 2000, n_steps: 150, spacing: "log",
+           config: { f_min: 20, f_max: 2000, n_steps: 600, spacing: "log",
                      damping: 0.02, excitation: "force", base_dir: [0, 0, 1],
                      base_g: 1.0, field_freqs: [] } };
 }
@@ -1521,43 +1616,54 @@ function gramsOf(spec) {
   return Math.sqrt(Math.max(tot, 0)).toFixed(2);
 }
 
-function resolutionWarning(S, peaks) {
-  const a = S.project.setup.analyses.find((x) => x.id === S.activeResult?.aid)
-         || S.project.setup.analyses.find((x) => x.type === "harmonic");
-  const c = a?.config;
-  if (!c || !peaks.length) return null;
-  const decades = Math.log10((c.f_max || 1) / Math.max(c.f_min || 1, 1e-9));
-  const perDecade = (c.n_steps || 1) / Math.max(decades, 1e-9);
-  const stepPct = c.spacing === "log"
-    ? (Math.pow(10, 1 / perDecade) - 1) * 100
-    : ((c.f_max - c.f_min) / (c.n_steps || 1)) / Math.max(peaks[0].f, 1e-9) * 100;
-  const zeta = c.damping || 0.02;
-  const bandPct = 100 / (2 * (1 / (2 * zeta)) ) * 2;   // half-power width = f/Q
-  const ptsInBand = bandPct / Math.max(stepPct, 1e-9);
-  if (ptsInBand >= 5) return null;
-  const need = Math.ceil((c.n_steps || 1) * (5 / Math.max(ptsInBand, 1e-9)));
-  return el("div", { class: "hint warn" },
-    `\u26a0 Only ~${ptsInBand.toFixed(1)} sweep points fall inside a ` +
-    `half-power band at \u03b6=${zeta}. Q is under-reported and peak ` +
-    `amplitude is missed. Use about ${need} steps (or sweep a narrow band ` +
-    `around each mode) to resolve resonances.`);
+/**
+ * The sweep the solver will actually run, with the solver's own defaults.
+ *
+ * Neither analysis type stores every field: a harmonic that never had its
+ * spacing touched has none, and a random analysis stores no band at all — the
+ * deck writer derives it from the first and last spectrum breakpoints. Reading
+ * the raw config therefore computed with undefined: NaN for every random
+ * analysis, and LINEAR spacing for a harmonic the solver sweeps
+ * logarithmically, which reported 0.5 points per peak and asked for 2,069
+ * steps where the real sweep had 1.7 and needed about 590. Mirrors
+ * comm_writer.write_harmonic / write_random.
+ */
+export function effectiveSweep(a) {
+  const c = a?.config || {};
+  const zeta = c.damping ?? 0.02;
+  if (a?.type === "random") {
+    const f = (c.spec || []).map((r) => Number(r[0]))
+      .filter((x) => x > 0).sort((x, y) => x - y);
+    if (f.length < 2) return null;
+    return { f_min: f[0], f_max: f[f.length - 1], n_steps: c.n_steps ?? 600,
+             spacing: "log", damping: zeta };
+  }
+  if (a?.type === "harmonic") {
+    return { f_min: c.f_min ?? 20, f_max: c.f_max ?? 2000,
+             n_steps: c.n_steps ?? 600, spacing: c.spacing || "log", damping: zeta };
+  }
+  return null;
 }
 
-/** Everything that configures HOW the study is solved.
- *
- *  Split out of the analysis panel and given its own tree node, the way Ansys
- *  and SimScale both do it: the analysis row answers "can I run this", and the
- *  settings row answers "what exactly am I running". They were one panel, and
- *  it had grown to a screen and a half of scrolling. */
-/**
- * Which solver runs this study.
- *
- * They are not interchangeable. code_aster covers every analysis type here;
- * CalculiX installs from a package manager and so is often the only one
- * present on macOS, but this tool only drives it for static and modal. An
- * engine that cannot run the study is offered disabled with the reason rather
- * than hidden, so the limitation is legible instead of mysterious.
- */
+function resolutionWarning(a, peaks) {
+  const sw = effectiveSweep(a);
+  if (!sw || !peaks.length || !(sw.damping > 0) || !(sw.f_max > sw.f_min)) return null;
+  const f = peaks[0].f;
+  const gaps = Math.max(sw.n_steps - 1, 1);   // n points span n - 1 intervals
+  const stepPct = sw.spacing === "log"
+    ? (Math.pow(sw.f_max / sw.f_min, 1 / gaps) - 1) * 100
+    : ((sw.f_max - sw.f_min) / gaps) / Math.max(f, 1e-9) * 100;
+  // half-power bandwidth is f/Q = 2 zeta f, i.e. 200 zeta percent of f
+  const ptsInBand = (200 * sw.damping) / Math.max(stepPct, 1e-9);
+  if (!Number.isFinite(ptsInBand) || ptsInBand >= 5) return null;
+  const need = Math.ceil(sw.n_steps * 5 / Math.max(ptsInBand, 1e-9));
+  return el("div", { class: "hint warn" },
+    `\u26a0 The sweep puts ${ptsInBand.toFixed(1)} points across each resonance `
+    + `at \u03b6 = ${sw.damping}; five are needed to catch the peak. Q and peak `
+    + `amplitude read low. Use about ${need.toLocaleString()} steps, or sweep a `
+    + "narrow band around each mode.");
+}
+
 /**
  * Can this engine run this analysis, and if not, why?
  *
@@ -1617,166 +1723,194 @@ export function engineThatCanRun(S, a) {
   return null;
 }
 
-function engineSection(S, A, a, c) {
-  const engines = S.config?.solver?.engines || [];
-  if (!engines.length) {
-    return sec("Solver", el("div", { class: "hint bad" },
-      "No solver detected. See README \u2192 Solver setup."));
-  }
-  const current = engineOf(S, a);
-  const blockers = engineBlockers(S, a, current);
-  const alt = engineThatCanRun(S, a);
 
-  return sec("Solver",
-    selInput("Engine", current,
-      engines.map((e) => {
-        const bad = engineBlockers(S, a, e.id).length;
-        return [e.id, bad ? `${e.label} \u2014 cannot run this` : e.label];
-      }),
-      (v) => A.mutate(() => { c.engine = v; })),
-    el("div", { class: "hint" },
-      engines.find((e) => e.id === current)?.detail || ""),
-    ...blockers.map((t) => el("div", { class: "hint bad" }, "\u26a0 " + t)),
-    blockers.length && alt && alt !== current
-      ? el("div", { class: "btnrow" },
-          el("button", { class: "btn btn-accent",
-            onclick: () => A.mutate(() => { c.engine = alt; }) },
-            `Switch to ${ENGINE_LABEL[alt] || alt}`))
-      : null,
-    el("div", { class: "hint" },
-      "The model is the same either way \u2014 geometry, mesh, materials, "
-      + "supports and loads are shared. Switching engines re-runs the same "
-      + "setup and marks existing results out of date."));
+/**
+ * A number the solver has a default for. Blank shows that default and stores
+ * nothing, so there is one source of truth for it. This used to write its own
+ * fallback on clear, and the fallbacks disagreed with the solver's: clearing
+ * "f max" wrote 1000 Hz where the solver's default is 2000.
+ */
+function optNum(A, label, c, key, dflt, attrs = {}) {
+  return numInput(label, c[key], (v) => A.mutate(() => {
+    if (v == null) delete c[key]; else c[key] = v;
+  }), { placeholder: String(dflt), ...attrs });
 }
 
-function panelSettings(S, A, put, id) {
-  const a = S.project.setup.analyses.find((x) => x.id === id);
-  if (!a) return put("Analysis settings", "");
-  const c = a.config || {};
-  const secs = [engineSection(S, A, a, c)];
+/** Direction of a base excitation, as a vector. */
+function dirRow(A, c) {
+  const d = () => [c.base_dir?.[0] ?? 0, c.base_dir?.[1] ?? 0, c.base_dir?.[2] ?? 1];
+  const set = (k) => (v) => A.mutate(() => { const x = d(); x[k] = v ?? 0; c.base_dir = x; });
+  return el("div", { class: "frm-row" },
+    numInput("Direction X", d()[0], set(0)),
+    numInput("Y", d()[1], set(1)),
+    numInput("Z", d()[2], set(2)));
+}
 
-  if (a.type === "modal") {
-    secs.push(sec("Extraction",
-      numInput("Number of modes", c.n_modes, (v) => A.mutate(() => { c.n_modes = v || 10; }), { min: 1, max: 100 }),
-      el("div", { class: "hint" }, "Lowest modes above the supports (Sorensen/ARPACK).")));
-  }
-  if (a.type === "harmonic") {
-    secs.push(sec("Excitation",
-      selInput("Driven by", c.excitation || "force",
-        [["force", "Force (loads in the tree)"],
-         ["base", "Base acceleration (shaker)"]],
-        (v) => A.mutate(() => { c.excitation = v; })),
-      c.excitation === "base" ? el("div", {},
-        el("div", { class: "frm-row" },
-          numInput("dir X", c.base_dir?.[0] ?? 0, (v) => A.mutate(() => { c.base_dir = [v || 0, c.base_dir?.[1] ?? 0, c.base_dir?.[2] ?? 1]; })),
-          numInput("dir Y", c.base_dir?.[1] ?? 0, (v) => A.mutate(() => { c.base_dir = [c.base_dir?.[0] ?? 0, v || 0, c.base_dir?.[2] ?? 1]; })),
-          numInput("dir Z", c.base_dir?.[2] ?? 1, (v) => A.mutate(() => { c.base_dir = [c.base_dir?.[0] ?? 0, c.base_dir?.[1] ?? 0, v ?? 1]; }))),
-        numInput("Input amplitude (g)", c.base_g ?? 1, (v) => A.mutate(() => { c.base_g = v ?? 1; })),
-        el("div", { class: "hint" },
-          "Every fixed support becomes the moving fixture (mono-support). " +
-          "Forces in the tree are ignored. Drive at 1 g and the plot reads " +
-          "directly as transmissibility."),
-        el("div", { class: "hint" },
-          "Response is RELATIVE to the base — that is what stresses the part. " +
-          "Absolute acceleration adds the base motion back, which the " +
-          "transmissibility view does for you."),
-      ) : null),
-    sec("Sweep",
-      el("div", { class: "frm-row2" },
-        numInput("f min (Hz)", c.f_min, (v) => A.mutate(() => { c.f_min = v || 1; })),
-        numInput("f max (Hz)", c.f_max, (v) => A.mutate(() => { c.f_max = v || 1000; }))),
-      el("div", { class: "frm-row2" },
-        numInput("Steps", c.n_steps, (v) => A.mutate(() => { c.n_steps = v || 100; })),
-        selInput("Spacing", c.spacing, [["log", "Logarithmic"], ["lin", "Linear"]],
-          (v) => A.mutate(() => { c.spacing = v; }))),
-      numInput("Modal damping ratio ζ", c.damping, (v) => A.mutate(() => { c.damping = v ?? 0.02; }),
-        { min: 0, max: 1, step: 0.005 }),
-      el("div", { class: "hint" },
-        "Modal superposition on a basis up to 1.6 × f max; response is read " +
-        "at the probes."),
-      // Guidance follows the excitation actually selected. Showing the
-      // force-driven advice next to a base-driven setup was worse than
-      // showing nothing.
-      c.excitation === "base"
-        ? el("div", { class: "hint" },
-            "Shaker qualification specifies base acceleration, which is what " +
-            "this sweep applies. At 1 g the response curve reads directly as " +
-            "transmissibility, and its peaks give fₙ and Q for a " +
-            "Miles'-equation random estimate.")
-        : el("div", { class: "hint" },
-            "This is a FORCE-driven sweep. The analysis is linear, so response " +
-            "scales exactly with input: use 1 N to read the result directly as a " +
-            "transfer function. Peak frequencies and Q do not depend on the " +
-            "magnitude you enter."),
-      c.excitation === "base" ? null : el("div", { class: "hint warn" },
-        "⚠ Shaker qualification specifies BASE acceleration, not force. " +
-        "Switch “Driven by” to base acceleration to sweep the way the test " +
-        "is actually run.")));
-    secs.push(sec("Field export",
-      textInput("Frequencies (Hz, comma-separated — optional)",
-        (c.field_freqs || []).join(", "),
-        (v) => A.mutate(() => {
-          c.field_freqs = v.split(",").map((x) => Number(x.trim())).filter((x) => x > 0);
-        })),
-      el("div", { class: "hint" },
-        "Exports full displacement fields at these frequencies for contour viewing.")));
-    if (!S.project.setup.probes.length) {
-      secs.push(sec(null, el("div", { class: "hint warn" },
-        "⚠ Add at least one probe — FRF curves are extracted at probe locations.")));
-    }
-  }
-  if (a.type === "random") {
-    const spec = c.spec || [];
-    const specTable = el("table", { class: "rtable psd" },
-      el("tr", {},
-        el("th", {}, "Hz"), el("th", {}, "g²/Hz"), el("th", {}, "")),
+/** An editable [frequency, level] table with its three buttons. */
+function spectrumTable(A, c, unit, typical, typicalLabel) {
+  const spec = c.spec || (c.spec = []);
+  return [
+    el("table", { class: "rtable psd" },
+      el("tr", {}, el("th", {}, "Hz"), el("th", {}, unit), el("th", {}, "")),
       spec.map((_row, i) => el("tr", {},
         el("td", {}, specCell(spec[i], 0, () => A.saveOnly())),
         el("td", {}, specCell(spec[i], 1, () => A.saveOnly())),
         el("td", {}, el("button", {
-          class: "btn btn-small btn-danger",
-          onclick: () => A.mutate(() => { spec.splice(i, 1); }) }, "✕")))));
+          class: "btn btn-small btn-danger", title: "Remove this row",
+          onclick: () => A.mutate(() => { spec.splice(i, 1); }) }, "✕"))))),
+    el("div", { class: "btnrow" },
+      el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
+        const last = spec[spec.length - 1] || typical[0];
+        spec.push([Math.round(last[0] * 2), last[1]]);
+      }) }, "+ Row"),
+      el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
+        c.spec = typical.map((r) => [...r]);
+      }) }, typicalLabel),
+      el("button", { class: "btn btn-small", onclick: () => A.pasteSpec(c) }, "Paste…")),
+  ];
+}
 
-    secs.push(sec("Input spectrum",
-      specTable,
-      el("div", { class: "btnrow" },
-        el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
-          const last = spec[spec.length - 1] || [20, 0.01];
-          spec.push([Math.round(last[0] * 2), last[1]]);
-        }) }, "+ row"),
-        el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
-          c.spec = [[20, 0.01], [80, 0.04], [350, 0.04], [2000, 0.007]];
-        }) }, "Typical spec"),
-        el("button", { class: "btn btn-small", onclick: () => A.pasteSpec(c) }, "Paste…")),
-      el("div", { class: "hint" },
-        "Log-log interpolated between rows, zero outside — the standard " +
-        "qualification-spec format. Rows sort themselves by frequency."),
-      el("div", { class: "hint good" }, `Input overall: ${gramsOf(spec)} g RMS`)));
+/** Does this study have anything to set beyond what the analysis panel shows? */
+export function hasSettings(a) {
+  return a.type !== "static";
+}
 
-    secs.push(sec("Direction and damping",
-      el("div", { class: "frm-row" },
-        numInput("dir X", c.base_dir?.[0] ?? 0, (v) => A.mutate(() => { c.base_dir = [v || 0, c.base_dir?.[1] ?? 0, c.base_dir?.[2] ?? 1]; })),
-        numInput("dir Y", c.base_dir?.[1] ?? 0, (v) => A.mutate(() => { c.base_dir = [c.base_dir?.[0] ?? 0, v || 0, c.base_dir?.[2] ?? 1]; })),
-        numInput("dir Z", c.base_dir?.[2] ?? 1, (v) => A.mutate(() => { c.base_dir = [c.base_dir?.[0] ?? 0, c.base_dir?.[1] ?? 0, v ?? 1]; }))),
-      numInput("Modal damping ratio ζ", c.damping, (v) => A.mutate(() => { c.damping = v ?? 0.02; }),
+/**
+ * How the study is solved: modes, sweep, damping, combination.
+ *
+ * What drives a base-excited study — direction, level, spectrum — is its own
+ * tree row (panelExcitation), and the solver is picked on the analysis panel.
+ * Both used to be here as well, so two rows and two places opened the same
+ * controls.
+ */
+function panelSettings(S, A, put, id) {
+  const a = S.project.setup.analyses.find((x) => x.id === id);
+  if (!a) return put("Analysis settings", "");
+  const c = (a.config ||= {});
+  const secs = [];
+
+  if (a.type === "modal") {
+    secs.push(sec("Extraction",
+      optNum(A, "Number of modes", c, "n_modes", 10, { min: 1, max: 100, step: 1 }),
+      el("div", { class: "hint" }, "The lowest modes of the supported model.")));
+  }
+  if (a.type === "harmonic") {
+    const base = c.excitation === "base";
+    secs.push(sec("Excitation",
+      selInput("Driven by", c.excitation || "force",
+        [["force", "Loads in the tree"], ["base", "Base acceleration"]],
+        (v) => A.mutate(() => { c.excitation = v; })),
+      base
+        ? el("div", { class: "btnrow" },
+            el("button", { class: "btn btn-small",
+              onclick: () => A.select("excitation", a.id) }, "Base excitation…"))
+        : el("div", { class: "hint" },
+            "Response scales with the load, so 1 N reads directly as a "
+            + "transfer function.")));
+    secs.push(sec("Sweep",
+      el("div", { class: "frm-row2" },
+        optNum(A, "From (Hz)", c, "f_min", 20, { min: 0 }),
+        optNum(A, "To (Hz)", c, "f_max", 2000, { min: 0 })),
+      el("div", { class: "frm-row2" },
+        optNum(A, "Steps", c, "n_steps", 600, { min: 2, step: 1 }),
+        selInput("Spacing", c.spacing, [["log", "Logarithmic"], ["lin", "Linear"]],
+          (v) => A.mutate(() => { c.spacing = v; }))),
+      optNum(A, "Modal damping ratio ζ", c, "damping", 0.02,
         { min: 0, max: 1, step: 0.005 }),
-      numInput("Sweep steps", c.n_steps, (v) => A.mutate(() => { c.n_steps = v || 600; })),
       el("div", { class: "hint" },
-        "Solved as a 1 g base sweep across the spectrum; the response PSD is " +
-        "|T(f)|² × input PSD, integrated for g RMS. Resolution matters — a " +
-        "resonance spread over too few points under-reports the RMS.")));
-    if (!S.project.setup.probes.length) {
-      secs.push(sec(null, el("div", { class: "hint warn" },
-        "⚠ Add at least one probe — response is extracted there.")));
+        "Modal superposition on the modes up to 1.6 × the top frequency, "
+        + "read at the probes.")));
+    secs.push(sec("Contour frequencies",
+      textInput("Hz, comma-separated", (c.field_freqs || []).join(", "),
+        (v) => A.mutate(() => {
+          c.field_freqs = v.split(",").map((x) => Number(x.trim())).filter((x) => x > 0);
+        })),
+      el("div", { class: "hint" },
+        "Full displacement fields are kept at these frequencies for contour plots.")));
+  }
+  if (a.type === "random") {
+    secs.push(sec("Response",
+      optNum(A, "Modal damping ratio ζ", c, "damping", 0.02,
+        { min: 0, max: 1, step: 0.005 }),
+      optNum(A, "Sweep steps", c, "n_steps", 600, { min: 2, step: 1 }),
+      el("div", { class: "hint" },
+        "The response PSD is |H(f)|² × the input, from a 1 g base "
+        + "sweep across the spectrum. Too few steps across a resonance "
+        + "under-reports the RMS.")));
+  }
+  if (a.type === "shock") {
+    const zeta = c.damping ?? 0.05;
+    secs.push(sec("Modal combination",
+      selInput("Rule", c.rule || "srss",
+        [["srss", "SRSS — modes independent"],
+         ["nrl", "NRL — largest at full value"],
+         ["abs", "Absolute sum — upper bound"]],
+        (v) => A.mutate(() => { c.rule = v; })),
+      el("div", { class: "frm-row2" },
+        optNum(A, "Spectrum damping ζ", c, "damping", 0.05,
+          { min: 0, max: 1, step: 0.005 }),
+        optNum(A, "Modes", c, "n_modes", 30, { min: 1, step: 1 })),
+      zeta > 0
+        ? el("div", { class: "hint" },
+            `ζ = ${zeta} is Q = ${(1 / (2 * zeta)).toFixed(0)}. Use the Q `
+            + "the spectrum was written at.")
+        : null,
+      el("div", { class: "hint" },
+        "Keep enough modes to carry the effective mass in the driven axis. "
+        + "What they miss is added back at the ZPA.")));
+  }
+  if (!secs.length) {
+    secs.push(sec(null, el("div", { class: "hint" },
+      "Nothing to set for this analysis type.")));
+  }
+  put("Analysis settings", a.name || a.type, ...secs);
+}
+
+/** What drives a base-excited study: direction, level or spectrum. */
+function panelExcitation(S, A, put, id) {
+  const a = S.project.setup.analyses.find((x) => x.id === id);
+  if (!a) return put("Base excitation", "");
+  const c = (a.config ||= {});
+  const secs = [];
+
+  if (a.type === "harmonic") {
+    if (c.excitation !== "base") {
+      secs.push(sec(null,
+        el("div", { class: "hint warn" },
+          "This sweep is driven by the loads in the tree, not the base."),
+        el("div", { class: "btnrow" },
+          el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
+            c.excitation = "base";
+          }) }, "Drive it through the base"))));
+    } else {
+      secs.push(sec("Base acceleration",
+        optNum(A, "Amplitude (g)", c, "base_g", 1, { min: 0 }),
+        dirRow(A, c),
+        el("div", { class: "hint" },
+          "Every fixed support moves together as the shaker table, and loads "
+          + "in the tree are ignored. Response is relative to the base. At "
+          + "1 g the curve reads directly as transmissibility.")));
     }
+  }
+  if (a.type === "random") {
+    const spec = c.spec || [];
+    secs.push(sec("Input PSD",
+      ...spectrumTable(A, c, "g²/Hz",
+        [[20, 0.01], [80, 0.04], [350, 0.04], [2000, 0.007]], "Typical spec"),
+      el("div", { class: "hint" },
+        "Log-log between rows, zero outside them. Rows sort by frequency."),
+      el("div", { class: "hint good" }, `Overall: ${gramsOf(spec)} g RMS`)));
+    secs.push(sec("Direction", dirRow(A, c)));
   }
   if (a.type === "shock") {
     const pulse = (c.input || "spectrum") === "pulse";
     secs.push(sec("Input",
       selInput("Specified as", c.input || "spectrum",
         [["pulse", "Classical pulse"], ["spectrum", "SRS table"]],
-        (v) => A.mutate(() => { c.input = v; }))));
-
+        (v) => A.mutate(() => { c.input = v; })),
+      selInput("Axis", String(c.axis ?? 2),
+        [["0", "X"], ["1", "Y"], ["2", "Z"]],
+        (v) => A.mutate(() => { c.axis = Number(v); }))));
     if (pulse) {
       secs.push(sec("Pulse",
         selInput("Shape", c.pulse || "half_sine",
@@ -1784,78 +1918,27 @@ function panelSettings(S, A, put, id) {
            ["trapezoid", "Trapezoid"]],
           (v) => A.mutate(() => { c.pulse = v; })),
         el("div", { class: "frm-row2" },
-          numInput("Amplitude (g)", c.pulse_g,
-            (v) => A.mutate(() => { c.pulse_g = v ?? 20; }), { step: 1 }),
-          numInput("Duration (ms)", c.pulse_ms,
-            (v) => A.mutate(() => { c.pulse_ms = v ?? 11; }), { step: 0.5 })),
+          optNum(A, "Amplitude (g)", c, "pulse_g", 20, { min: 0, step: 1 }),
+          optNum(A, "Duration (ms)", c, "pulse_ms", 11, { min: 0, step: 0.5 })),
         el("div", { class: "hint" },
-          "Its spectrum is computed and applied — the pulse is not integrated " +
-          "in time. MIL-STD-810 Method 516 shapes.")));
+          "The pulse's shock response spectrum is what is applied; the pulse "
+          + "is not integrated in time.")));
     } else {
-      // An analysis can reach here without a spec — created through the API,
-      // or switched over from a pulse. Show the table anyway; "Typical SRS"
-      // is the way back from empty.
-      const spec = c.spec || (c.spec = []);
-      secs.push(sec("Input spectrum",
-        el("table", { class: "rtable psd" },
-          el("tr", {}, el("th", {}, "Hz"), el("th", {}, "g"), el("th", {}, "")),
-          spec.map((_row, i) => el("tr", {},
-            el("td", {}, specCell(spec[i], 0, () => A.saveOnly())),
-            el("td", {}, specCell(spec[i], 1, () => A.saveOnly())),
-            el("td", {}, el("button", {
-              class: "btn btn-small btn-danger",
-              onclick: () => A.mutate(() => { spec.splice(i, 1); }) }, "\u2715"))))),
-        el("div", { class: "btnrow" },
-          el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
-            const last = spec[spec.length - 1] || [100, 20];
-            spec.push([Math.round(last[0] * 2), last[1]]);
-          }) }, "+ row"),
-          el("button", { class: "btn btn-small", onclick: () => A.mutate(() => {
-            c.spec = [[100, 20], [1000, 200], [10000, 200]];
-          }) }, "Typical SRS"),
-          el("button", { class: "btn btn-small", onclick: () => A.pasteSpec(c) }, "Paste\u2026")),
+      // Reachable without a spec (made through the API, or switched over from
+      // a pulse): the table still shows, and "Typical SRS" fills it.
+      secs.push(sec("Shock response spectrum",
+        ...spectrumTable(A, c, "g", [[100, 20], [1000, 200], [10000, 200]],
+          "Typical SRS"),
         el("div", { class: "hint" },
-          "Log-log between rows. Outside the table the end value is HELD, not " +
-          "zeroed \u2014 an SRS ends at its plateau, and every stiffer mode sees it.")));
-    }
-
-    secs.push(sec("Direction and combination",
-      selInput("Axis", String(c.axis ?? 2),
-        [["0", "X"], ["1", "Y"], ["2", "Z"]],
-        (v) => A.mutate(() => { c.axis = Number(v); })),
-      selInput("Mode combination", c.rule || "srss",
-        [["srss", "SRSS \u2014 modes independent"],
-         ["nrl", "NRL \u2014 largest at full value"],
-         ["abs", "Absolute sum \u2014 upper bound"]],
-        (v) => A.mutate(() => { c.rule = v; })),
-      el("div", { class: "frm-row2" },
-        numInput("Spectrum damping \u03b6", c.damping,
-          (v) => A.mutate(() => { c.damping = v ?? 0.05; }),
-          { min: 0, max: 1, step: 0.005 }),
-        numInput("Modes", c.n_modes,
-          (v) => A.mutate(() => { c.n_modes = v || 30; }), { min: 1, step: 1 })),
-      el("div", { class: "hint" },
-        `\u03b6 = ${c.damping ?? 0.05} is Q = ${(1 / (2 * (c.damping || 0.05))).toFixed(0)}. ` +
-        "A spectrum read at one Q and applied at another is a different spectrum."),
-      el("div", { class: "hint" },
-        "Extract enough modes to carry the effective mass in the driven axis. " +
-        "What the basis misses is added back at the ZPA, but a large residual " +
-        "means the shape of the response is not resolved.")));
-    if (!S.project.setup.probes.length) {
-      secs.push(sec(null, el("div", { class: "hint" },
-        "Add probes to get peak response at specific points. Interface load " +
-        "and bolt loads do not need them.")));
+          "Log-log between rows. Beyond the table the end value is held, "
+          + "not zeroed: every stiffer mode sees the plateau.")));
     }
   }
-  if (a.type === "static") {
-    secs.push(sec("Output", el("div", { class: "hint" },
-      "Displacement, von Mises / principal stresses, stress tensor, and reaction " +
-      "forces at the supports.")));
+  if (!secs.length) {
+    secs.push(sec(null, el("div", { class: "hint" },
+      "This analysis is not driven through its base.")));
   }
-  secs.push(sec(null, el("div", { class: "btnrow" },
-    el("button", { class: "btn", onclick: () => A.select("analysis", a.id) },
-      "Back to analysis"))));
-  put("Analysis settings", a.name || a.type, ...secs);
+  put("Base excitation", a.name || a.type, ...secs);
 }
 
 /** Everything the run needs to be allowed to start. Stated explicitly — a
@@ -1870,7 +1953,7 @@ function runBlockers(S, a) {
     const eng = engineOf(S, a);
     if (!engines.some((e) => e.id === eng)) {
       blockers.push(`This analysis is set to run on ${ENGINE_LABEL[eng] || eng}, ` +
-                    "which is not installed here. Change it in Analysis Settings.");
+                    "which is not installed here. Pick another solver above.");
     }
     // exactly what the deck writer would refuse, said before the run
     for (const t of engineBlockers(S, a, eng)) blockers.push(t);
@@ -1907,23 +1990,55 @@ function runBlockers(S, a) {
   if (a.type === "random" && ((a.config || {}).spec || []).length < 2) {
     blockers.push("The input spectrum needs at least two breakpoints.");
   }
+  // what the deck writer would refuse, said before the run rather than after
+  const sw = a.type === "harmonic" ? effectiveSweep(a) : null;
+  if (sw && !(sw.f_min > 0 && sw.f_max > sw.f_min)) {
+    blockers.push(`The sweep runs from ${sw.f_min} to ${sw.f_max} Hz; it needs `
+                  + "0 < From < To.");
+  }
+  if (sw && !(sw.n_steps >= 2)) blockers.push("The sweep needs at least 2 steps.");
   if (a.type === "shock") {
     const c = a.config || {};
     if ((c.input || "spectrum") === "spectrum" && (c.spec || []).length < 2) {
       blockers.push("The shock spectrum needs at least two breakpoints.");
     }
-    if ((c.input || "spectrum") === "pulse" && !(c.pulse_g > 0 && c.pulse_ms > 0)) {
-      blockers.push("The pulse needs an amplitude and a duration.");
+    if ((c.input || "spectrum") === "pulse"
+        && !((c.pulse_g ?? 20) > 0 && (c.pulse_ms ?? 11) > 0)) {
+      blockers.push("The pulse needs an amplitude and a duration above zero.");
     }
-    if (!(a.supports || []).length) {
-      // The spectrum is applied AT the base. With nothing restrained there is
-      // no base, and the modes are free-free — the answer would be nonsense
-      // rather than merely inaccurate.
-      blockers.push("Add a support — a shock spectrum is applied at the "
-                    + "restrained base.");
-    }
+    // no shock-specific support check: the general one above already stops
+    // an unrestrained model, and said the same thing twice
   }
   return blockers;
+}
+
+/**
+ * Which solver runs this study.
+ *
+ * They are not interchangeable. code_aster covers every analysis type here;
+ * CalculiX installs from a package manager and so is often the only one
+ * present on macOS, but this tool only drives it for static and modal. An
+ * engine that cannot run the study is offered disabled with the reason rather
+ * than hidden, so the limitation is legible instead of mysterious.
+ */
+function solverPick(S, A, a) {
+  const engines = S.config?.solver?.engines || [];
+  if (!engines.length) return null;          // runBlockers says what to do
+  const current = engineOf(S, a);
+  const alt = engineThatCanRun(S, a);
+  const blocked = engineBlockers(S, a, current).length > 0;
+  return el("div", {},
+    selInput("Solver", current,
+      engines.map((e) => [e.id, engineBlockers(S, a, e.id).length
+        ? `${e.label} \u2014 cannot run this` : e.label]),
+      (v) => A.mutate(() => { (a.config ||= {}).engine = v; })),
+    el("div", { class: "hint" }, engines.find((e) => e.id === current)?.detail || ""),
+    blocked && alt && alt !== current
+      ? el("div", { class: "btnrow" },
+          el("button", { class: "btn btn-small btn-accent",
+            onclick: () => A.mutate(() => { (a.config ||= {}).engine = alt; }) },
+            `Switch to ${ENGINE_LABEL[alt] || alt}`))
+      : null);
 }
 
 /** The analysis node: what this study is, and whether it can run. */
@@ -1939,20 +2054,14 @@ function panelAnalysis(S, A, put, id) {
       textInput("Name", a.name, (v) => A.mutate(() => { a.name = v; })),
       dl([["Type", TYPE_NAMES[a.type] || a.type],
           ["Driven by", drivenBy(a)]]),
-      // the engine belongs here, not buried in settings: it is the first
-      // thing you check when a run behaves differently from yesterday
-      selInput("Solver", engineOf(S, a),
-        (S.config?.solver?.engines || []).map((e) => {
-          const bad = engineBlockers(S, a, e.id).length;
-          return [e.id, bad ? `${e.label} — cannot run this` : e.label];
-        }),
-        (v) => A.mutate(() => { (a.config ||= {}).engine = v; }))),
+      solverPick(S, A, a)),
     sec(null,
       el("div", { class: "btnrow" },
         el("button", { class: "btn btn-accent", disabled: running || blockers.length > 0,
           onclick: () => A.runAnalysis(a.id) }, running ? "Running…" : "Run analysis"),
-        el("button", { class: "btn", onclick: () => A.select("settings", a.id) },
-          "Settings"),
+        hasSettings(a)
+          ? el("button", { class: "btn", onclick: () => A.select("settings", a.id) },
+              "Settings") : null,
         // a solve can finish and a later step still fail — offer recovery
         S.runStatus[a.id] === "failed"
           ? el("button", { class: "btn", onclick: () => A.recoverResults(a.id) },
@@ -1978,7 +2087,7 @@ function panelAnalysis(S, A, put, id) {
   put(a.name || a.type, TYPE_NAMES[a.type] || a.type, ...statusHead(S, A, a), ...secs);
 }
 
-const TYPE_NAMES = { static: "Static structural", modal: "Modal",
+export const TYPE_NAMES = { static: "Static structural", modal: "Modal",
                      shock: "Shock response spectrum",
                      harmonic: "Harmonic response", random: "Random vibration" };
 
@@ -2036,18 +2145,13 @@ function panelSolution(S, A, put, id) {
     ]),
       ),
     sec("Outputs", el("div", { class: "listrows" }, rows)),
-    sec("Export",
+    sec(null,
       el("div", { class: "btnrow" },
         el("button", { class: "btn btn-accent",
           onclick: () => A.exportResults(a.id, "all") }, "Export all (CSV)"),
         el("button", { class: "btn",
-          onclick: () => A.exportResults(a.id, "tables") }, "Tables only")),
-      ),
-    sec("Re-run",
-      el("div", { class: "btnrow" },
-        el("button", { class: "btn", onclick: () => A.runAnalysis(a.id) }, "Run again"),
-        el("button", { class: "btn", onclick: () => A.select("settings", a.id) },
-          "Analysis settings"))));
+          onclick: () => A.exportResults(a.id, "tables") }, "Export tables (CSV)"),
+        el("button", { class: "btn", onclick: () => A.runAnalysis(a.id) }, "Run again"))));
 }
 
 /** Banner shown above every panel that presents results, saying whether they
@@ -2056,47 +2160,45 @@ function panelSolution(S, A, put, id) {
 function statusHead(S, A, a) {
   const meta = S.results[a.id];
   if (!meta) return [];
-  // A failed run outranks everything: whatever is below it is a fragment, not
-  // an answer. This used to show nothing at all — meta.json was written either
-  // way, so the tree badged the analysis done and the panel was simply empty.
+  // One line and its action, on every result panel. These were paragraphs —
+  // the demo notice alone was 36 words, repeated on all 32 result panels of a
+  // five-analysis project, under a red bar that already said it. The reasons
+  // live where someone goes to read them: "Why it failed", the changelog,
+  // METHODS.md.
+  const rerun = el("button", { class: "btn btn-small btn-accent",
+    onclick: () => A.runAnalysis(a.id) }, "Run again");
+  // A failed run outranks everything: whatever is below it is a fragment.
   if (meta.failed) {
+    // the headline, without the log path that follows it — that is on the
+    // Why-it-failed panel, where there is room to read it
+    const why = String(meta.error || `exit code ${meta.exit_code}`).split("  (exit")[0];
     return [el("div", { class: "stalebar fakebar" },
-      el("b", {}, "\u26a0 This run failed. "),
-      meta.recovered
-        ? "What is shown below is what could be recovered from it, not a "
-          + "complete result. Treat nothing here as final."
-        : "Nothing could be recovered from it.",
-      el("div", { class: "hint" }, meta.error || `exit code ${meta.exit_code}`),
-      el("div", { class: "btnrow" },
-        el("button", { class: "btn btn-small btn-accent",
-          onclick: () => A.runAnalysis(a.id) }, "Run again"),
+      el("b", {}, meta.recovered
+        ? "\u26a0 Run failed \u2014 partial results only. "
+        : "\u26a0 Run failed \u2014 nothing recovered. "),
+      el("span", { class: "why" }, why),
+      el("div", { class: "btnrow" }, rerun,
         el("button", { class: "btn btn-small",
-          onclick: () => A.select("result", `${a.id}|warnings`) },
-          "Why it failed")))];
+          onclick: () => A.select("result", `${a.id}|warnings`) }, "Why it failed")))];
   }
-  // Demo next: it outranks staleness, and unlike the red session banner this
-  // is a property of the run, so it survives a restart with a real solver.
+  // Demo is a property of the run, not the session, so it survives a restart
+  // with a real solver — which is why it cannot rely on the top bar.
   if (meta.demo) {
     return [el("div", { class: "stalebar fakebar" },
-      el("b", {}, "⚠ Fabricated results. "),
-      "This run used the demo solver — the numbers were invented to exercise " +
-      "the interface and were never computed from the model. Nothing here is " +
-      "engineering data, and exports carry the same warning.",
-      ...(meta.stale ? [" The model has also changed since."] : []))];
+      el("b", {}, "\u26a0 Fabricated by the demo solver"),
+      " \u2014 not engineering data." + (meta.stale ? " The model has also changed since." : ""),
+      meta.stale ? el("div", { class: "btnrow" }, rerun) : null)];
   }
   if (meta.stale) {
     return [el("div", { class: "stalebar" },
-      el("b", {}, "⚠ Out of date. "),
-      "The model changed after this ran — mesh, materials, connections or " +
-      "boundary conditions. These numbers describe the older model.",
-      el("div", { class: "btnrow" },
-        el("button", { class: "btn btn-small btn-accent",
-          onclick: () => A.runAnalysis(a.id) }, "Run again")))];
+      el("b", {}, "\u26a0 Out of date"),
+      " \u2014 the model has changed since this ran.",
+      el("div", { class: "btnrow" }, rerun))];
   }
   if (meta.no_signature) {
     return [el("div", { class: "stalebar" },
-      "These results predate change tracking, so Lattice cannot tell whether " +
-      "they still match the model. Re-run to be certain.")];
+      "Run before change tracking existed \u2014 it may not match the model.",
+      el("div", { class: "btnrow" }, rerun))];
   }
   return [];
 }
@@ -2115,11 +2217,16 @@ const RESULT_TITLES = {
 };
 
 /** Pointer to the reference for this result, for when it is wanted.
- *  The panels show numbers; the method notes live in docs/METHODS.md. */
-function methodRef(anchor, label) {
+ *
+ *  Pinned to the tag of the version that is running. It pointed at `main`,
+ *  so after an update the method described could be newer than the method
+ *  that produced the numbers on screen. */
+function methodRef(S, anchor, label) {
+  const v = S.config?.version;
+  const ref = v ? `v${v}` : "main";
   return el("div", { class: "methodref" },
-    el("a", { href: `https://github.com/vraj549/lattice/blob/main/docs/METHODS.md#${anchor}`,
-              target: "_blank", rel: "noopener" }, label || "method notes"));
+    el("a", { href: `https://github.com/vraj549/lattice/blob/${ref}/docs/METHODS.md#${anchor}`,
+              target: "_blank", rel: "noopener" }, label || "How this is computed \u2197"));
 }
 
 function panelResult(S, A, put, id) {
@@ -2146,20 +2253,29 @@ function panelResult(S, A, put, id) {
     warnings: () => secWarnings(S, A, a),
   }[what]?.() || [];
 
-  const exportWhat = { frf: "frf", random: "random", shock: "shock" }[what] || "tables";
+  // An export button says what it exports. Every result panel used to end in
+  // "Export this (CSV)", and on Contours, Slip check, Bolt sizing and Solver
+  // messages "this" was the tables file — not the field, the margins or the
+  // messages on screen. Contours has its own nodal-values export; the others
+  // have no export of what they show, so they offer none rather than a
+  // different file under that name. "Export all" and the link back to the
+  // analysis lived here too, on every panel, one click from the tree and the
+  // Solution node that already carry both.
+  const exp = {
+    frf: ["frf", "Export this (CSV)"], random: ["random", "Export this (CSV)"],
+    shock: ["shock", "Export this (CSV)"],
+    modes: ["tables", "Export tables (CSV)"], bolts: ["tables", "Export tables (CSV)"],
+    reactions: ["tables", "Export tables (CSV)"],
+  }[what];
   const anchor = { contours: "contours", modes: "modes", frf: "frequency-response",
                    random: "random-vibration", bolts: "bolt-forces-and-stress",
                    shock: "shock", slip: "friction-without-a-newton-loop",
                    sizing: "bolt-sizing", reactions: "reactions" }[what];
   const tail = sec(null,
-    anchor ? methodRef(anchor) : null,
-    el("div", { class: "btnrow" },
+    exp ? el("div", { class: "btnrow" },
       el("button", { class: "btn btn-small",
-        onclick: () => A.exportResults(aid, exportWhat) }, "Export this (CSV)"),
-      el("button", { class: "btn btn-small",
-        onclick: () => A.exportResults(aid, "all") }, "Export all (CSV)"),
-      el("button", { class: "btn btn-small",
-        onclick: () => A.select("analysis", aid) }, "Analysis setup")));
+        onclick: () => A.exportResults(aid, exp[0]) }, exp[1])) : null,
+    anchor ? methodRef(S, anchor) : null);
 
   put(RESULT_TITLES[what] || "Results", a.name || a.type,
       ...statusHead(S, A, a), ...body, tail);
@@ -2198,13 +2314,10 @@ function secModes(S, A, a) {
     const rigid = rows.filter((r) => r.f <= 1e-3);
     if (rigid.length) {
       secs.push(sec(null, el("div", { class: "hint warn" },
-        `\u26a0 ${plural(rigid.length, "mode")} at essentially zero frequency `
-        + `(${rigid.map((r) => "#" + r.n).join(", ")}). The model is free to `
-        + `move in ${rigid.length === 1 ? "that direction" : "those directions"}`
-        + `${rigid.length === 6 ? " — six is a completely unrestrained body" : ""}. `
-        + "Expected for a free-free check; otherwise the supports are not "
-        + "holding it, and every frequency below is for a structure that is "
-        + "not held.")));
+        `\u26a0 ${plural(rigid.length, "mode")} at zero frequency `
+        + `(${rigid.map((r) => "#" + r.n).join(", ")}): the model is free to move`
+        + `${rigid.length === 6 ? " in every direction" : ""}. Expected in a `
+        + "free-free check; otherwise the supports are not holding it.")));
     }
     secs.push(sec("Modes",
       el("div", { class: "modes" }, rows.map((r) =>
@@ -2226,16 +2339,30 @@ function secFRF(S, A, a) {
   const secs = [];
   if (meta.frf?.length) {
     const probes = S.project.setup.probes;
-    // Total applied force, so the response can be shown per unit input —
-    // amplification is what a sine sweep is actually read for.
-    const totalF = (a.loads || []).reduce((acc, l) => {
+    // What the curves can be shown as depends on what drove them. A base
+    // sweep's raw curve is displacement RELATIVE to the base; what a shaker
+    // test reads is transmissibility, so that is its default view. Per unit
+    // force is offered only when there is a force to divide by — for a base
+    // sweep the loads in the tree were never applied.
+    const baseDriven = a.config?.excitation === "base";
+    const totalF = baseDriven ? 0 : (a.loads || []).reduce((acc, l) => {
       if (!["force", "remote"].includes(l.type)) return acc;
       return acc + Math.hypot(l.fx || 0, l.fy || 0, l.fz || 0);
     }, 0);
-    const norm = S.frfNorm || "raw";
+    const views = baseDriven
+      ? [["trans", "Transmissibility (absolute \u00f7 input)", "transmissibility"],
+         ["amp", "Amplification (\u00d7 quasi-static)", "\u00d7 quasi-static"],
+         ["raw", "Relative displacement (mm)", "mm, relative"]]
+      : [["raw", "Displacement (mm)", "mm"],
+         ["amp", "Amplification (\u00d7 quasi-static)", "\u00d7 quasi-static"],
+         ...(totalF > 0 ? [["perN", "Per unit force (mm/N)", "mm/N"]] : [])];
+    const norm = views.some(([v]) => v === S.frfNorm) ? S.frfNorm : views[0][0];
     const curves = meta.frf.map((f, i) => {
       let mod = f.module;
-      if (norm === "perN" && totalF > 0) mod = f.module.map((v) => v / totalF);
+      if (norm === "perN") mod = f.module.map((v) => v / totalF);
+      if (norm === "trans") {
+        mod = transmissibility(f.freq, f.module, f.phase, a.config?.base_g ?? 1);
+      }
       if (norm === "amp") {
         // dynamic amplification: response ÷ the low-frequency (quasi-static)
         // response of the same curve, which is the textbook definition
@@ -2249,8 +2376,7 @@ function secFRF(S, A, a) {
     });
 
     const canvas = el("canvas", { class: "frfbig" });
-    const unitTxt = norm === "amp" ? "amplification (x quasi-static)"
-                  : norm === "perN" ? "mm / N" : "mm";
+    const unitTxt = views.find(([v]) => v === norm)[2];
 
     // Peaks are computed synchronously from the data. Appending them later
     // from a rAF callback raced with the panel re-render that openResults
@@ -2264,10 +2390,7 @@ function secFRF(S, A, a) {
     peaks.sort((a, b) => a.f - b.f);
 
     secs.push(sec(`Frequency response \u2014 ${unitTxt}`,
-      selInput("Y axis", norm, [
-        ["amp", "Amplification (\u00d7 quasi-static)"],
-        ["perN", "Response per unit force (mm/N)"],
-        ["raw", "Raw response (mm)"]],
+      selInput("Y axis", norm, views.map(([v, label]) => [v, label]),
         (v) => { S.frfNorm = v; A.refreshPanel(); }),
       canvas,
       el("div", { class: "hint" }, curves.map((c) =>
@@ -2282,7 +2405,7 @@ function secFRF(S, A, a) {
             el("td", {}, fmtVal(pk.amp)),
             el("td", {}, pk.q ? pk.q.toFixed(1) : "\u2014"),
             el("td", {}, pk.q ? (1 / (2 * pk.q)).toFixed(4) : "\u2014")))),
-        resolutionWarning(S, peaks)) : null,
+        resolutionWarning(a, peaks)) : null,
     ));
 
     // the canvas needs layout before it can size itself, so only the DRAW
@@ -2338,15 +2461,15 @@ function secBolts(S, A, a) {
             el("td", {}, fmtVal(req)),
             el("td", {}, got == null ? "\u2014" : fmtVal(got)),
             el("td", { class: err != null && Math.abs(err) > 0.01 ? "bad" : "" },
-               err == null ? "\u2014" : `${(100 * err).toFixed(1)}%`));
+               err == null ? "\u2014" : `${(100 * err).toFixed(1)} %`));
         })),
       P.calibrated ? null
         : P.achieved == null
           ? el("div", { class: "hint bad" },
                "Not calibrated \u2014 the bolts carry less than the requested force.")
           : el("div", { class: "hint bad" },
-               `Calibration ran out of passes ${(100 * P.max_error).toFixed(1)}% ` +
-               `from the requested force (tolerance ${(100 * (P.tol ?? 0.01)).toFixed(1)}%). ` +
+               `Calibration ran out of passes ${(100 * P.max_error).toFixed(1)} % ` +
+               `from the requested force (tolerance ${(100 * (P.tol ?? 0.01)).toFixed(1)} %). ` +
                "The correction is applied and the column above is what the run " +
                "actually contains \u2014 treat the preload as approximate.")));
   }
@@ -2396,7 +2519,7 @@ function secBolts(S, A, a) {
               el("td", {}, st ? fmtVal(st.bend) : "\u2014"),
               el("td", {}, st ? fmtVal(st.eqv) : "\u2014"),
               el("td", { class: st && st.pct > 100 ? "bad" : "" },
-                 st ? `${st.pct.toFixed(0)}%` : "\u2014"));
+                 st ? `${st.pct.toFixed(0)} %` : "\u2014"));
           })),
         ));
     }
@@ -2467,7 +2590,6 @@ function secSizing(S, A, a) {
         (v) => A.setSizing(a.id, { p_G: v }), { step: 10 }))));
 
   const rows = R.rows || [];
-  if (R.blocked) return secs;              // the warning above says why
   if (!rows.length) {
     secs.push(sec(null, el("div", { class: "hint" },
       "No bolts with mesh records in this run.")));
@@ -2545,13 +2667,6 @@ function secWarnings(S, A, a) {
 }
 
 /**
- * Shock response.
- *
- * Every number here is a PEAK with no sign and no time attached — an SRS
- * carries neither. Two of them are each defensible on their own; their ratio
- * is not, because they do not have to happen at the same instant.
- */
-/**
  * Slip check.
  *
  * The solve glued every checked frictional interface. This says whether it
@@ -2584,10 +2699,8 @@ function slipSections(S, A, a) {
           ["Peak shear", `${fmtVal(r.tau_max)} MPa`]]),
       r.area_weighted === false
         ? el("div", { class: "hint" },
-            "These fractions count NODES, not area — no nodal areas were "
-            + "matched for this interface. Re-mesh to weigh them by area; "
-            + "refinement clusters nodes where stress concentrates, so a node "
-            + "count reads high exactly where it matters.")
+            "These fractions count nodes, not area: no nodal areas were "
+            + "matched for this interface. Re-mesh to weight them by area.")
         : null,
       r.flatness < 0.98
         ? el("div", { class: "hint warn" },
@@ -2611,6 +2724,13 @@ function slipSections(S, A, a) {
   return secs;
 }
 
+/**
+ * Shock response.
+ *
+ * Every number here is a PEAK with no sign and no time attached — an SRS
+ * carries neither. Two of them are each defensible on their own; their ratio
+ * is not, because they do not have to happen at the same instant.
+ */
 function shockSections(S, A, a) {
   const R = derived(S, "shockResults", a.id);
   if (!R) {
@@ -2697,7 +2817,7 @@ function shockSections(S, A, a) {
         R.rows.map((r) => el("tr", {},
           el("td", {}, String(r.mode)),
           el("td", {}, fmtVal(r.f)),
-          el("td", {}, `${(100 * r.eff_frac).toFixed(1)}%`),
+          el("td", {}, `${(100 * r.eff_frac).toFixed(1)} %`),
           el("td", {}, fmtVal(r.srs_g)),
           el("td", {}, (r.alpha ?? 0).toFixed(2)),
           el("td", {}, fmtVal(r.force_N)))))));
@@ -2846,7 +2966,7 @@ function partTable(part) {
       el("td", {}, fmtVal(r[fi] ?? 0)),
       ...[0, 1, 2].map((k) => {
         const v = r[dx + k];
-        return el("td", {}, v != null ? `${(100 * v).toFixed(1)}%` : "—");
+        return el("td", {}, v != null ? `${(100 * v).toFixed(1)} %` : "—");
       }))));
   return el("div", { style: "margin-top:9px" },
     el("span", { class: "lbl" }, "Effective mass"), t);

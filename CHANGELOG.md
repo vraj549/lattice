@@ -1,5 +1,65 @@
 # Changelog
 
+## 1.0.5
+
+A review of everything the user sees, and of what happens when meshing or a
+run goes wrong.
+
+**A failed mesh no longer corrupts the previous one.** The mesher wrote
+`mesh.unv` in place and `stats.json` last, so a mesh that failed after the UNV
+was out left the new mesh file paired with the old mesh's groups, probe nodes
+and CalculiX node numbers — and the next solve ran on that pair. Meshes are
+now built aside and published as one unit; a failure leaves the previous mesh
+whole.
+
+**A failed hex sweep meshed removed bodies back in.** The tetrahedral fallback
+reloads the geometry from the file and skipped the step that removes
+suppressed bodies. Every attempt now goes through one loader, which also
+restores the curvature sizing one of the fallbacks forgot.
+
+**Cancel stops the solver, not just its launcher.** Cancelling signalled only
+the direct child: `run_aster`, not the solver it had started, and under WSL or
+docker not a local process at all. The solver kept running and writing into
+the run directory the next run would use. Cancel now takes the whole process
+tree, stops the WSL process tree or the docker container, and the job stays
+running until that has happened, so a new run cannot start on top of it.
+
+**Cancelling during preload calibration launched the main solve anyway.** The
+calibration treats any failure as "run uncorrected", and a cancel looked like
+one. Cancellation can no longer be absorbed by a fallback.
+
+**The island check counted tetrahedra only** — a hex-swept mesh always
+reported one piece. And the mesh panel warned "disconnected part groups" on
+every correctly built contact assembly, because the pieces are joined by
+contacts, ties and bolts at solve time. It now warns only about bodies that
+nothing joins, and names them.
+
+**One friction default.** The solvers fell back to μ = 0.2 and the slip check
+to 0.15, and an entered μ = 0 became either.
+
+**New harmonic analyses used 150 sweep steps** — about 1.3 points across a
+resonance at 2 % damping, so every one of them tripped the resolution warning.
+The default is 600, the same as random vibration, which puts five across it.
+The warning itself read the wrong analysis and printed NaN for random runs.
+
+**Base-driven sweeps plot transmissibility.** The settings promised a curve
+that "reads directly as transmissibility"; the plot showed relative
+displacement and offered "per unit force" for a sweep with no force applied.
+
+**Panels.** Analysis settings and Base excitation are separate panels instead
+of two tree rows opening the same one, and the solver is chosen in one place.
+Blank numeric fields show the solver's default and store nothing, instead of
+writing a fallback that disagreed with it (clearing "f max" wrote 1000 Hz;
+the default is 2000). Numbers read to four significant figures ("6000 N", not
+"6000.0 N" beside "1.33e+5 N"), contour legends share one set of decimals,
+units are no longer shouted in table headers, and long warnings are cut to
+what they need to say. M10 and M12 are in the bolt size list, and a hole
+bigger than any listed size is no longer offered an M8.
+
+**Errors.** An unexpected server error reaches the UI with its type and
+message instead of "500". A solver command that is not installed says so at
+startup and at launch, instead of `[Errno 2]` at the end of the first run.
+
 ## 1.0.4
 
 The gate added in 1.0.3 worked — a real mesh came back with minimum quality
